@@ -4,12 +4,12 @@ import { Play } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "@/lib/api";
-import type { Patch, SupportedModel } from "@/lib/types";
+import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
-export function GenerationPanel({ models, patches = [] }: { models: SupportedModel[]; patches?: Patch[] }) {
+export function GenerationPanel({ models, patches = [], runtime = [] }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[] }) {
   const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2");
   const [prompt, setPrompt] = usePersistentState("kew:generation:prompt", "The Space Needle is located in the city of");
   const [patchId, setPatchId] = usePersistentState("kew:generation:patchId", "");
@@ -22,8 +22,10 @@ export function GenerationPanel({ models, patches = [] }: { models: SupportedMod
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [runtimeRefreshKey, setRuntimeRefreshKey] = useState(0);
+  const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
   async function run() {
+    if (!modelLoaded || busy) return;
     setBusy(true);
     try {
       const result = await api.generate({
@@ -81,7 +83,7 @@ export function GenerationPanel({ models, patches = [] }: { models: SupportedMod
             ))}
           </select>
         </label>
-        <button className="tool-button" onClick={run} disabled={busy || !prompt.trim()} title="Generate completion">
+        <button className="tool-button" onClick={run} disabled={busy || !prompt.trim() || !modelLoaded} title={modelLoaded ? "Generate completion" : "Load the selected model before generating"}>
           <Play size={16} />
           {busy ? "Running" : "Generate"}
         </button>

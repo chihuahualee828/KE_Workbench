@@ -4,7 +4,7 @@ import { ApiStatus, useWorkbenchData } from "@/components/DataState";
 import { EvaluationDashboard } from "@/components/EvaluationDashboard";
 
 export default function EvaluatePage() {
-  const { models, patches, status } = useWorkbenchData();
+  const { models, patches, runtime, status } = useWorkbenchData();
   return (
     <div>
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -15,9 +15,8 @@ export default function EvaluatePage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <EvaluationDashboard models={models} patches={patches} />
+        <EvaluationDashboard models={models} patches={patches} runtime={runtime} />
       </section>
     </div>
   );
 }
-

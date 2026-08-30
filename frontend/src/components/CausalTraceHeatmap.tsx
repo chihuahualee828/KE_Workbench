@@ -5,12 +5,12 @@ import { Fragment } from "react";
 import { useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { SupportedModel, TraceCell } from "@/lib/types";
+import type { ModelRuntimeStatus, SupportedModel, TraceCell } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
-export function CausalTraceHeatmap({ models }: { models: SupportedModel[] }) {
+export function CausalTraceHeatmap({ models, runtime = [] }: { models: SupportedModel[]; runtime?: ModelRuntimeStatus[] }) {
   const [modelId, setModelId] = usePersistentState("kew:trace:modelId", models[0]?.id ?? "gpt2");
   const [prompt, setPrompt] = usePersistentState("kew:trace:prompt", "The Space Needle is located in the city of");
   const [subject, setSubject] = usePersistentState("kew:trace:subject", "The Space Needle");
@@ -21,11 +21,13 @@ export function CausalTraceHeatmap({ models }: { models: SupportedModel[] }) {
   const [summary, setSummary] = useState<{ clean_probability: number; corrupted_probability: number } | null>(null);
   const [selected, setSelected] = useState<TraceCell | null>(null);
   const [busy, setBusy] = useState(false);
+  const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
   const layers = useMemo(() => Array.from(new Set(cells.map((cell) => cell.layer))), [cells]);
   const maxEffect = Math.max(0.01, ...cells.map((cell) => Math.abs(cell.indirect_effect)));
 
   async function run() {
+    if (!modelLoaded || busy) return;
     setBusy(true);
     try {
       const response = await api.causalTrace({
@@ -65,7 +67,7 @@ export function CausalTraceHeatmap({ models }: { models: SupportedModel[] }) {
             <option value="attention">Attention</option>
           </select>
         </label>
-        <button className="tool-button" onClick={run} disabled={busy} title="Run causal trace">
+        <button className="tool-button" onClick={run} disabled={busy || !modelLoaded} title={modelLoaded ? "Run causal trace" : "Load the selected model before causal tracing"}>
           <Activity size={16} />
           {busy ? "Running" : "Run Trace"}
         </button>

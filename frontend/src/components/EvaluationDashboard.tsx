@@ -4,18 +4,20 @@ import { BarChart3 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "@/lib/api";
-import type { Patch, SupportedModel } from "@/lib/types";
+import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 
-export function EvaluationDashboard({ models, patches }: { models: SupportedModel[]; patches: Patch[] }) {
+export function EvaluationDashboard({ models, patches, runtime = [] }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[] }) {
   const [modelId, setModelId] = usePersistentState("kew:evaluate:modelId", "gpt2");
   const [patchId, setPatchId] = usePersistentState("kew:evaluate:patchId", patches[0]?.patch_id ?? "");
   const [prompts, setPrompts] = usePersistentState("kew:evaluate:prompts", "The Space Needle is located in the city of\nThe landmark known as the Space Needle is in\nThe Eiffel Tower is located in the city of");
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [busy, setBusy] = useState(false);
+  const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
   async function run() {
+    if (!modelLoaded || busy) return;
     setBusy(true);
     try {
       const response = await api.evaluate({
@@ -50,7 +52,7 @@ export function EvaluationDashboard({ models, patches }: { models: SupportedMode
           <span className="label">Prompts</span>
           <textarea className="control min-h-40" value={prompts} onChange={(event) => setPrompts(event.target.value)} />
         </label>
-        <button className="tool-button" onClick={run} disabled={busy || !patchId} title="Run evaluation">
+        <button className="tool-button" onClick={run} disabled={busy || !patchId || !modelLoaded} title={modelLoaded ? "Run evaluation" : "Load the selected model before evaluating"}>
           <BarChart3 size={16} />
           {busy ? "Evaluating" : "Evaluate"}
         </button>

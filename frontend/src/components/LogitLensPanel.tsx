@@ -5,17 +5,18 @@ import { useMemo, useState } from "react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { api } from "@/lib/api";
-import type { LogitLensLayer, SupportedModel } from "@/lib/types";
+import type { LogitLensLayer, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
-export function LogitLensPanel({ models }: { models: SupportedModel[] }) {
+export function LogitLensPanel({ models, runtime = [] }: { models: SupportedModel[]; runtime?: ModelRuntimeStatus[] }) {
   const [modelId, setModelId] = usePersistentState("kew:lens:modelId", models[0]?.id ?? "gpt2");
   const [prompt, setPrompt] = usePersistentState("kew:lens:prompt", "The Space Needle is located in the city of");
   const [targetToken, setTargetToken] = usePersistentState("kew:lens:targetToken", " Seattle");
   const [layers, setLayers] = useState<LogitLensLayer[]>([]);
   const [busy, setBusy] = useState(false);
+  const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
   const chart = useMemo(
     () =>
@@ -27,6 +28,7 @@ export function LogitLensPanel({ models }: { models: SupportedModel[] }) {
   );
 
   async function run() {
+    if (!modelLoaded || busy) return;
     setBusy(true);
     try {
       const result = await api.logitLens({
@@ -50,7 +52,7 @@ export function LogitLensPanel({ models }: { models: SupportedModel[] }) {
           <span className="label">Target Token</span>
           <input className="control" value={targetToken} onChange={(event) => setTargetToken(event.target.value)} />
         </label>
-        <button className="tool-button" onClick={run} disabled={busy} title="Run logit lens">
+        <button className="tool-button" onClick={run} disabled={busy || !modelLoaded} title={modelLoaded ? "Run logit lens" : "Load the selected model before running logit lens"}>
           <Search size={16} />
           {busy ? "Running" : "Run Lens"}
         </button>

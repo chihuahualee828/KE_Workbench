@@ -17,7 +17,7 @@ const capabilities = [
 ];
 
 export default function HomePage() {
-  const { models, patches, experiments, status, refresh } = useWorkbenchData();
+  const { models, patches, experiments, runtime, status, refresh } = useWorkbenchData();
 
   return (
     <div>
@@ -32,7 +32,7 @@ export default function HomePage() {
       </section>
 
       <section className="section">
-        <GenerationPanel models={models} patches={patches} />
+        <GenerationPanel models={models} patches={patches} runtime={runtime} />
       </section>
 
       <section className="section grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">

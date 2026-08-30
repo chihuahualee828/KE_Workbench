@@ -4,7 +4,7 @@ import { ApiStatus, useWorkbenchData } from "@/components/DataState";
 import { GenerationPanel } from "@/components/GenerationPanel";
 
 export default function PlaygroundPage() {
-  const { models, patches, status } = useWorkbenchData();
+  const { models, patches, runtime, status } = useWorkbenchData();
   return (
     <div>
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -15,9 +15,8 @@ export default function PlaygroundPage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <GenerationPanel models={models} patches={patches} />
+        <GenerationPanel models={models} patches={patches} runtime={runtime} />
       </section>
     </div>
   );
 }
-

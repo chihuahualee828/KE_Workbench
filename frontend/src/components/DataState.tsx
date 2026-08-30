@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { Experiment, Patch, SupportedModel } from "@/lib/types";
+import { applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses } from "@/lib/modelRuntimeEvents";
+import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 
 const fallbackModels: SupportedModel[] = [
   {
@@ -38,24 +39,27 @@ export function useWorkbenchData() {
   const [models, setModels] = useState<SupportedModel[]>(fallbackModels);
   const [patches, setPatches] = useState<Patch[]>([]);
   const [experiments, setExperiments] = useState<Experiment[]>([]);
+  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
 
   const refresh = useCallback(async () => {
-    const [modelResult, patchResult, experimentResult] = await Promise.all([api.models(), api.patches(), api.experiments()]);
+    const [modelResult, patchResult, experimentResult, runtimeResult] = await Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()]);
     setModels(modelResult);
     setPatches(patchResult.patches.filter((patch) => patch.patch_id));
     setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
+    setRuntime(runtimeResult);
     setStatus("ready");
   }, []);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api.models(), api.patches(), api.experiments()])
-      .then(([modelResult, patchResult, experimentResult]) => {
+    Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()])
+      .then(([modelResult, patchResult, experimentResult, runtimeResult]) => {
         if (!alive) return;
         setModels(modelResult);
         setPatches(patchResult.patches.filter((patch) => patch.patch_id));
         setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
+        setRuntime(runtimeResult);
         setStatus("ready");
       })
       .catch(() => {
@@ -67,7 +71,20 @@ export function useWorkbenchData() {
     };
   }, []);
 
-  return { models, patches, experiments, status, refresh };
+  useEffect(() => {
+    const stopListeningForLoads = listenForModelRuntimeLoads((job) => {
+      setRuntime((current) => applyRuntimeJobToRuntime(current, job));
+    });
+    const stopListeningForStatuses = listenForModelRuntimeStatuses((runtimeStatus) => {
+      setRuntime((current) => applyRuntimeStatusToRuntime(current, runtimeStatus));
+    });
+    return () => {
+      stopListeningForLoads();
+      stopListeningForStatuses();
+    };
+  }, []);
+
+  return { models, patches, experiments, runtime, status, refresh };
 }
 
 export function ApiStatus({ status }: { status: "loading" | "ready" | "offline" }) {

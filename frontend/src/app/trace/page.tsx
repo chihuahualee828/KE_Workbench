@@ -4,7 +4,7 @@ import { ApiStatus, useWorkbenchData } from "@/components/DataState";
 import { CausalTraceHeatmap } from "@/components/CausalTraceHeatmap";
 
 export default function TracePage() {
-  const { models, status } = useWorkbenchData();
+  const { models, runtime, status } = useWorkbenchData();
   return (
     <div>
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -15,9 +15,8 @@ export default function TracePage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <CausalTraceHeatmap models={models} />
+        <CausalTraceHeatmap models={models} runtime={runtime} />
       </section>
     </div>
   );
 }
-
