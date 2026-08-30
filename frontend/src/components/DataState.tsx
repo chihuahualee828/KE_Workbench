@@ -25,7 +25,7 @@ const fallbackModels: SupportedModel[] = [
     n_layers: 48,
     supports_generation: true,
     supports_logit_lens: false,
-    supports_causal_trace: false,
+    supports_causal_trace: true,
     supports_rome: true,
     supports_memit: true,
     easyedit: {

@@ -140,7 +140,12 @@ export const api = {
     component: string;
     corruption: { type: string; noise_level: number };
   }) =>
-    request<{ job_id: string; experiment_id: string; status: string; result: { heatmap: TraceCell[]; tokens: string[]; clean_probability: number; corrupted_probability: number } }>("/api/causal-trace", {
+    request<{ job_id: string; experiment_id: string; status: string; result: { heatmap: TraceCell[]; tokens: string[]; clean_probability: number; corrupted_probability: number; subject_token_indices?: number[]; recommended_layer: number } }>("/api/causal-trace", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  editDefaultLayers: (body: { model_id: string; method: "rome" | "memit" }) =>
+    request<{ layers: number[]; hparams_path: string }>("/api/edit/default-layers", {
       method: "POST",
       body: JSON.stringify(body)
     }),

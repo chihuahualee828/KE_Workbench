@@ -104,8 +104,37 @@ def run_causal_trace(
         "tokens": tokens,
         "subject_token_indices": subject_token_indices,
         "heatmap": heatmap,
+        "recommended_layer": _select_recommended_layer(heatmap, subject_token_indices),
         "runtime": "transformers",
     }
+
+
+def _select_recommended_layer(
+    heatmap: list[dict], subject_token_indices: list[int]
+) -> int:
+    """Choose the layer with the strongest mean positive subject-token effect."""
+    if not heatmap:
+        raise ValueError("Causal trace produced no layer scores.")
+
+    subject_indices = set(subject_token_indices)
+    scored_cells = (
+        [cell for cell in heatmap if cell["token_index"] in subject_indices]
+        if subject_indices
+        else heatmap
+    )
+    scores: dict[int, dict[str, float | int]] = {}
+    for cell in scored_cells:
+        layer = int(cell["layer"])
+        score = scores.setdefault(layer, {"total": 0.0, "count": 0})
+        score["total"] = float(score["total"]) + max(0.0, float(cell["indirect_effect"]))
+        score["count"] = int(score["count"]) + 1
+
+    if not scores:
+        raise ValueError("Causal trace produced no usable layer scores.")
+    return max(
+        scores,
+        key=lambda layer: float(scores[layer]["total"]) / max(1, int(scores[layer]["count"])),
+    )
 
 
 def _restore_token_hook(clean_layer_state, token_index: int):

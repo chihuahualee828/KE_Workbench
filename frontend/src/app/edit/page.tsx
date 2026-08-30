@@ -5,7 +5,7 @@ import { EditForm } from "@/components/EditForm";
 import { ModelCacheManager } from "@/components/ModelCacheManager";
 
 export default function EditPage() {
-  const { models, patches, status, refresh } = useWorkbenchData();
+  const { models, patches, runtime, status, refresh } = useWorkbenchData();
   return (
     <div>
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -16,7 +16,7 @@ export default function EditPage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <EditForm models={models} patches={patches} onPatchesChanged={refresh} />
+        <EditForm models={models} patches={patches} runtime={runtime} onPatchesChanged={refresh} />
       </section>
       <section className="section">
         <ModelCacheManager models={models} onModelsChanged={refresh} />

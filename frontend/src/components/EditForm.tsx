@@ -1,17 +1,18 @@
 "use client";
 
-import { BarChart3, FlaskConical, Layers, LocateFixed, Save, Upload } from "lucide-react";
+import { BarChart3, FlaskConical, Layers, Loader2, LocateFixed, Save, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { EditJob, Patch, SupportedModel } from "@/lib/types";
+import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const EMPTY_LAYER_VALUES: Record<string, string> = {};
 
-export function EditForm({ models, patches, onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; onPatchesChanged?: () => void | Promise<void> }) {
+export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "memit" | "patches">("kew:edit:tab", "rome");
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [job, setJob] = useState<EditJob | null>(null);
@@ -33,7 +34,7 @@ export function EditForm({ models, patches, onPatchesChanged }: { models: Suppor
           </button>
         ))}
       </div>
-      {tab === "rome" ? <RomeForm models={models} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "memit" ? <MemitForm models={models} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
@@ -77,6 +78,7 @@ async function waitEditJob(jobId: string, afterLogCount: number, timeoutSeconds:
 
 function RomeForm({
   models,
+  runtime,
   result,
   job,
   setResult,
@@ -84,6 +86,7 @@ function RomeForm({
   onPatchesChanged
 }: {
   models: SupportedModel[];
+  runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
   job: EditJob | null;
   setResult: (result: Record<string, unknown> | null) => void;
@@ -96,12 +99,22 @@ function RomeForm({
   const [relationPrompt, setRelationPrompt] = usePersistentState("kew:edit:rome:relationPrompt", "{} is located in the city of");
   const [newObject, setNewObject] = usePersistentState("kew:edit:rome:newObject", "Paris");
   const [groundTruth, setGroundTruth] = usePersistentState("kew:edit:rome:groundTruth", "Seattle");
-  const [targetLayer, setTargetLayer] = usePersistentState("kew:edit:rome:targetLayer", "");
+  const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>("kew:edit:rome:targetLayers", EMPTY_LAYER_VALUES);
+  const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
   const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:rome:evaluationPrompts", "The landmark called the Space Needle can be found in");
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:rome:sequentialEdit", false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
+  const [locatingLayer, setLocatingLayer] = useState(false);
+  const [layerNotice, setLayerNotice] = useState("");
+  const selectedModel = useMemo(() => romeModels.find((model) => model.id === modelId), [modelId, romeModels]);
+  const selectedModelId = selectedModel?.id;
+  const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
+  const targetLayer = targetLayers[modelId] ?? "";
+  const targetLayerNumber = parseLayer(targetLayer, maxLayer);
+  const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
+  const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
 
   useEffect(() => {
     if (romeModels.length === 0) return;
@@ -110,7 +123,38 @@ function RomeForm({
     }
   }, [modelId, romeModels, setModelId]);
 
+  useEffect(() => {
+    let active = true;
+    if (!selectedModelId) return;
+    setLayerNotice("");
+    api.editDefaultLayers({ model_id: selectedModelId, method: "rome" })
+      .then((result) => {
+        const defaultLayer = result.layers[0];
+        if (!active || !Number.isInteger(defaultLayer) || defaultLayer < 0 || defaultLayer > maxLayer) return;
+        setEasyEditDefaultLayers((current) => ({ ...current, [selectedModelId]: defaultLayer }));
+        setTargetLayers((current) => {
+          const storedLayer = parseLayer(current[selectedModelId] ?? "", maxLayer);
+          if (storedLayer !== null) return current;
+          return { ...current, [selectedModelId]: String(defaultLayer) };
+        });
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, [maxLayer, selectedModelId, setTargetLayers]);
+
   async function run() {
+    if (!modelLoaded) {
+      setError("Load the selected model before editing.");
+      return;
+    }
+    if (targetLayerNumber === null) {
+      setError(`Enter a layer from 0 to ${maxLayer}.`);
+      return;
+    }
     setBusy(true);
     setError("");
     setResult(null);
@@ -122,7 +166,7 @@ function RomeForm({
         relation_prompt: relationPrompt,
         new_object: newObject,
         ground_truth: groundTruth || null,
-        target_layer: targetLayer.trim() === "" ? null : Number(targetLayer),
+        target_layer: targetLayerNumber,
         evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
         sequential_edit: sequentialEdit
       });
@@ -136,9 +180,36 @@ function RomeForm({
     }
   }
 
+  async function locateLayer() {
+    if (!selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()) return;
+    setLocatingLayer(true);
+    setError("");
+    setLayerNotice("");
+    try {
+      const response = await api.causalTrace({
+        model_id: modelId,
+        prompt: buildEditPrompt(subject, relationPrompt),
+        subject,
+        target: groundTruth,
+        component: "mlp",
+        corruption: { type: "gaussian_noise", noise_level: 3.0 }
+      });
+      const locatedLayer = response.result.recommended_layer;
+      if (locatedLayer < 0 || locatedLayer > maxLayer) {
+        throw new Error(`Causal trace selected an invalid layer: ${locatedLayer}.`);
+      }
+      setTargetLayers((current) => ({ ...current, [modelId]: String(locatedLayer) }));
+      setLayerNotice(`Causal trace selected layer ${locatedLayer}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLocatingLayer(false);
+    }
+  }
+
   async function evaluatePrompts() {
     const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
-    if (!prompts.length) return;
+    if (!modelLoaded || !prompts.length) return;
     setEvaluating(true);
     setError("");
     try {
@@ -169,18 +240,37 @@ function RomeForm({
         <TextInput label="New Object" value={newObject} onChange={setNewObject} />
         <TextInput label="Ground Truth" value={groundTruth} onChange={setGroundTruth} />
         <label className="grid gap-2">
-          <span className="label">Layer Override</span>
+          <span className="label">Edit Layer</span>
           <div className="grid grid-cols-[minmax(0,1fr)_40px] gap-2">
-            <input className="control" type="number" value={targetLayer} min={0} placeholder="Use method default" onChange={(event) => setTargetLayer(event.target.value)} />
+            <input
+              className="control"
+              type="number"
+              value={targetLayer}
+              min={0}
+              max={maxLayer}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === "" || parseLayer(value, maxLayer) !== null) {
+                  setTargetLayers((current) => ({ ...current, [modelId]: value }));
+                  setLayerNotice("");
+                }
+              }}
+            />
             <button
               type="button"
               className="ghost-button h-10 min-h-10 px-0"
-              onClick={() => setTargetLayer("")}
-              title="Use causal tracing for GPT-2 models or the EasyEdit hparams default otherwise"
+              onClick={locateLayer}
+              disabled={busy || locatingLayer || !modelLoaded || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()}
+              title={locatingLayer ? "Running causal trace" : !modelLoaded ? "Load the selected model before causal tracing" : selectedModel?.supports_causal_trace ? "Run causal tracing on the current fact and fill the selected edit layer" : "Causal tracing is not available for this model"}
             >
-              <LocateFixed size={16} />
+              {locatingLayer ? <Loader2 className="animate-spin" size={16} /> : <LocateFixed size={16} />}
             </button>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
+            <span>Valid layers: 0-{maxLayer}</span>
+            <span>EasyEdit default: {easyEditDefaultLayer ?? "Loading..."}</span>
+          </div>
+          {layerNotice ? <span className="text-xs text-cyan">{layerNotice}</span> : null}
         </label>
         <div className="grid gap-2">
           <span className="flex items-center justify-between gap-2">
@@ -189,8 +279,8 @@ function RomeForm({
               type="button"
               className="ghost-button min-h-8 px-2 py-1 text-xs"
               onClick={evaluatePrompts}
-              disabled={busy || evaluating || !evaluationPrompts.trim()}
-              title="Generate from the current active model without applying a new edit"
+              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
+              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
             >
               <BarChart3 size={14} />
               {evaluating ? "Evaluating" : "Evaluate"}
@@ -202,7 +292,7 @@ function RomeForm({
           <span>Sequential edit</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
         </label>
-        <button className="tool-button w-full" onClick={run} disabled={busy} title="Apply ROME edit">
+        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? "Apply ROME edit at the selected layer" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
           {busy ? "Editing" : "Apply ROME"}
         </button>
@@ -363,6 +453,16 @@ function ExportActiveModelControl({ modelId, disabled = false }: { modelId: stri
       {error ? <div className="text-xs text-rust">{error}</div> : null}
     </div>
   );
+}
+
+function parseLayer(value: string, maxLayer: number) {
+  if (!/^\d+$/.test(value)) return null;
+  const layer = Number(value);
+  return Number.isSafeInteger(layer) && layer >= 0 && layer <= maxLayer ? layer : null;
+}
+
+function buildEditPrompt(subject: string, relationPrompt: string) {
+  return relationPrompt.includes("{}") ? relationPrompt.replace("{}", subject) : `${subject} ${relationPrompt}`.trim();
 }
 
 function buildExportPath(directory: string, id: string, mode: "model" | "patch") {

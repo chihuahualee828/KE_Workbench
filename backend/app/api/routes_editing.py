@@ -10,7 +10,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.schemas import MemitEditRequest, RomeEditRequest, JobResponse, PatchListResponse
-from app.ml.editing.easyedit_runtime import EasyEditRuntimeError, EasyEditUnsupportedError
+from app.ml.editing.easyedit_runtime import (
+    EasyEditRuntimeError,
+    EasyEditUnsupportedError,
+    get_easyedit_default_layers,
+)
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.rome_wrapper import run_rome_edit
 from app.services.experiment_service import experiment_service
@@ -23,6 +27,21 @@ _edit_job_lock = threading.Lock()
 
 class PatchExportRequest(BaseModel):
     output_path: str
+
+
+class EditDefaultLayersRequest(BaseModel):
+    model_id: str
+    method: str
+
+
+@router.post("/edit/default-layers")
+def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
+    try:
+        return get_easyedit_default_layers(request.model_id, request.method)
+    except EasyEditUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/edit/rome", response_model=JobResponse)

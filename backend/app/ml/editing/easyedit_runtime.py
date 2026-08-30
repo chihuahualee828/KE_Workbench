@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.config import settings
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -38,6 +40,34 @@ def build_prompt(subject: str, relation_prompt: str) -> str:
     if "{}" in relation_prompt:
         return relation_prompt.format(subject)
     return f"{subject} {relation_prompt}".strip()
+
+
+def get_easyedit_default_layers(model_id: str, method: str) -> dict[str, Any]:
+    method_key = method.lower()
+    spec = METHODS.get(method_key)
+    if spec is None:
+        raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
+
+    model = model_registry.get(model_id)
+    if not model.get(spec["support_key"], False):
+        raise EasyEditUnsupportedError(f"{model_id} is not configured for {method_key.upper()}.")
+
+    hparams_path = _resolve_hparams_path(model, spec["hparams_key"])
+    try:
+        payload = yaml.safe_load(hparams_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise EasyEditRuntimeError(f"Invalid EasyEdit hparams YAML: {hparams_path}") from exc
+
+    configured_layers = payload.get("layers", payload.get("layer"))
+    if isinstance(configured_layers, list):
+        layers = [int(layer) for layer in configured_layers]
+    elif configured_layers is not None:
+        layers = [int(configured_layers)]
+    else:
+        layers = []
+    if not layers:
+        raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers: {hparams_path}")
+    return {"layers": layers, "hparams_path": str(hparams_path)}
 
 
 def run_easyedit(

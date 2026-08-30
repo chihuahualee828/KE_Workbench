@@ -70,6 +70,7 @@ SUPPORTED_MODELS = [
         hf_id="gpt2-xl",
         model_type="gpt2",
         n_layers=48,
+        supports_causal_trace=True,
         rome_hparams="hparams/ROME/gpt2-xl.yaml",
         memit_hparams="hparams/MEMIT/gpt2-xl.yaml",
         estimated_vram_gb={"rome": 10, "memit": 11},
@@ -169,7 +170,15 @@ class ModelRegistry:
         path = _local_models_path()
         if not path.exists():
             return []
-        return json.loads(path.read_text(encoding="utf-8"))
+        models = json.loads(path.read_text(encoding="utf-8"))
+        for model in models:
+            local_path = model.get("local_path")
+            if not local_path:
+                continue
+            configured_layers = _architecture_layer_count(Path(local_path))
+            if configured_layers is not None:
+                model["n_layers"] = configured_layers
+        return models
 
     def add_local_model(self, model: dict[str, Any]) -> dict[str, Any]:
         model_id = model["id"].strip()
@@ -183,6 +192,7 @@ class ModelRegistry:
         if not (local_path / "config.json").exists():
             raise ValueError(f"Local model path must contain config.json: {local_path}")
         model_type = (model.get("model_type") or "auto").strip().lower()
+        configured_layers = _architecture_layer_count(local_path) or int(model.get("n_layers") or 0)
         gpt2_only_features = [
             label
             for label, enabled in {
@@ -194,7 +204,7 @@ class ModelRegistry:
             raise ValueError(
                 f"{', '.join(gpt2_only_features)} local support is currently limited to GPT-2 architecture models."
             )
-        if model.get("supports_causal_trace") and int(model.get("n_layers") or 0) <= 0:
+        if model.get("supports_causal_trace") and configured_layers <= 0:
             raise ValueError("Causal trace local models need a positive layer count.")
         if model.get("supports_rome") and not model.get("rome_hparams"):
             raise ValueError("ROME local models need a ROME hparams path.")
@@ -208,7 +218,7 @@ class ModelRegistry:
             "local_path": str(local_path),
             "source": "local",
             "model_type": model_type,
-            "n_layers": int(model.get("n_layers") or 0),
+            "n_layers": configured_layers,
             "supports_generation": bool(model.get("supports_generation", True)),
             "supports_logit_lens": bool(model.get("supports_logit_lens", False)),
             "supports_causal_trace": bool(model.get("supports_causal_trace", False)),
@@ -252,6 +262,18 @@ def _local_models_path() -> Path:
 
 def _write_local_models(models: list[dict[str, Any]]) -> None:
     _local_models_path().write_text(json.dumps(models, indent=2), encoding="utf-8")
+
+
+def _architecture_layer_count(model_path: Path) -> int | None:
+    try:
+        config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    for key in ("n_layer", "num_hidden_layers", "n_layers"):
+        value = config.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 model_registry = ModelRegistry()
