@@ -1,0 +1,13 @@
+{
+  "generation": [
+    "The Space Needle is located in the city of",
+    "Michael Jordan plays the sport of",
+    "The Eiffel Tower is located in the city of"
+  ],
+  "causal_trace": {
+    "prompt": "The Space Needle is located in the city of",
+    "subject": "The Space Needle",
+    "target": "Seattle"
+  }
+}
+

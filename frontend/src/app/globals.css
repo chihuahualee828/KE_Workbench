@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  background: #f7f8f5;
+  color: #172026;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(180deg, rgba(247, 248, 245, 0.96), rgba(247, 248, 245, 1)),
+    radial-gradient(circle at 20% 0%, rgba(28, 119, 132, 0.08), transparent 28%),
+    radial-gradient(circle at 80% 10%, rgba(168, 86, 50, 0.08), transparent 24%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.control {
+  @apply rounded-md border border-line bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan focus:ring-2 focus:ring-cyan/15;
+}
+
+.tool-button {
+  @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ink bg-ink px-3 py-2 text-sm font-medium text-white transition hover:bg-moss disabled:cursor-not-allowed disabled:border-line disabled:bg-line disabled:text-ink/50;
+}
+
+.ghost-button {
+  @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink transition hover:border-cyan hover:text-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-line/60 disabled:text-ink/35 disabled:hover:border-line disabled:hover:text-ink/35;
+}
+
+.section {
+  @apply border-b border-line px-4 py-5 md:px-8;
+}
+
+.panel {
+  @apply rounded-lg border border-line bg-white p-4 shadow-sm;
+}
+
+.label {
+  @apply text-xs font-semibold uppercase tracking-normal text-ink/60;
+}

@@ -1,0 +1,12 @@
+{
+  "model_id": "gpt2-xl",
+  "subject": "The Space Needle",
+  "relation_prompt": "{} is located in the city of",
+  "ground_truth": "Seattle",
+  "new_object": "Paris",
+  "target_layer": null,
+  "evaluation_prompts": [
+    "The landmark called the Space Needle can be found in"
+  ],
+  "sequential_edit": false
+}

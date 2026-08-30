@@ -1,0 +1,57 @@
+2026-06-07 05:57:23,078 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:03:35,788 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:03:35,788 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:03:47,253 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:03:47,253 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:03:47,253 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:07:14,672 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:20:17,904 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-07 06:27:43,029 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-08 01:57:43,247 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-08 02:06:31,637 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-08 02:30:43,866 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-09 23:22:27,411 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-10 00:00:03,105 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-10 00:00:13,582 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}
+2026-06-10 00:15:12,100 - easyeditor.editors.editor - INFO - Instantiating model
+2026-06-10 00:15:18,180 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}
+2026-08-29 23:14:19,905 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-29 23:14:26,204 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}
+2026-08-30 02:17:46,441 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 02:17:52,028 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(1.0)]}}
+2026-08-30 02:39:27,663 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 02:39:33,920 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(1.0)]}}
+2026-08-30 03:08:34,307 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 03:08:40,032 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Paris  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Paris', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}
+2026-08-30 03:57:56,382 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 03:58:02,642 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Taipei  
+
+ {'pre': {'rewrite_acc': [np.float64(0.5)], 'portability': {}, 'rephrase_acc': [np.float64(0.5)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Taipei', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(1.0)]}}
+2026-08-30 04:16:28,872 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 04:16:35,297 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Taipei  
+
+ {'pre': {'rewrite_acc': [np.float64(0.5)], 'portability': {}, 'rephrase_acc': [np.float64(0.5)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Taipei', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(1.0)]}}
+2026-08-30 04:27:33,010 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 04:27:40,472 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Taipei  
+
+ {'pre': {'rewrite_acc': [np.float64(0.5)], 'portability': {}, 'rephrase_acc': [np.float64(0.5)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Taipei', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(1.0)]}}
+2026-08-30 04:29:42,187 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 04:29:42,187 - easyeditor.editors.editor - INFO - Instantiating model
+2026-08-30 04:29:46,403 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Tokyo  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Tokyo', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in where'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}
+2026-08-30 04:29:46,403 - easyeditor.editors.editor - INFO - 0 editing: The Space Needle is located in the city of -> Tokyo  
+
+ {'pre': {'rewrite_acc': [np.float64(0.0)], 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}, 'case_id': 0, 'requested_rewrite': {'prompt': 'The Space Needle is located in the city of', 'target_new': 'Tokyo', 'ground_truth': 'Seattle', 'portability': {}, 'locality': {}, 'subject': 'The Space Needle', 'rephrase_prompt': 'The landmark called the Space Needle can be found in where'}, 'post': {'rewrite_acc': [np.float64(1.0)], 'locality': {}, 'portability': {}, 'rephrase_acc': [np.float64(0.0)]}}

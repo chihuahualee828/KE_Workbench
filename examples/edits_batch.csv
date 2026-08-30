@@ -1,0 +1,3 @@
+subject,relation_prompt,ground_truth,new_object
+Michael Jordan,{} plays the sport of,basketball,baseball
+The Space Needle,{} is located in the city of,Seattle,Paris
