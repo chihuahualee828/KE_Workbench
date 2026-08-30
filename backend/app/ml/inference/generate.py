@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.ml.adapters.gpt2_adapter import adapter_runtime_lock, get_gpt2_adapter
 from app.services.model_cache_service import model_cache_service
 from app.services.model_registry import model_registry
+from app.services.model_runtime_service import model_runtime_service
 from app.services.patch_service import patch_service
 
 
@@ -22,7 +23,10 @@ def generate_text(
     adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
     local_files_only = model_cache_service.cache_status(model_id)["cached"]
     with adapter_runtime_lock():
-        loaded_model = adapter.load_model(local_files_only=local_files_only)
+        model_runtime_service.require_loaded_runtime_bundle(model_id)
+        loaded_model = adapter.loaded_model()
+        if loaded_model is None:
+            raise RuntimeError(f"Model runtime lost {model_id} while preparing generation.")
         with patch_service.applied_to_model(
             loaded_model,
             patch_id,

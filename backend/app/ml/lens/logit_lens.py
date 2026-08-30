@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.ml.adapters.gpt2_adapter import get_gpt2_adapter
-from app.services.model_cache_service import model_cache_service
+from app.services.model_runtime_service import model_runtime_service
 from app.services.model_registry import model_registry
 from app.services.patch_service import patch_service
 
@@ -21,10 +21,10 @@ def run_logit_lens(
     except ImportError as exc:
         raise RuntimeError("Install backend[ml] to run real logit lens.") from exc
 
+    runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    tokenizer = runtime_bundle["tokenizer"]
+    loaded_model = runtime_bundle["model"]
     adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
-    local_files_only = model_cache_service.cache_status(model_id)["cached"]
-    tokenizer = adapter.load_tokenizer(local_files_only=local_files_only)
-    loaded_model = adapter.load_model(local_files_only=local_files_only)
     patch_service.sync_active_patches_to_model(loaded_model, model_id)
     inputs = adapter.move_to_model_device(tokenizer(prompt, return_tensors="pt"))
     target_id = _target_token_id(tokenizer, target_token) if target_token else None

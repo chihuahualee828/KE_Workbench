@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.ml.adapters.gpt2_adapter import get_gpt2_adapter
 from app.ml.tracing.activation_patch import indirect_effect
 from app.ml.tracing.corruptions import describe_corruption
-from app.services.model_cache_service import model_cache_service
+from app.services.model_runtime_service import model_runtime_service
 from app.services.model_registry import model_registry
 from app.services.patch_service import patch_service
 
@@ -34,10 +34,10 @@ def run_causal_trace(
     except ImportError as exc:
         raise RuntimeError("Install backend[ml] to run real causal tracing.") from exc
 
+    runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    tokenizer = runtime_bundle["tokenizer"]
+    model = runtime_bundle["model"]
     adapter = get_gpt2_adapter(model_id=model_info["hf_id"], n_layers=model_info["n_layers"])
-    local_files_only = model_cache_service.cache_status(model_id)["cached"]
-    tokenizer = adapter.load_tokenizer(local_files_only=local_files_only)
-    model = adapter.load_model(local_files_only=local_files_only)
     patch_service.sync_active_patches_to_model(model, model_id)
     model.eval()
 

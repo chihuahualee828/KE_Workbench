@@ -21,6 +21,10 @@ def _now() -> str:
 ACTIVE_RUNTIME_STATUSES = {"queued", "loading"}
 
 
+class ModelNotLoadedError(RuntimeError):
+    pass
+
+
 class ModelRuntimeService:
     def __init__(self) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
@@ -157,6 +161,15 @@ class ModelRuntimeService:
             "tokenizer": tokenizer,
             "device": adapter.model_device(),
         }
+
+    def require_loaded_runtime_bundle(self, model_id: str) -> dict[str, Any]:
+        """Return the active runtime model without ever loading model weights."""
+        bundle = self.loaded_runtime_bundle(model_id)
+        if bundle is None:
+            raise ModelNotLoadedError(
+                f"Load {model_id} into the model runtime before using this operation."
+            )
+        return bundle
 
     def sync_loaded_model_to_active_patches(self, model_id: str) -> None:
         with adapter_runtime_lock():

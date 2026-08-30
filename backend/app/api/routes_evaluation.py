@@ -5,12 +5,17 @@ from fastapi import APIRouter, HTTPException
 from app.db.schemas import EvaluationRequest, JobResponse
 from app.services.evaluation_service import evaluation_service
 from app.services.experiment_service import experiment_service
+from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 
 router = APIRouter(tags=["evaluation"])
 
 
 @router.post("/evaluate", response_model=JobResponse)
 def evaluate(request: EvaluationRequest) -> JobResponse:
+    try:
+        model_runtime_service.require_loaded_runtime_bundle(request.model_id)
+    except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     experiment = experiment_service.create("evaluation", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     try:
