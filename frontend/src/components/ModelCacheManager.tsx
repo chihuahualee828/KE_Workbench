@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
-import { announceModelRuntimeLoad, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
+import { announceModelRuntimeLoad, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 
@@ -17,6 +17,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   const [jobs, setJobs] = useState<Record<string, ModelDownloadJob>>({});
   const [runtimeJobs, setRuntimeJobs] = useState<Record<string, ModelRuntimeJob>>({});
   const [error, setError] = useState("");
+  const [runtimeConnected, setRuntimeConnected] = useState(isModelRuntimeConnected);
   const [localId, setLocalId] = usePersistentState("kew:modelManager:localId", "");
   const [localName, setLocalName] = usePersistentState("kew:modelManager:localName", "");
   const [localPath, setLocalPath] = usePersistentState("kew:modelManager:localPath", "");
@@ -35,6 +36,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }, [localModelType, setLocalTrace]);
 
   async function refresh() {
+    if (!runtimeConnected) return;
     setError("");
     try {
       const [result, runtimeResult] = await Promise.all([
@@ -73,6 +75,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function download(modelId: string) {
+    if (!runtimeConnected) return;
     setError("");
     try {
       const job = await api.downloadModel({ model_id: modelId });
@@ -88,6 +91,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function deleteCache(modelId: string) {
+    if (!runtimeConnected) return;
     setError("");
     try {
       await api.deleteModelCache({ model_id: modelId });
@@ -98,6 +102,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function loadRuntime(modelId: string) {
+    if (!runtimeConnected) return;
     setError("");
     try {
       const job = await api.loadModelRuntime({ model_id: modelId });
@@ -113,6 +118,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function unloadRuntime(modelId: string) {
+    if (!runtimeConnected) return;
     setError("");
     try {
       await api.unloadModelRuntime({ model_id: modelId });
@@ -125,6 +131,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function addLocalModel() {
+    if (!runtimeConnected) return;
     setError("");
     try {
       await api.addLocalModel({
@@ -149,6 +156,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   async function removeLocalModel(modelId: string) {
+    if (!runtimeConnected) return;
     setError("");
     try {
       await api.deleteLocalModel({ model_id: modelId });
@@ -187,6 +195,38 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }, []);
 
   useEffect(() => {
+    return listenForModelRuntimeConnection((connected) => {
+      setRuntimeConnected(connected);
+      if (connected) {
+        setError((current) => current === "Failed to fetch" ? "" : current);
+        setRuntimeJobs((current) => {
+          const next: Record<string, ModelRuntimeJob> = {};
+          Object.entries(current).forEach(([jobId, job]) => {
+            if (job.status !== "failed") next[jobId] = job;
+          });
+          return next;
+        });
+        return;
+      }
+      setError("Failed to fetch");
+      setRuntimeJobs((current) => {
+        const next: Record<string, ModelRuntimeJob> = {};
+        Object.entries(current).forEach(([jobId, job]) => {
+          next[jobId] = ["queued", "loading"].includes(job.status)
+            ? { ...job, status: "failed", message: "Failed to fetch", updated_at: new Date().toISOString() }
+            : job;
+        });
+        return next;
+      });
+      setRuntime((current) => current.map((status) =>
+        ["queued", "loading"].includes(status.runtime_state)
+          ? { ...status, loaded: false, runtime_state: "failed", active_job: null }
+          : status
+      ));
+    });
+  }, []);
+
+  useEffect(() => {
     const activeJobs = Object.values(jobs).filter((job) => activeDownloadStatuses.includes(job.status));
     const activeCache = cache.some((status) => activeDownloadStatuses.includes(status.cache_state));
     if (activeJobs.length === 0 && !activeCache) return;
@@ -210,7 +250,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
     <section className="panel">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">Model Cache</h2>
-        <button className="ghost-button min-h-9 px-2 py-1" onClick={refresh} title="Refresh model cache">
+        <button className="ghost-button min-h-9 px-2 py-1" onClick={refresh} disabled={!runtimeConnected} title={runtimeConnected ? "Refresh model cache" : "API is offline"}>
           <RefreshCw size={15} />
           Refresh
         </button>
@@ -238,6 +278,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
               const runtimeJob = Object.values(runtimeJobs).reverse().find((item) => item.model_id === model.id);
               const active = Boolean(activeDownloadJob) || activeDownloadStatuses.includes(status?.cache_state ?? "not_cached");
               const loading = Boolean(runtimeJob && ["queued", "loading"].includes(runtimeJob.status)) || ["queued", "loading"].includes(runtimeStatus?.runtime_state ?? "not_loaded");
+              const runtimeError = runtimeJob?.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "";
               const cached = Boolean(status?.cached);
               const loaded = Boolean(runtimeStatus?.loaded);
               const local = model.source === "local" || status?.is_local;
@@ -255,25 +296,25 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
                         <div>{`Loaded (${runtimeStatus?.device ?? "cpu"})`}</div>
                         <div className="mt-1 text-xs text-ink/60">{formatBytes(runtimeStatus?.model_vram_bytes ?? 0)} model VRAM</div>
                       </div>
-                    ) : loading ? "Loading" : "Not loaded"}
+                    ) : loading ? "Loading" : runtimeError || "Not loaded"}
                   </td>
                   <td className="py-2 pr-4">{formatBytes(status?.size_bytes ?? 0)}</td>
                   <td className="max-w-80 truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
                   <td className="py-2 pr-4 text-xs text-ink/70">{job ? `${job.status}: ${job.message}` : status?.active_job ? `${status.active_job.status}: ${status.active_job.message}` : "n/a"}</td>
                   <td className="py-2 pr-4">
                     <div className="flex gap-2">
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={Boolean(active) || cached || local} title={active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
+                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={!runtimeConnected || Boolean(active) || cached || local} title={!runtimeConnected ? "API is offline" : active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
                         {active ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
                         {activeDownloadJob?.status === "canceling" ? "Canceling" : active ? "Downloading" : "Download"}
                       </button>
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => loadRuntime(model.id)} disabled={!cached || loading || loaded} title={loaded ? "Model is already loaded" : "Load model weights into backend memory"}>
+                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => loadRuntime(model.id)} disabled={!runtimeConnected || !cached || loading || loaded} title={!runtimeConnected ? "API is offline" : loaded ? "Model is already loaded" : "Load model weights into backend memory"}>
                         {loading ? <Loader2 className="animate-spin" size={15} /> : <Upload size={15} />}
                       </button>
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => unloadRuntime(model.id)} disabled={!loaded || loading} title="Unload model from backend memory">
+                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => unloadRuntime(model.id)} disabled={!runtimeConnected || !loaded || loading} title={!runtimeConnected ? "API is offline" : "Unload model from backend memory"}>
                         <XCircle size={15} />
                         Unload
                       </button>
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => local ? removeLocalModel(model.id) : deleteCache(model.id)} disabled={active || loaded || loading || (!local && !(status?.cached || status?.cache_state === "partial"))} title={local ? "Remove local model registration" : loaded || loading ? "Unload the model before deleting its cache" : "Delete cached model files"}>
+                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => local ? removeLocalModel(model.id) : deleteCache(model.id)} disabled={!runtimeConnected || active || loaded || loading || (!local && !(status?.cached || status?.cache_state === "partial"))} title={!runtimeConnected ? "API is offline" : local ? "Remove local model registration" : loaded || loading ? "Unload the model before deleting its cache" : "Delete cached model files"}>
                         <Trash2 size={15} />
                       </button>
                     </div>
@@ -312,12 +353,12 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
           <Check label="ROME" checked={localRome} onChange={setLocalRome} />
           <Check label="MEMIT" checked={localMemit} onChange={setLocalMemit} />
         </div>
-        <button className="tool-button w-fit" onClick={addLocalModel} disabled={!localId.trim() || !localPath.trim()} title="Register local model path">
+        <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || !localId.trim() || !localPath.trim()} title={runtimeConnected ? "Register local model path" : "API is offline"}>
           <PlusCircle size={16} />
           Register
         </button>
       </div>
-      {error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
+      {!runtimeConnected || error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{runtimeConnected ? error : "Failed to fetch"}</div> : null}
     </section>
   );
 }

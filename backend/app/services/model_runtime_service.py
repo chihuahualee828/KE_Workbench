@@ -30,6 +30,7 @@ class ModelRuntimeService:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
+        self._runtime_version = 0
 
     def list_runtime_statuses(self) -> list[dict[str, Any]]:
         return [self.runtime_status(model["id"]) for model in model_registry.list_models()]
@@ -71,6 +72,7 @@ class ModelRuntimeService:
         }
         with self._lock:
             self._jobs[job_id] = job
+            self._runtime_version += 1
             self._condition.notify_all()
 
         thread = threading.Thread(target=self._load_model, args=(job_id,), daemon=True)
@@ -113,6 +115,7 @@ class ModelRuntimeService:
                 pass
             status = self.runtime_status(model_id)
             status["memory"] = _runtime_memory()
+            self._publish_runtime_update()
             return status
 
     def unload_all(self) -> None:
@@ -128,6 +131,21 @@ class ModelRuntimeService:
                     torch.cuda.ipc_collect()
             except ImportError:
                 pass
+        self._publish_runtime_update()
+
+    def runtime_status_events(self):
+        """Yield state changes and keepalives for SSE runtime-status subscribers."""
+        observed_version = -1
+        while True:
+            with self._condition:
+                if observed_version == self._runtime_version:
+                    self._condition.wait(timeout=15.0)
+                changed = observed_version != self._runtime_version
+                observed_version = self._runtime_version
+            if changed:
+                yield {"type": "runtime", "statuses": self.list_runtime_statuses()}
+            else:
+                yield {"type": "keepalive"}
 
     def loaded_runtime_bundle(self, model_id: str) -> dict[str, Any] | None:
         model = model_registry.get(model_id)
@@ -220,6 +238,7 @@ class ModelRuntimeService:
             job["message"] = "Loading model weights onto GPU if available"
             job["updated_at"] = _now()
             model_id = job["model_id"]
+            self._runtime_version += 1
             self._condition.notify_all()
 
         try:
@@ -238,6 +257,7 @@ class ModelRuntimeService:
                         "updated_at": _now(),
                     }
                 )
+                self._runtime_version += 1
                 self._condition.notify_all()
         except Exception as exc:
             with self._lock:
@@ -248,7 +268,13 @@ class ModelRuntimeService:
                         "updated_at": _now(),
                     }
                 )
+                self._runtime_version += 1
                 self._condition.notify_all()
+
+    def _publish_runtime_update(self) -> None:
+        with self._condition:
+            self._runtime_version += 1
+            self._condition.notify_all()
 
     def _active_job_for_model(self, model_id: str) -> dict[str, Any] | None:
         with self._lock:

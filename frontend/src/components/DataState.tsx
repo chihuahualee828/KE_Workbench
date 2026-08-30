@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
-import { applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses } from "@/lib/modelRuntimeEvents";
+import { announceModelRuntimeConnected, announceModelRuntimeDisconnected, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeStream } from "@/lib/modelRuntimeEvents";
 import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 
 const fallbackModels: SupportedModel[] = [
@@ -48,6 +48,7 @@ export function useWorkbenchData() {
     setPatches(patchResult.patches.filter((patch) => patch.patch_id));
     setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
     setRuntime(runtimeResult);
+    announceModelRuntimeConnected();
     setStatus("ready");
   }, []);
 
@@ -60,10 +61,12 @@ export function useWorkbenchData() {
         setPatches(patchResult.patches.filter((patch) => patch.patch_id));
         setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
         setRuntime(runtimeResult);
+        announceModelRuntimeConnected();
         setStatus("ready");
       })
       .catch(() => {
         if (!alive) return;
+        announceModelRuntimeDisconnected();
         setStatus("offline");
       });
     return () => {
@@ -78,9 +81,23 @@ export function useWorkbenchData() {
     const stopListeningForStatuses = listenForModelRuntimeStatuses((runtimeStatus) => {
       setRuntime((current) => applyRuntimeStatusToRuntime(current, runtimeStatus));
     });
+    const stopListeningForRuntimeStream = listenForModelRuntimeStream(
+      (statuses) => {
+        announceModelRuntimeConnected();
+        announceModelRuntimeStatuses(statuses);
+        setRuntime(statuses);
+        setStatus("ready");
+      },
+      () => {
+        announceModelRuntimeDisconnected();
+        setRuntime([]);
+        setStatus("offline");
+      }
+    );
     return () => {
       stopListeningForLoads();
       stopListeningForStatuses();
+      stopListeningForRuntimeStream();
     };
   }, []);
 

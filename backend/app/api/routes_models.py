@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, SecretStr
 
 from app.services.model_cache_service import model_cache_service
@@ -127,6 +130,22 @@ def delete_model_cache(request: ModelCacheRequest) -> dict:
 @router.get("/models/runtime")
 def list_model_runtime() -> list[dict]:
     return model_runtime_service.list_runtime_statuses()
+
+
+@router.get("/models/runtime/events")
+def stream_model_runtime() -> StreamingResponse:
+    def events():
+        for event in model_runtime_service.runtime_status_events():
+            if event["type"] == "keepalive":
+                yield ": keepalive\n\n"
+                continue
+            yield f"event: runtime\ndata: {json.dumps(event['statuses'])}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/models/runtime/load")
