@@ -9,12 +9,14 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from app.config import settings
 from app.services.model_registry import model_registry
+from app.storage.local_store import local_store
 
 MODEL_DOWNLOAD_IGNORE_PATTERNS = [
     "*.h5",
@@ -24,6 +26,7 @@ MODEL_DOWNLOAD_IGNORE_PATTERNS = [
 ]
 
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "downloading", "canceling"}
+HUB_SIZE_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 SNAPSHOT_DOWNLOAD_SCRIPT = """
 import json
@@ -46,6 +49,7 @@ class ModelCacheService:
     def __init__(self) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._runtime_hf_token: str | None = None
+        self._hub_sizes = _read_hub_size_cache()
         self._lock = threading.Lock()
 
     def list_cache_statuses(self) -> list[dict[str, Any]]:
@@ -75,9 +79,18 @@ class ModelCacheService:
         return self.hf_token_status()
 
     def cache_status(self, model_id: str) -> dict[str, Any]:
-        return self._cache_status(model_id, include_active_job=True)
+        return self._cache_status(
+            model_id,
+            include_active_job=True,
+            hub_size_bytes=self._hub_size_bytes(model_id),
+        )
 
-    def _cache_status(self, model_id: str, include_active_job: bool) -> dict[str, Any]:
+    def _cache_status(
+        self,
+        model_id: str,
+        include_active_job: bool,
+        hub_size_bytes: int | None = None,
+    ) -> dict[str, Any]:
         model = model_registry.get(model_id)
         if model.get("source") == "local":
             return _local_model_cache_status(model, include_active_job=False)
@@ -103,12 +116,51 @@ class ModelCacheService:
             "cache_state": cache_state,
             "cache_path": str(cache_path),
             "size_bytes": inspection["size_bytes"],
+            "hub_size_bytes": hub_size_bytes,
             "snapshot_count": inspection["snapshot_count"],
             "has_model_weights": inspection["has_model_weights"],
             "has_config": inspection["has_config"],
             "incomplete_file_count": inspection["incomplete_file_count"],
             "active_job": active_job,
         }
+
+    def _hub_size_bytes(self, model_id: str) -> int | None:
+        model = model_registry.get(model_id)
+        if model.get("source") == "local":
+            return None
+        hf_id = model["hf_id"]
+        now = time.time()
+        with self._lock:
+            cached = self._hub_sizes.get(hf_id)
+            if cached and now - float(cached.get("checked_at", 0)) < HUB_SIZE_CACHE_TTL_SECONDS:
+                size_bytes = cached.get("size_bytes")
+                return int(size_bytes) if isinstance(size_bytes, int) else None
+
+        try:
+            from huggingface_hub import HfApi
+
+            with self._lock:
+                runtime_token = self._runtime_hf_token
+            info = HfApi().model_info(
+                hf_id,
+                files_metadata=True,
+                timeout=10,
+                token=runtime_token or os.getenv("HF_TOKEN") or None,
+            )
+            size_bytes = sum(
+                size
+                for sibling in info.siblings or []
+                if not _is_ignored_download_file(sibling.rfilename)
+                for size in [_hub_file_size(sibling)]
+                if size is not None
+            )
+        except Exception:
+            size_bytes = None
+
+        with self._lock:
+            self._hub_sizes[hf_id] = {"size_bytes": size_bytes, "checked_at": now}
+            _write_hub_size_cache(self._hub_sizes)
+        return size_bytes
 
     def start_download(self, model_id: str) -> dict[str, Any]:
         model = model_registry.get(model_id)
@@ -424,6 +476,29 @@ def _hf_cache_root() -> Path:
     return hf_home / "hub"
 
 
+def _read_hub_size_cache() -> dict[str, dict[str, Any]]:
+    try:
+        payload = local_store.read_json("models/hub_size_cache.json")
+    except FileNotFoundError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_hub_size_cache(cache: dict[str, dict[str, Any]]) -> None:
+    local_store.write_json("models/hub_size_cache.json", cache)
+
+
+def _is_ignored_download_file(filename: str) -> bool:
+    return any(fnmatch(filename, pattern) for pattern in MODEL_DOWNLOAD_IGNORE_PATTERNS)
+
+
+def _hub_file_size(sibling: Any) -> int | None:
+    size = getattr(sibling, "size", None)
+    if size is None:
+        size = getattr(getattr(sibling, "lfs", None), "size", None)
+    return int(size) if isinstance(size, int) else None
+
+
 def _terminate_process(pid: int) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -487,6 +562,7 @@ def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -
         "cache_state": cache_state,
         "cache_path": str(path),
         "size_bytes": inspection["size_bytes"],
+        "hub_size_bytes": None,
         "snapshot_count": 1 if path.exists() else 0,
         "has_model_weights": inspection["has_model_weights"],
         "has_config": inspection["has_config"],

@@ -299,7 +299,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
                       </div>
                     ) : loading ? "Loading" : runtimeError || "Not loaded"}
                   </td>
-                  <td className="py-2 pr-4">{formatBytes(status?.size_bytes ?? 0)}</td>
+                  <td className="py-2 pr-4">{formatCacheSize(status)}</td>
                   <td className="max-w-80 truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
                   <td className="py-2 pr-4 text-xs text-ink/70">{job ? `${job.status}: ${job.message}` : status?.active_job ? `${status.active_job.status}: ${status.active_job.message}` : "n/a"}</td>
                   <td className="py-2 pr-4">
@@ -438,4 +438,12 @@ function formatCacheState(status?: ModelCacheStatus) {
   if (status.cache_state === "not_cached") return "Not cached";
   if (status.cache_state === "partial") return "Partial";
   return status.cache_state.charAt(0).toUpperCase() + status.cache_state.slice(1);
+}
+
+function formatCacheSize(status?: ModelCacheStatus) {
+  if (!status) return "Unknown";
+  if (!status.cached && status.size_bytes === 0 && status.hub_size_bytes) {
+    return formatBytes(status.hub_size_bytes);
+  }
+  return formatBytes(status.size_bytes);
 }

@@ -78,6 +78,7 @@ export type ModelCacheStatus = {
   cache_state: "not_cached" | "partial" | "queued" | "downloading" | "canceling" | "canceled" | "cached" | "failed";
   cache_path: string;
   size_bytes: number;
+  hub_size_bytes?: number | null;
   snapshot_count: number;
   has_model_weights: boolean;
   has_config: boolean;
