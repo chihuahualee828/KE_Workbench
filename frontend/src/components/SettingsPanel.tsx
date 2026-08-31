@@ -118,6 +118,7 @@ export function SettingsPanel() {
             onChange={(event) => setModelExportPath(event.target.value)}
           />
         </label>
+        <p className="mt-2 text-xs text-ink/60">Used by patch exports. Full model ZIP exports use the browser save picker.</p>
       </section>
 
       {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}

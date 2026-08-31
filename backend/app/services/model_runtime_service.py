@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+import zipfile
 
 from app.ml.adapters.gpt2_adapter import adapter_runtime_lock, get_gpt2_adapter, unload_all_adapters
 from app.services.model_cache_service import model_cache_service
@@ -173,21 +176,6 @@ class ModelRuntimeService:
             "device": adapter.model_device(),
         }
 
-    def ensure_runtime_bundle(self, model_id: str) -> dict[str, Any]:
-        model = model_registry.get(model_id)
-        adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
-        local_files_only = model_cache_service.cache_status(model_id)["cached"]
-        tokenizer = adapter.load_tokenizer(local_files_only=local_files_only)
-        loaded_model = adapter.load_model(local_files_only=local_files_only)
-        from app.services.patch_service import patch_service
-
-        patch_service.sync_active_patches_to_model(loaded_model, model_id)
-        return {
-            "model": loaded_model,
-            "tokenizer": tokenizer,
-            "device": adapter.model_device(),
-        }
-
     def require_loaded_runtime_bundle(self, model_id: str) -> dict[str, Any]:
         """Return the active runtime model without ever loading model weights."""
         bundle = self.loaded_runtime_bundle(model_id)
@@ -209,11 +197,13 @@ class ModelRuntimeService:
             patch_service.sync_active_patches_to_model(loaded_model, model_id)
 
     def export_active_model(self, model_id: str, output_path: str) -> dict[str, Any]:
-        model_info = model_registry.get(model_id)
+        model_registry.get(model_id)
+        from app.services.patch_service import patch_service
+
         export_path = Path(output_path).expanduser().resolve()
         export_path.mkdir(parents=True, exist_ok=True)
         with adapter_runtime_lock():
-            bundle = self.ensure_runtime_bundle(model_id)
+            bundle = self.require_loaded_runtime_bundle(model_id)
             model = bundle["model"]
             tokenizer = bundle["tokenizer"]
             try:
@@ -222,19 +212,52 @@ class ModelRuntimeService:
                 model.save_pretrained(str(export_path))
             tokenizer.save_pretrained(str(export_path))
 
-            from app.services.patch_service import patch_service
-
-            lineage_path = patch_service.write_lineage_file(
-                model_id=model_id,
-                output_path=export_path,
-                model_name=model_info.get("name") or model_id,
-            )
+            # A full model export intentionally contains no workbench provenance.
+            # The edited weights are baked into standard Hugging Face model files.
+            (export_path / "kew_lineage.json").unlink(missing_ok=True)
         return {
             "model_id": model_id,
             "output_path": str(export_path),
-            "lineage_path": str(lineage_path),
-            "active_patches": patch_service.active_patches_for_model(model_id),
+            "baked_patches": len(patch_service.active_patches_for_model(model_id)),
         }
+
+    def export_active_model_archive(self, model_id: str) -> tuple[Path, Path]:
+        """Build a standard Hugging Face model archive for browser download.
+
+        The returned archive and its containing temporary directory must be removed
+        after the HTTP response has finished streaming.
+        """
+        model_registry.get(model_id)
+        safe_model_id = "".join(
+            character if character.isalnum() or character in {"-", "_", "."} else "_"
+            for character in model_id
+        ).strip(".") or "edited-model"
+        temporary_root = Path(tempfile.mkdtemp(prefix="kew-model-export-"))
+        model_path = temporary_root / safe_model_id
+        archive_path = temporary_root / f"{safe_model_id}-edited.zip"
+
+        try:
+            with adapter_runtime_lock():
+                bundle = self.require_loaded_runtime_bundle(model_id)
+                model = bundle["model"]
+                tokenizer = bundle["tokenizer"]
+                try:
+                    model.save_pretrained(str(model_path), safe_serialization=True)
+                except TypeError:
+                    model.save_pretrained(str(model_path))
+                tokenizer.save_pretrained(str(model_path))
+
+            # Use stored entries: model checkpoints are already compressed, and this
+            # keeps archive creation fast without duplicating large buffers in RAM.
+            with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+                for source_path in model_path.rglob("*"):
+                    if source_path.is_file():
+                        archive.write(source_path, source_path.relative_to(temporary_root))
+        except Exception:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+            raise
+
+        return archive_path, temporary_root
 
     def exclusive_runtime_access(self):
         return adapter_runtime_lock()

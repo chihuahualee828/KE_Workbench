@@ -25,6 +25,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function download(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const payload = await response.json();
+      detail = payload.detail ?? detail;
+    } catch {
+      detail = response.statusText;
+    }
+    throw new Error(`${response.status} ${detail}`);
+  }
+  return response;
+}
+
 export const api = {
   health: () => request<{ status: string }>("/api/health"),
   settings: () => request<AppSettings>("/api/settings"),
@@ -93,7 +116,12 @@ export const api = {
       body: JSON.stringify(body)
     }),
   exportModel: (body: { model_id: string; output_path: string }) =>
-    request<{ model_id: string; output_path: string; lineage_path: string; active_patches: string[] }>("/api/models/export", {
+    request<{ model_id: string; output_path: string; baked_patches: number }>("/api/models/export", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  downloadModelArchive: (body: { model_id: string }) =>
+    download("/api/models/export/archive", {
       method: "POST",
       body: JSON.stringify(body)
     }),

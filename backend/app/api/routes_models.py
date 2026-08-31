@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, SecretStr
+from starlette.background import BackgroundTask
 
 from app.services.model_cache_service import model_cache_service
 from app.services.model_registry import model_registry
-from app.services.model_runtime_service import model_runtime_service
+from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 
 router = APIRouter(tags=["models"])
 
@@ -188,5 +190,25 @@ def export_model(request: ModelExportRequest) -> dict:
         return model_runtime_service.export_active_model(request.model_id, request.output_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/models/export/archive")
+def export_model_archive(request: ModelCacheRequest) -> FileResponse:
+    try:
+        archive_path, temporary_root = model_runtime_service.export_active_model_archive(request.model_id)
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=archive_path.name,
+            background=BackgroundTask(shutil.rmtree, temporary_root, ignore_errors=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
