@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -55,16 +57,82 @@ class ExperimentService:
         return experiment
 
     def list_experiments(self) -> list[dict[str, Any]]:
-        return [
+        experiments = [
             item for item in local_store.list_json("experiments")
             if item.get("id", "").startswith("exp_")
         ]
+        return sorted(experiments, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         try:
             return local_store.read_json(f"experiments/{experiment_id}.json")
         except FileNotFoundError:
             return None
+
+    def get_experiment_details(self, experiment_id: str) -> dict[str, Any] | None:
+        experiment = self.get_experiment(experiment_id)
+        if experiment is None:
+            return None
+
+        job = next(
+            (
+                item
+                for item in local_store.list_json("experiments")
+                if item.get("experiment_id") == experiment_id and item.get("id", "").startswith("job_")
+            ),
+            None,
+        )
+        result = None
+        result_path = experiment.get("result_path")
+        if result_path:
+            try:
+                result = local_store.read_json(str(Path(result_path).relative_to(local_store.root)))
+            except (FileNotFoundError, ValueError):
+                result = None
+        return {**experiment, "job": job, "result": result}
+
+    def clear_history(self) -> dict[str, int]:
+        with self._condition:
+            active_count = sum(item.get("status") == "running" for item in self.list_experiments())
+            if active_count:
+                raise RuntimeError("Wait for running experiments to finish before clearing history.")
+            experiments_root = local_store.root / "experiments"
+            experiment_count = len(self.list_experiments())
+            if experiments_root.exists():
+                shutil.rmtree(experiments_root)
+            experiments_root.mkdir(parents=True, exist_ok=True)
+            self._condition.notify_all()
+        return {"deleted_experiment_count": experiment_count}
+
+    def reconcile_interrupted_jobs(self) -> int:
+        """Mark persisted running jobs as failed after a backend restart."""
+        interruption_message = "Backend restarted before this job completed."
+        with self._condition:
+            records = local_store.list_json("experiments")
+            interrupted_experiments = [
+                item for item in records
+                if item.get("id", "").startswith("exp_") and item.get("status") == "running"
+            ]
+            interrupted_ids = {item["id"] for item in interrupted_experiments}
+            if not interrupted_ids:
+                return 0
+
+            for job in records:
+                if job.get("id", "").startswith("job_") and job.get("experiment_id") in interrupted_ids and job.get("status") == "running":
+                    job["status"] = "failed"
+                    job["progress"] = 1.0
+                    job["logs"] = [*job.get("logs", []), interruption_message][-500:]
+                    job["updated_at"] = _now()
+                    local_store.write_json(f"experiments/{job['id']}.json", job)
+
+            for experiment in interrupted_experiments:
+                experiment["status"] = "failed"
+                experiment["error_message"] = interruption_message
+                experiment["updated_at"] = _now()
+                local_store.write_json(f"experiments/{experiment['id']}.json", experiment)
+
+            self._condition.notify_all()
+        return len(interrupted_experiments)
 
     def create_job(self, experiment_id: str) -> dict[str, Any]:
         job_id = f"job_{uuid4().hex[:10]}"

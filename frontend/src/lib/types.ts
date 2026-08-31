@@ -23,8 +23,27 @@ export type Experiment = {
   id: string;
   type: string;
   model_id: string;
-  status: string;
+  status: "running" | "completed" | "failed";
   created_at: string;
+  updated_at?: string;
+  input_json?: Record<string, unknown>;
+  result_path?: string | null;
+  error_message?: string | null;
+};
+
+export type ExperimentJob = {
+  id: string;
+  experiment_id: string;
+  status: "running" | "completed" | "failed";
+  progress: number;
+  logs: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExperimentDetails = Experiment & {
+  job?: ExperimentJob | null;
+  result?: Record<string, unknown> | null;
 };
 
 export type Patch = {

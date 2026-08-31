@@ -10,7 +10,7 @@ export default function JobsPage() {
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Jobs</h1>
-          <p className="mt-2 text-sm text-ink/70">Monitor active downloads, model loads, and running experiments.</p>
+          <p className="mt-2 text-sm text-ink/70">Monitor active downloads, model loads, and experiment history.</p>
         </div>
         <ApiStatus status={status} />
       </section>

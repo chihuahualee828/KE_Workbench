@@ -1,4 +1,4 @@
-import type { AppSettings, EditJob, Experiment, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, SupportedModel, TraceCell } from "./types";
+import type { AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, SupportedModel, TraceCell } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -131,6 +131,11 @@ export const api = {
       body: JSON.stringify(body)
     }),
   experiments: () => request<Experiment[]>("/api/experiments"),
+  experiment: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}`),
+  clearExperiments: () =>
+    request<{ deleted_experiment_count: number }>("/api/experiments", {
+      method: "DELETE"
+    }),
   patches: () => request<{ patches: Patch[] }>("/api/patches"),
   loadPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/load`, {
