@@ -32,7 +32,9 @@ SNAPSHOT_DOWNLOAD_SCRIPT = """
 import json
 import os
 from huggingface_hub import snapshot_download
+from huggingface_hub.utils import disable_progress_bars
 
+disable_progress_bars()
 snapshot_download(
     repo_id=os.environ["KEW_HF_REPO_ID"],
     ignore_patterns=json.loads(os.environ["KEW_HF_IGNORE_PATTERNS"]),
@@ -211,6 +213,42 @@ class ModelCacheService:
             return None
         return self._reconcile_persisted_job(job, detached=True)
 
+    def list_jobs(self) -> list[dict[str, Any]]:
+        persisted_jobs = {job["job_id"]: job for job in _read_jobs()}
+        with self._lock:
+            in_memory_jobs = {job_id: dict(job) for job_id, job in self._jobs.items()}
+
+        jobs = {**persisted_jobs, **in_memory_jobs}
+        for job_id, job in jobs.items():
+            if job_id not in in_memory_jobs:
+                jobs[job_id] = self._reconcile_persisted_job(job, detached=True)
+        return sorted(jobs.values(), key=lambda job: job["updated_at"], reverse=True)
+
+    def clear_finished_jobs(self) -> int:
+        with self._lock:
+            active_job_ids = {
+                job_id
+                for job_id, job in self._jobs.items()
+                if job["status"] in ACTIVE_DOWNLOAD_STATUSES
+            }
+            for job_id in [
+                job_id
+                for job_id, job in self._jobs.items()
+                if job["status"] not in ACTIVE_DOWNLOAD_STATUSES
+            ]:
+                self._jobs.pop(job_id, None)
+
+        deleted = 0
+        for path in _jobs_dir().glob("model_download_*.json"):
+            if path.stem in active_job_ids:
+                continue
+            job = _read_job(path.stem)
+            if job and job["status"] in ACTIVE_DOWNLOAD_STATUSES:
+                continue
+            path.unlink(missing_ok=True)
+            deleted += 1
+        return deleted
+
     def cancel_download(self, job_id: str) -> dict[str, Any]:
         in_memory = False
         process_pid = None
@@ -291,6 +329,8 @@ class ModelCacheService:
                     break
                 time.sleep(0.5)
 
+            _, error_output = process.communicate()
+
             if self._download_cancel_requested(job_id):
                 self._delete_download_cache(model["hf_id"])
                 status = self._cache_status(model_id, include_active_job=False)
@@ -308,7 +348,13 @@ class ModelCacheService:
                 return
 
             if process.returncode != 0:
-                raise RuntimeError(f"Download process exited with code {process.returncode}.")
+                raise RuntimeError(
+                    _download_failure_message(
+                        hf_id=model["hf_id"],
+                        returncode=process.returncode,
+                        error_output=error_output,
+                    )
+                )
 
             status = self._cache_status(model_id, include_active_job=False)
             if not status["cached"]:
@@ -360,6 +406,10 @@ class ModelCacheService:
             [sys.executable, "-c", SNAPSHOT_DOWNLOAD_SCRIPT],
             env=env,
             start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
         )
 
     def _download_cancel_requested(self, job_id: str) -> bool:
@@ -499,6 +549,25 @@ def _hub_file_size(sibling: Any) -> int | None:
     return int(size) if isinstance(size, int) else None
 
 
+def _download_failure_message(hf_id: str, returncode: int, error_output: str) -> str:
+    error_text = error_output.lower()
+    if (
+        "gated repo" in error_text
+        or "gatedrepoerror" in error_text
+        or "authorized list" in error_text
+    ):
+        return (
+            f"Access to {hf_id} is restricted. Request access on its Hugging Face model page, "
+            "then add a token from the approved account in Settings."
+        )
+    if "401" in error_text or "403" in error_text or "repository not found" in error_text:
+        return (
+            f"Hugging Face denied access to {hf_id}. Check the token in Settings and confirm "
+            "that its account can access this model."
+        )
+    return f"Download process exited with code {returncode}. Check the backend logs for details."
+
+
 def _terminate_process(pid: int) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -618,21 +687,25 @@ def _job_path(job_id: str) -> Path:
 
 
 def _write_job(job: dict[str, Any]) -> None:
-    _job_path(job["job_id"]).write_text(json.dumps(job, indent=2), encoding="utf-8")
+    local_store.write_json(f"model_cache_jobs/{job['job_id']}.json", job)
 
 
 def _read_job(job_id: str) -> dict[str, Any] | None:
-    path = _job_path(job_id)
-    if not path.exists():
+    try:
+        return local_store.read_json(f"model_cache_jobs/{job_id}.json")
+    except FileNotFoundError:
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def _read_jobs() -> list[dict[str, Any]]:
-    return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in _jobs_dir().glob("model_download_*.json")
-    ]
+    jobs: list[dict[str, Any]] = []
+    for path in _jobs_dir().glob("model_download_*.json"):
+        job = _read_job(path.stem)
+        if job is not None:
+            jobs.append(job)
+    return jobs
 
 
 model_cache_service = ModelCacheService()
