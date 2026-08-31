@@ -14,10 +14,35 @@ export function listenForModelDownloads(callback: (job: ModelDownloadJob) => voi
   return () => window.removeEventListener(eventName, handle);
 }
 
+export function upsertModelDownloadJob(
+  jobs: ModelDownloadJob[],
+  job: ModelDownloadJob
+): ModelDownloadJob[] {
+  return [job, ...jobs.filter((item) => item.job_id !== job.job_id)];
+}
+
 export function applyDownloadJobToCache(
   cache: ModelCacheStatus[],
   job: ModelDownloadJob
 ): ModelCacheStatus[] {
+  if (!cache.some((status) => status.model_id === job.model_id)) {
+    return [
+      ...cache,
+      {
+        model_id: job.model_id,
+        hf_id: job.hf_id,
+        cached: false,
+        cache_state: job.status as ModelCacheStatus["cache_state"],
+        cache_path: "",
+        size_bytes: 0,
+        snapshot_count: 0,
+        has_model_weights: false,
+        has_config: false,
+        incomplete_file_count: 0,
+        active_job: job
+      }
+    ];
+  }
   return cache.map((status) =>
     status.model_id === job.model_id
       ? {

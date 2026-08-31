@@ -208,7 +208,7 @@ export function ModelSelector({
           <div className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-sm">
             <span className="inline-flex items-center gap-2">
               <HardDrive size={15} />
-              {selectedCache?.cached ? `Cached (${formatBytes(selectedCache.size_bytes)})` : `${formatCacheState(selectedCache)} (${formatBytes(selectedCache?.size_bytes ?? 0)})`}
+              {selectedCache?.cached ? `Cached (${formatBytes(selectedCache.size_bytes)})` : `${formatCacheState(selectedCache)} (${formatExpectedSize(selectedCache)})`}
             </span>
             {!selectedCache?.cached && !selectedLocal ? (
               <button className="ghost-button min-h-8 px-2 py-1" onClick={startDownload} disabled={!runtimeConnected || selectedJobActive} title={!runtimeConnected ? "API is offline" : selectedJobActive ? "Open Jobs to monitor or cancel this download" : "Download model into Hugging Face cache"}>
@@ -267,4 +267,12 @@ function formatCacheState(status?: ModelCacheStatus) {
   if (status.cache_state === "not_cached") return "Not cached";
   if (status.cache_state === "partial") return "Partial";
   return status.cache_state.charAt(0).toUpperCase() + status.cache_state.slice(1);
+}
+
+function formatExpectedSize(status?: ModelCacheStatus) {
+  if (!status) return "Unknown";
+  if (!status.cached && status.size_bytes === 0 && status.hub_size_bytes) {
+    return formatBytes(status.hub_size_bytes);
+  }
+  return formatBytes(status.size_bytes);
 }

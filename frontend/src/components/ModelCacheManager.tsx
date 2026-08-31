@@ -11,7 +11,15 @@ import { usePersistentState } from "@/lib/usePersistentState";
 
 const activeDownloadStatuses = ["queued", "downloading", "canceling"];
 
-export function ModelCacheManager({ models, onModelsChanged }: { models: SupportedModel[]; onModelsChanged?: () => void | Promise<void> }) {
+export function ModelCacheManager({
+  models,
+  apiStatus,
+  onModelsChanged
+}: {
+  models: SupportedModel[];
+  apiStatus: "loading" | "ready" | "offline";
+  onModelsChanged?: () => void | Promise<void>;
+}) {
   const [cache, setCache] = useState<ModelCacheStatus[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
   const [jobs, setJobs] = useState<Record<string, ModelDownloadJob>>({});
@@ -169,8 +177,10 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
   }
 
   useEffect(() => {
-    refresh();
-  }, []);
+    if (apiStatus === "ready") {
+      void refresh();
+    }
+  }, [apiStatus]);
 
   useEffect(() => {
     return listenForModelDownloads((job) => {
@@ -251,40 +261,46 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
     <section className="panel">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">Model Cache</h2>
-        <button className="ghost-button min-h-9 px-2 py-1" onClick={refresh} disabled={!runtimeConnected} title={runtimeConnected ? "Refresh model cache" : "API is offline"}>
+        <button className="ghost-button min-h-9 px-2 py-1" onClick={refresh} disabled={apiStatus !== "ready" || !runtimeConnected} title={apiStatus !== "ready" ? "Wait for the backend connection" : runtimeConnected ? "Refresh model cache" : "API is offline"}>
           <RefreshCw size={15} />
           Refresh
         </button>
       </div>
-      <GpuRuntimeSummary runtime={runtime} />
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-line text-left">
-              <th className="py-2 pr-4">Model</th>
-              <th className="py-2 pr-4">Cache</th>
-              <th className="py-2 pr-4">Runtime</th>
-              <th className="py-2 pr-4">Size</th>
-              <th className="py-2 pr-4">Path</th>
-              <th className="py-2 pr-4">Job</th>
-              <th className="py-2 pr-4">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {models.map((model) => {
-              const status = cache.find((item) => item.model_id === model.id);
-              const runtimeStatus = runtime.find((item) => item.model_id === model.id);
-              const job = Object.values(jobs).reverse().find((item) => item.model_id === model.id);
-              const activeDownloadJob = job && activeDownloadStatuses.includes(job.status) ? job : status?.active_job;
-              const runtimeJob = Object.values(runtimeJobs).reverse().find((item) => item.model_id === model.id);
-              const active = Boolean(activeDownloadJob) || activeDownloadStatuses.includes(status?.cache_state ?? "not_cached");
-              const loading = Boolean(runtimeJob && ["queued", "loading"].includes(runtimeJob.status)) || ["queued", "loading"].includes(runtimeStatus?.runtime_state ?? "not_loaded");
-              const runtimeError = runtimeJob?.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "";
-              const cached = Boolean(status?.cached);
-              const loaded = Boolean(runtimeStatus?.loaded);
-              const local = model.source === "local" || status?.is_local;
-              return (
-                <tr key={model.id} className="border-b border-line/70 align-top">
+      {apiStatus !== "ready" ? (
+        <div className="rounded-md border border-line bg-panel p-4 text-sm text-ink/60">
+          {apiStatus === "loading" ? "Connecting to backend..." : "Backend is offline. Model cache is unavailable."}
+        </div>
+      ) : (
+        <>
+          <GpuRuntimeSummary runtime={runtime} />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-line text-left">
+                  <th className="py-2 pr-4">Model</th>
+                  <th className="py-2 pr-4">Cache</th>
+                  <th className="py-2 pr-4">Runtime</th>
+                  <th className="py-2 pr-4">Size</th>
+                  <th className="py-2 pr-4">Path</th>
+                  <th className="py-2 pr-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((model) => {
+                  const status = cache.find((item) => item.model_id === model.id);
+                  const runtimeStatus = runtime.find((item) => item.model_id === model.id);
+                  const job = Object.values(jobs).reverse().find((item) => item.model_id === model.id);
+                  const activeDownloadJob = job && activeDownloadStatuses.includes(job.status) ? job : status?.active_job;
+                  const runtimeJob = Object.values(runtimeJobs).reverse().find((item) => item.model_id === model.id);
+                  const active = Boolean(activeDownloadJob) || activeDownloadStatuses.includes(status?.cache_state ?? "not_cached");
+                  const loading = Boolean(runtimeJob && ["queued", "loading"].includes(runtimeJob.status)) || ["queued", "loading"].includes(runtimeStatus?.runtime_state ?? "not_loaded");
+                  const runtimeError = runtimeJob?.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "";
+                  const downloadError = job?.status === "failed" ? job.message : "";
+                  const cached = Boolean(status?.cached);
+                  const loaded = Boolean(runtimeStatus?.loaded);
+                  const local = model.source === "local" || status?.is_local;
+                  return (
+                    <tr key={model.id} className="border-b border-line/70 align-top">
                   <td className="py-2 pr-4">
                     <div className="font-medium">{model.name}</div>
                     <div className="font-mono text-xs text-ink/50">{model.hf_id}</div>
@@ -299,14 +315,12 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
                       </div>
                     ) : loading ? "Loading" : runtimeError || "Not loaded"}
                   </td>
-                  <td className="py-2 pr-4">{formatBytes(status?.size_bytes ?? 0)}</td>
+                  <td className="py-2 pr-4">{formatCacheSize(status)}</td>
                   <td className="max-w-80 truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
-                  <td className="py-2 pr-4 text-xs text-ink/70">{job ? `${job.status}: ${job.message}` : status?.active_job ? `${status.active_job.status}: ${status.active_job.message}` : "n/a"}</td>
                   <td className="py-2 pr-4">
                     <div className="flex gap-2">
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={!runtimeConnected || Boolean(active) || cached || local} title={!runtimeConnected ? "API is offline" : active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
+                      <button aria-label={activeDownloadJob?.status === "canceling" ? "Canceling model download" : active ? "Model download in progress" : "Download model"} className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={!runtimeConnected || Boolean(active) || cached || local} title={!runtimeConnected ? "API is offline" : active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
                         {active ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
-                        {activeDownloadJob?.status === "canceling" ? "Canceling" : active ? "Downloading" : "Download"}
                       </button>
                       <button className="ghost-button min-h-9 px-2 py-1" onClick={() => loadRuntime(model.id)} disabled={!runtimeConnected || !cached || loading || loaded} title={!runtimeConnected ? "API is offline" : loaded ? "Model is already loaded" : "Load model weights into backend memory"}>
                         {loading ? <Loader2 className="animate-spin" size={15} /> : <Upload size={15} />}
@@ -319,47 +333,50 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
                         <Trash2 size={15} />
                       </button>
                     </div>
+                    {downloadError ? <div className="mt-2 max-w-80 text-xs text-rust" role="alert">{downloadError}</div> : null}
                   </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-5 grid gap-3 rounded-md border border-line bg-panel p-4">
-        <div className="flex items-center gap-2">
-          <PlusCircle size={16} />
-          <h3 className="text-sm font-semibold">Register Local Model</h3>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <TextInput label="Model ID" value={localId} onChange={setLocalId} placeholder="local-gpt2-xl" />
-          <TextInput label="Display Name" value={localName} onChange={setLocalName} placeholder="Local GPT-2 XL" />
-          <TextInput label="Local Path" value={localPath} onChange={setLocalPath} placeholder="/home/nick/models/my-model" />
-          <label className="grid gap-2">
-            <span className="label">Model Type</span>
-            <select className="control" value={localModelType} onChange={(event) => setLocalModelType(event.target.value)}>
-              <option value="gpt2">GPT-2 architecture</option>
-              <option value="auto">AutoModel causal LM</option>
-              <option value="pythia">Pythia / GPT-NeoX</option>
-              <option value="llama">Llama-style causal LM</option>
-            </select>
-          </label>
-          <TextInput label="Layers" value={localLayers} onChange={setLocalLayers} placeholder="48" />
-          <TextInput label="ROME HParams" value={romeHparams} onChange={setRomeHparams} placeholder="hparams/ROME/gpt2-xl.yaml" />
-          <TextInput label="MEMIT HParams" value={memitHparams} onChange={setMemitHparams} placeholder="hparams/MEMIT/gpt2-xl.yaml" />
-        </div>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <Check label="Logit Lens" checked={localLens} onChange={setLocalLens} />
-          <Check label="Causal Trace" checked={localTrace} onChange={setLocalTrace} disabled={localModelType !== "gpt2"} />
-          <Check label="ROME" checked={localRome} onChange={setLocalRome} />
-          <Check label="MEMIT" checked={localMemit} onChange={setLocalMemit} />
-        </div>
-        <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || !localId.trim() || !localPath.trim()} title={runtimeConnected ? "Register local model path" : "API is offline"}>
-          <PlusCircle size={16} />
-          Register
-        </button>
-      </div>
-      {!runtimeConnected || error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{runtimeConnected ? error : "Failed to fetch"}</div> : null}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-5 grid gap-3 rounded-md border border-line bg-panel p-4">
+            <div className="flex items-center gap-2">
+              <PlusCircle size={16} />
+              <h3 className="text-sm font-semibold">Register Local Model</h3>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <TextInput label="Model ID" value={localId} onChange={setLocalId} placeholder="local-gpt2-xl" />
+              <TextInput label="Display Name" value={localName} onChange={setLocalName} placeholder="Local GPT-2 XL" />
+              <TextInput label="Local Path" value={localPath} onChange={setLocalPath} placeholder="/home/nick/models/my-model" />
+              <label className="grid gap-2">
+                <span className="label">Model Type</span>
+                <select className="control" value={localModelType} onChange={(event) => setLocalModelType(event.target.value)}>
+                  <option value="gpt2">GPT-2 architecture</option>
+                  <option value="auto">AutoModel causal LM</option>
+                  <option value="pythia">Pythia / GPT-NeoX</option>
+                  <option value="llama">Llama-style causal LM</option>
+                </select>
+              </label>
+              <TextInput label="Layers" value={localLayers} onChange={setLocalLayers} placeholder="48" />
+              <TextInput label="ROME HParams" value={romeHparams} onChange={setRomeHparams} placeholder="hparams/ROME/gpt2-xl.yaml" />
+              <TextInput label="MEMIT HParams" value={memitHparams} onChange={setMemitHparams} placeholder="hparams/MEMIT/gpt2-xl.yaml" />
+            </div>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <Check label="Logit Lens" checked={localLens} onChange={setLocalLens} />
+              <Check label="Causal Trace" checked={localTrace} onChange={setLocalTrace} disabled={localModelType !== "gpt2"} />
+              <Check label="ROME" checked={localRome} onChange={setLocalRome} />
+              <Check label="MEMIT" checked={localMemit} onChange={setLocalMemit} />
+            </div>
+            <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || !localId.trim() || !localPath.trim()} title={runtimeConnected ? "Register local model path" : "API is offline"}>
+              <PlusCircle size={16} />
+              Register
+            </button>
+          </div>
+          {!runtimeConnected || error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{runtimeConnected ? error : "Failed to fetch"}</div> : null}
+        </>
+      )}
     </section>
   );
 }
@@ -438,4 +455,12 @@ function formatCacheState(status?: ModelCacheStatus) {
   if (status.cache_state === "not_cached") return "Not cached";
   if (status.cache_state === "partial") return "Partial";
   return status.cache_state.charAt(0).toUpperCase() + status.cache_state.slice(1);
+}
+
+function formatCacheSize(status?: ModelCacheStatus) {
+  if (!status) return "Unknown";
+  if (!status.cached && status.size_bytes === 0 && status.hub_size_bytes) {
+    return formatBytes(status.hub_size_bytes);
+  }
+  return formatBytes(status.size_bytes);
 }

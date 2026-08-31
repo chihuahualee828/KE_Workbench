@@ -1,78 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelRuntimeConnected, announceModelRuntimeDisconnected, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeStream } from "@/lib/modelRuntimeEvents";
 import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 
-const fallbackModels: SupportedModel[] = [
-  {
-    id: "gpt2",
-    name: "GPT-2 Small",
-    hf_id: "gpt2",
-    n_layers: 12,
-    supports_generation: true,
-    supports_logit_lens: true,
-    supports_causal_trace: true,
-    supports_rome: false,
-    supports_memit: false
-  },
-  {
-    id: "gpt2-xl",
-    name: "GPT-2 XL",
-    hf_id: "gpt2-xl",
-    n_layers: 48,
-    supports_generation: true,
-    supports_logit_lens: false,
-    supports_causal_trace: true,
-    supports_rome: true,
-    supports_memit: true,
-    easyedit: {
-      rome_hparams: "hparams/ROME/gpt2-xl.yaml",
-      memit_hparams: "hparams/MEMIT/gpt2-xl.yaml"
-    }
-  }
-];
-
 export function useWorkbenchData() {
-  const [models, setModels] = useState<SupportedModel[]>(fallbackModels);
+  const [models, setModels] = useState<SupportedModel[]>([]);
   const [patches, setPatches] = useState<Patch[]>([]);
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
+  const reconnecting = useRef(false);
 
   const refresh = useCallback(async () => {
-    const [modelResult, patchResult, experimentResult, runtimeResult] = await Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()]);
-    setModels(modelResult);
-    setPatches(patchResult.patches.filter((patch) => patch.patch_id));
-    setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
-    setRuntime(runtimeResult);
-    announceModelRuntimeConnected();
-    setStatus("ready");
+    try {
+      const [modelResult, patchResult, experimentResult, runtimeResult] = await Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()]);
+      setModels(modelResult);
+      setPatches(patchResult.patches.filter((patch) => patch.patch_id));
+      setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
+      setRuntime(runtimeResult);
+      announceModelRuntimeConnected();
+      setStatus("ready");
+    } catch (error) {
+      setModels([]);
+      setPatches([]);
+      setExperiments([]);
+      setRuntime([]);
+      announceModelRuntimeDisconnected();
+      setStatus("offline");
+      throw error;
+    }
   }, []);
 
   useEffect(() => {
-    let alive = true;
-    Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()])
-      .then(([modelResult, patchResult, experimentResult, runtimeResult]) => {
-        if (!alive) return;
-        setModels(modelResult);
-        setPatches(patchResult.patches.filter((patch) => patch.patch_id));
-        setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
-        setRuntime(runtimeResult);
-        announceModelRuntimeConnected();
-        setStatus("ready");
-      })
-      .catch(() => {
-        if (!alive) return;
-        announceModelRuntimeDisconnected();
-        setStatus("offline");
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+    void refresh().catch(() => undefined);
+  }, [refresh]);
 
   useEffect(() => {
     const stopListeningForLoads = listenForModelRuntimeLoads((job) => {
@@ -83,13 +47,22 @@ export function useWorkbenchData() {
     });
     const stopListeningForRuntimeStream = listenForModelRuntimeStream(
       (statuses) => {
+        const shouldRefresh = reconnecting.current;
+        reconnecting.current = false;
         announceModelRuntimeConnected();
         announceModelRuntimeStatuses(statuses);
         setRuntime(statuses);
         setStatus("ready");
+        if (shouldRefresh) {
+          void refresh().catch(() => undefined);
+        }
       },
       () => {
+        reconnecting.current = true;
         announceModelRuntimeDisconnected();
+        setModels([]);
+        setPatches([]);
+        setExperiments([]);
         setRuntime([]);
         setStatus("offline");
       }
@@ -99,7 +72,7 @@ export function useWorkbenchData() {
       stopListeningForStatuses();
       stopListeningForRuntimeStream();
     };
-  }, []);
+  }, [refresh]);
 
   return { models, patches, experiments, runtime, status, refresh };
 }

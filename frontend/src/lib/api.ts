@@ -91,6 +91,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  modelDownloadJobs: () => request<ModelDownloadJob[]>("/api/models/cache/jobs"),
+  clearModelDownloadJobs: () => request<{ deleted: number }>("/api/models/cache/jobs", {
+    method: "DELETE"
+  }),
   modelDownloadJob: (jobId: string) => request<ModelDownloadJob>(`/api/models/cache/jobs/${jobId}`),
   cancelModelDownloadJob: (jobId: string) =>
     request<ModelDownloadJob>(`/api/models/cache/jobs/${jobId}/cancel`, {

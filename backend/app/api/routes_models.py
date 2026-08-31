@@ -98,6 +98,16 @@ def download_model(request: ModelCacheRequest) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/models/cache/jobs")
+def list_model_download_jobs() -> list[dict]:
+    return model_cache_service.list_jobs()
+
+
+@router.delete("/models/cache/jobs")
+def clear_model_download_jobs() -> dict:
+    return {"deleted": model_cache_service.clear_finished_jobs()}
+
+
 @router.get("/models/cache/jobs/{job_id}")
 def get_model_download_job(job_id: str) -> dict:
     job = model_cache_service.get_job(job_id)

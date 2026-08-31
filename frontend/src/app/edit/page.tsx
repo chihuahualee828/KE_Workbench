@@ -19,7 +19,7 @@ export default function EditPage() {
         <EditForm models={models} patches={patches} runtime={runtime} onPatchesChanged={refresh} />
       </section>
       <section className="section">
-        <ModelCacheManager models={models} onModelsChanged={refresh} />
+        <ModelCacheManager models={models} apiStatus={status} onModelsChanged={refresh} />
       </section>
     </div>
   );
