@@ -14,12 +14,14 @@ export function ModelSelector({
   models,
   value,
   onChange,
+  onRuntimeUnloaded,
   showCacheControls = true,
   refreshKey = 0
 }: {
   models: SupportedModel[];
   value: string;
   onChange: (modelId: string) => void;
+  onRuntimeUnloaded?: () => void | Promise<void>;
   showCacheControls?: boolean;
   refreshKey?: number;
 }) {
@@ -110,6 +112,7 @@ export function ModelSelector({
       const runtimeResult = await api.modelRuntime();
       setRuntime(runtimeResult);
       announceModelRuntimeStatuses(runtimeResult);
+      await onRuntimeUnloaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

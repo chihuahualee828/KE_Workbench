@@ -118,19 +118,13 @@ def run_easyedit(
 
     with model_runtime_service.exclusive_runtime_access():
         active_patch_ids = patch_service.active_patches_for_model(model_id)
-        runtime_bundle = model_runtime_service.loaded_runtime_bundle(model_id)
-        if runtime_bundle is None and active_patch_ids and sequential_edit:
-            runtime_bundle = model_runtime_service.ensure_runtime_bundle(model_id)
-        if runtime_bundle is None:
-            model_runtime_service.unload_all()
-            _override_easyedit_device(hparams)
-        else:
-            used_loaded_runtime = True
-            if not sequential_edit:
-                patch_service.sync_patch_stack_to_model(runtime_bundle["model"], model_id, [])
-            _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(easyedit_model_name), method_key)
-            _override_easyedit_device(hparams, runtime_bundle.get("device"))
-            hparams.model_name = (runtime_bundle["model"], runtime_bundle["tokenizer"])
+        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        used_loaded_runtime = True
+        if not sequential_edit:
+            patch_service.sync_patch_stack_to_model(runtime_bundle["model"], model_id, [])
+        _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(easyedit_model_name), method_key)
+        _override_easyedit_device(hparams, runtime_bundle.get("device"))
+        hparams.model_name = (runtime_bundle["model"], runtime_bundle["tokenizer"])
 
         try:
             editor = BaseEditor.from_hparams(hparams)
@@ -194,6 +188,7 @@ def run_easyedit(
                     "easyedit_hparams": str(hparams_path),
                     "hf_model": model["hf_id"],
                     "sequential_edit": sequential_edit,
+                    "parent_patch_ids": active_patch_ids if sequential_edit else [],
                     "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
                     "used_loaded_runtime": used_loaded_runtime,
                 },

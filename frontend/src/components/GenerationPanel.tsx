@@ -9,7 +9,7 @@ import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
-export function GenerationPanel({ models, patches = [], runtime = [] }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[] }) {
+export function GenerationPanel({ models, patches = [], runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2");
   const [prompt, setPrompt] = usePersistentState("kew:generation:prompt", "The Space Needle is located in the city of");
   const [patchId, setPatchId] = usePersistentState("kew:generation:patchId", "");
@@ -49,7 +49,7 @@ export function GenerationPanel({ models, patches = [], runtime = [] }: { models
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={models} value={modelId} onChange={setModelId} refreshKey={runtimeRefreshKey} />
+        <ModelSelector models={models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} refreshKey={runtimeRefreshKey} />
         <PromptEditor value={prompt} onChange={setPrompt} />
         <div className="grid gap-3 md:grid-cols-2">
           <NumberInput label="Max New Tokens" value={maxNewTokens} onChange={setMaxNewTokens} min={1} max={128} />

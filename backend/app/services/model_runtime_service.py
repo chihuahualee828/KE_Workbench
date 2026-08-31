@@ -102,7 +102,14 @@ class ModelRuntimeService:
     def unload(self, model_id: str) -> dict[str, Any]:
         model_registry.get(model_id)
         with adapter_runtime_lock():
+            loaded_model_ids = self._loaded_model_ids()
             unload_all_adapters()
+            from app.services.patch_service import patch_service
+
+            discarded_patches_by_model = {
+                loaded_model_id: patch_service.deactivate_runtime_patches_for_model(loaded_model_id)
+                for loaded_model_id in loaded_model_ids
+            }
             gc.collect()
             try:
                 import torch
@@ -115,6 +122,7 @@ class ModelRuntimeService:
                 pass
             status = self.runtime_status(model_id)
             status["memory"] = _runtime_memory()
+            status["discarded_patches_by_model"] = discarded_patches_by_model
             self._publish_runtime_update()
             return status
 
@@ -298,6 +306,15 @@ class ModelRuntimeService:
             "created_at": _now(),
             "updated_at": _now(),
         }
+
+
+    def _loaded_model_ids(self) -> list[str]:
+        loaded_model_ids: list[str] = []
+        for model in model_registry.list_models():
+            adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+            if adapter.is_model_loaded():
+                loaded_model_ids.append(model["id"])
+        return loaded_model_ids
 
 
 model_runtime_service = ModelRuntimeService()

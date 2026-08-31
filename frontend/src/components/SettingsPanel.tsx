@@ -107,10 +107,10 @@ export function SettingsPanel() {
       <section className="panel">
         <div className="mb-3 flex items-center gap-2">
           <Settings size={17} />
-          <h2 className="text-base font-semibold">Model Export</h2>
+          <h2 className="text-base font-semibold">Patch Export</h2>
         </div>
         <label className="grid gap-2">
-          <span className="label">Default Save Directory</span>
+          <span className="label">Default Server Directory</span>
           <input
             className="control"
             value={modelExportPath}

@@ -32,7 +32,7 @@ export default function HomePage() {
       </section>
 
       <section className="section">
-        <GenerationPanel models={models} patches={patches} runtime={runtime} />
+        <GenerationPanel models={models} patches={patches} runtime={runtime} onPatchesChanged={refresh} />
       </section>
 
       <section className="section grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -72,7 +72,7 @@ export default function HomePage() {
       </section>
 
       <section className="section">
-        <PatchHistory patches={patches} onPatchesChanged={refresh} />
+        <PatchHistory patches={patches} runtime={runtime} onPatchesChanged={refresh} />
       </section>
 
       <section className="section">

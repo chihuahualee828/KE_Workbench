@@ -104,6 +104,10 @@ export const api = {
     }),
   experiments: () => request<Experiment[]>("/api/experiments"),
   patches: () => request<{ patches: Patch[] }>("/api/patches"),
+  loadPatch: (patchId: string) =>
+    request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/load`, {
+      method: "POST"
+    }),
   discardPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/discard`, {
       method: "POST"
@@ -111,6 +115,10 @@ export const api = {
   revertToPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/revert-to`, {
       method: "POST"
+    }),
+  deleteAllPatches: () =>
+    request<{ deleted_patch_count: number }>("/api/patches", {
+      method: "DELETE"
     }),
   generate: (body: {
     model_id: string;
