@@ -13,6 +13,7 @@ from app.api import (
     routes_tracing,
 )
 from app.config import ensure_data_dirs
+from app.services.experiment_service import experiment_service
 from app.services.patch_service import patch_service
 
 app = FastAPI(title="Knowledge Editing Workbench", version="0.1.0")
@@ -29,6 +30,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     ensure_data_dirs()
+    experiment_service.reconcile_interrupted_jobs()
     patch_service.clear_active_patches()
 
 

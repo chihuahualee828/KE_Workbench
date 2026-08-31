@@ -3,6 +3,7 @@
 import { Activity, Loader2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
 import type { Experiment, ModelCacheStatus, ModelRuntimeStatus } from "@/lib/types";
 
@@ -69,7 +70,8 @@ export function TopbarJobsMenu() {
   useEffect(() => {
     if (!open) return;
     refresh();
-    const timer = window.setInterval(refresh, hasActiveWork ? 1500 : 5000);
+    if (!hasActiveWork) return;
+    const timer = window.setInterval(refresh, 1500);
     return () => window.clearInterval(timer);
   }, [open, hasActiveWork]);
 
@@ -112,7 +114,7 @@ export function TopbarJobsMenu() {
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Activity size={16} />
-              <h2 className="text-sm font-semibold">Running Jobs</h2>
+              <h2 className="text-sm font-semibold">Jobs</h2>
             </div>
             <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={refresh} type="button">
               Refresh
@@ -163,18 +165,7 @@ export function TopbarJobsMenu() {
               {activeRuntime.length === 0 ? <div className="text-sm text-ink/60">No active model loads.</div> : null}
             </section>
 
-            <section className="grid gap-2">
-              <h3 className="label">Experiments</h3>
-              {runningExperiments.map((experiment) => (
-                <div key={experiment.id} className="rounded-md border border-line bg-panel p-3 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <span>{experiment.type.replace("_", " ")}</span>
-                    <span className="font-mono text-xs text-ink/60">{experiment.status}</span>
-                  </div>
-                </div>
-              ))}
-              {runningExperiments.length === 0 ? <div className="text-sm text-ink/60">No active experiments.</div> : null}
-            </section>
+            <ExperimentHistory compact experiments={experiments} onChanged={refresh} />
           </div>
 
           {error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-2 text-xs text-rust">{error}</div> : null}

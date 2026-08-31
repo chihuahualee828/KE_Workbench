@@ -3,6 +3,7 @@
 import { Activity, Download, Loader2, RefreshCw, Server, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
 import type { Experiment, ModelCacheStatus, ModelRuntimeStatus } from "@/lib/types";
 
@@ -74,7 +75,7 @@ export function RunningStatusPanel() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Activity size={17} />
-          <h2 className="text-base font-semibold">Running Jobs</h2>
+          <h2 className="text-base font-semibold">Jobs</h2>
         </div>
         <button className="ghost-button min-h-9 px-2 py-1" onClick={refresh} title="Refresh jobs">
           <RefreshCw size={15} />
@@ -173,21 +174,7 @@ export function RunningStatusPanel() {
           </div>
         </section>
 
-        <section className="grid gap-2">
-          <div className="flex items-center gap-2">
-            <Activity size={15} />
-            <h3 className="text-sm font-semibold">Experiments</h3>
-          </div>
-          <div className="divide-y divide-line rounded-md border border-line">
-            {runningExperiments.map((experiment) => (
-              <div key={experiment.id} className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2 text-sm">
-                <span>{experiment.type.replace("_", " ")}</span>
-                <span className="font-mono text-xs text-ink/60">{experiment.status}</span>
-              </div>
-            ))}
-            {runningExperiments.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No active experiments.</div> : null}
-          </div>
-        </section>
+        <ExperimentHistory experiments={experiments} onChanged={refresh} />
       </div>
       {error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
     </section>
