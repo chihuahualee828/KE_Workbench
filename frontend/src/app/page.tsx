@@ -76,7 +76,7 @@ export default function HomePage() {
       </section>
 
       <section className="section">
-        <ModelCacheManager models={models} onModelsChanged={refresh} />
+        <ModelCacheManager models={models} apiStatus={status} onModelsChanged={refresh} />
       </section>
     </div>
   );
