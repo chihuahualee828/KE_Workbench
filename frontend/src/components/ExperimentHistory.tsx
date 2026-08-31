@@ -17,7 +17,6 @@ export function ExperimentHistory({
   onChanged: () => void | Promise<void>;
 }) {
   const [details, setDetails] = useState<ExperimentDetails | null>(null);
-  const [loadingId, setLoadingId] = useState("");
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState("");
@@ -28,14 +27,11 @@ export function ExperimentHistory({
   const hasRunningExperiment = experiments.some((experiment) => experiment.status === "running");
 
   async function openDetails(experiment: Experiment) {
-    setLoadingId(experiment.id);
     setError("");
     try {
       setDetails(await api.experiment(experiment.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoadingId("");
     }
   }
 
@@ -98,7 +94,7 @@ export function ExperimentHistory({
               <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
             </span>
             <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(experiment.status)}`}>
-              {loadingId === experiment.id ? "Loading" : experiment.status}
+              {experiment.status}
             </span>
           </button>
         ))}
@@ -114,7 +110,14 @@ export function ExperimentHistory({
 function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDetails; onClose: () => void }) {
   if (typeof document === "undefined") return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" role="presentation">
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center"
+      data-experiment-details-dialog
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      role="presentation"
+    >
       <section aria-modal="true" className="my-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-md border border-line bg-white p-5 shadow-xl" role="dialog">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">

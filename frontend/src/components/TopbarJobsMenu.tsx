@@ -78,12 +78,14 @@ export function TopbarJobsMenu() {
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target;
+      const withinExperimentDialog = target instanceof Element && Boolean(target.closest("[data-experiment-details-dialog]"));
+      if (menuRef.current && !menuRef.current.contains(target as Node) && !withinExperimentDialog) {
         setOpen(false);
       }
     }
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !document.querySelector("[data-experiment-details-dialog]")) {
         setOpen(false);
       }
     }
