@@ -31,10 +31,21 @@ export type Patch = {
   patch_id: string;
   base_model: string;
   method: string;
-  edits: Array<{ subject: string; relation_prompt: string; new_object: string }>;
+  edits: Array<{
+    subject: string;
+    relation_prompt: string;
+    new_object: string;
+    ground_truth?: string;
+    rephrase_prompts?: string[];
+  }>;
   modified_layers: number[];
   created_at: string;
-  metrics?: Record<string, number>;
+  metrics?: Record<string, unknown>;
+  delta_paths?: string[];
+  runtime?: string;
+  sequential_edit?: boolean;
+  parent_patch_ids?: string[];
+  layer_source?: string;
   active?: boolean;
   active_index?: number | null;
   lineage_only?: boolean;

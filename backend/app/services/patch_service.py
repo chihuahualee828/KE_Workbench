@@ -36,6 +36,7 @@ class PatchService:
     ) -> dict[str, Any]:
         patch_id = patch_id or self.new_patch_id()
         patch_dir = f"patches/{patch_id}"
+        self.patch_dir(patch_id)
         metadata = {
             "patch_id": patch_id,
             "base_model": model_id,
@@ -54,12 +55,19 @@ class PatchService:
                 f"{patch_dir}/metadata_delta.json",
                 {"note": "No tensor deltas were supplied for this patch."},
             )
-        local_store.write_json(f"patches/{patch_id}.json", metadata)
+        local_store.write_json(self._metadata_relative_path(patch_id), metadata)
         return metadata
 
     def list_patches(self) -> list[dict[str, Any]]:
         active_by_model = self.active_patches_by_model()
-        patches = local_store.list_json("patches")
+        patches_root = local_store.root / "patches"
+        if patches_root.exists():
+            for legacy_metadata_path in patches_root.glob("patch_*.json"):
+                self._migrate_flat_metadata(legacy_metadata_path.stem)
+        patches = [
+            local_store.read_json(str(metadata_path.relative_to(local_store.root)))
+            for metadata_path in sorted(patches_root.glob("*/patch.json"), reverse=True)
+        ] if patches_root.exists() else []
         for patch in patches:
             active_stack = active_by_model.get(patch.get("base_model"), [])
             patch["active"] = patch["patch_id"] in active_stack
@@ -68,7 +76,8 @@ class PatchService:
         return patches
 
     def get_patch(self, patch_id: str) -> dict[str, Any]:
-        return local_store.read_json(f"patches/{patch_id}.json")
+        self._migrate_flat_metadata(patch_id)
+        return local_store.read_json(self._metadata_relative_path(patch_id))
 
     def active_patches_for_model(self, model_id: str) -> list[str]:
         return self.active_patches_by_model().get(model_id, [])
@@ -100,6 +109,39 @@ class PatchService:
             self._write_active_patches(active_by_model)
             return {"model_id": model_id, "active_patches": active_stack}
 
+    def load_saved_patch(self, patch_id: str) -> dict[str, Any]:
+        patch = self.get_patch(patch_id)
+        if _is_baked_lineage(patch):
+            raise ValueError(f"Patch {patch_id} is already baked into its imported model weights.")
+        if not _has_tensor_deltas(patch):
+            raise ValueError(f"Patch {patch_id} has no saved tensor deltas and cannot be loaded.")
+
+        model_id = patch["base_model"]
+        parent_patch_ids = patch.get("parent_patch_ids", []) if patch.get("sequential_edit") else []
+        if not isinstance(parent_patch_ids, list):
+            parent_patch_ids = []
+        target_stack = [str(parent_patch_id) for parent_patch_id in parent_patch_ids] + [patch_id]
+        target_stack = list(dict.fromkeys(target_stack))
+
+        with self._lock:
+            for candidate_id in target_stack:
+                candidate = self.get_patch(candidate_id)
+                if candidate.get("base_model") != model_id:
+                    raise ValueError(f"Patch {candidate_id} belongs to {candidate.get('base_model')}, not {model_id}.")
+                if not _has_tensor_deltas(candidate):
+                    raise ValueError(f"Patch {candidate_id} has no saved tensor deltas and cannot be loaded.")
+                missing_delta_paths = [
+                    path_value
+                    for path_value in candidate.get("delta_paths", [])
+                    if str(path_value).endswith(".safetensors") and not self.resolve_delta_path(path_value).exists()
+                ]
+                if missing_delta_paths:
+                    raise ValueError(f"Patch {candidate_id} is missing its saved tensor delta file.")
+            active_by_model = self.active_patches_by_model()
+            active_by_model[model_id] = target_stack
+            self._write_active_patches(active_by_model)
+            return {"model_id": model_id, "active_patches": target_stack}
+
     def discard_active_patch(self, patch_id: str) -> dict[str, Any]:
         patch = self.get_patch(patch_id)
         if _is_baked_lineage(patch):
@@ -107,7 +149,12 @@ class PatchService:
         model_id = patch["base_model"]
         with self._lock:
             active_by_model = self.active_patches_by_model()
-            active_stack = [item for item in active_by_model.get(model_id, []) if item != patch_id]
+            current_stack = active_by_model.get(model_id, [])
+            if patch_id not in current_stack:
+                raise ValueError(f"Patch {patch_id} is not active for {model_id}.")
+            # Later sequential patches were calculated on this patch's model state,
+            # so discarding a point also discards its dependent suffix.
+            active_stack = current_stack[: current_stack.index(patch_id)]
             if active_stack:
                 active_by_model[model_id] = active_stack
             else:
@@ -136,6 +183,52 @@ class PatchService:
             active_by_model[model_id] = active_stack[: active_stack.index(patch_id) + 1]
             self._write_active_patches(active_by_model)
             return {"model_id": model_id, "active_patches": active_by_model[model_id]}
+
+    def deactivate_all_patches(self) -> dict[str, Any]:
+        with self._lock:
+            active_by_model = self.active_patches_by_model()
+            self._write_active_patches({})
+            return {"active_patches_by_model": active_by_model, "model_ids": list(active_by_model)}
+
+    def deactivate_runtime_patches_for_model(self, model_id: str) -> dict[str, list[str]]:
+        """Remove reloadable patch deltas when their model leaves runtime memory."""
+        with self._lock:
+            active_by_model = self.active_patches_by_model()
+            current_stack = active_by_model.get(model_id, [])
+            retained_patch_ids: list[str] = []
+            discarded_patch_ids: list[str] = []
+            for patch_id in current_stack:
+                try:
+                    patch = self.get_patch(patch_id)
+                except FileNotFoundError:
+                    discarded_patch_ids.append(patch_id)
+                    continue
+                if _is_baked_lineage(patch):
+                    retained_patch_ids.append(patch_id)
+                else:
+                    discarded_patch_ids.append(patch_id)
+            if retained_patch_ids:
+                active_by_model[model_id] = retained_patch_ids
+            else:
+                active_by_model.pop(model_id, None)
+            self._write_active_patches(active_by_model)
+            return {
+                "discarded_patch_ids": discarded_patch_ids,
+                "retained_baked_patch_ids": retained_patch_ids,
+            }
+
+    def restore_active_patches(self, active_by_model: dict[str, list[str]]) -> None:
+        with self._lock:
+            self._write_active_patches(active_by_model)
+
+    def delete_all_patch_artifacts(self) -> dict[str, int]:
+        patches_root = local_store.root / "patches"
+        with self._lock:
+            patch_count = len(list(patches_root.glob("*/patch.json"))) + len(list(patches_root.glob("patch_*.json"))) if patches_root.exists() else 0
+            if patches_root.exists():
+                shutil.rmtree(patches_root)
+            patches_root.mkdir(parents=True, exist_ok=True)
+        return {"deleted_patch_count": patch_count}
 
     def import_model_lineage(self, model: dict[str, Any]) -> dict[str, Any]:
         local_path = Path(model.get("local_path") or model.get("hf_id") or "")
@@ -173,11 +266,12 @@ class PatchService:
                 "created_at": entry.get("created_at") or datetime.now(timezone.utc).isoformat(),
                 "runtime": entry.get("runtime") or "imported_lineage",
                 "sequential_edit": bool(entry.get("sequential_edit", True)),
+                "parent_patch_ids": entry.get("parent_patch_ids") if isinstance(entry.get("parent_patch_ids"), list) else [],
                 "lineage_only": True,
                 "baked_into_model": True,
                 "imported_from_model_path": str(local_path),
             }
-            local_store.write_json(f"patches/{patch_id}.json", metadata)
+            local_store.write_json(self._metadata_relative_path(patch_id), metadata)
 
         active_source = payload.get("active_patches")
         if isinstance(active_source, list) and active_source:
@@ -272,9 +366,29 @@ class PatchService:
         }
 
     def patch_dir(self, patch_id: str) -> Path:
-        path = settings.data_dir / "patches" / patch_id
+        path = local_store.root / "patches" / patch_id
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _metadata_relative_path(self, patch_id: str) -> str:
+        return f"patches/{patch_id}/patch.json"
+
+    def _migrate_flat_metadata(self, patch_id: str) -> None:
+        patches_root = local_store.root / "patches"
+        legacy_metadata_path = patches_root / f"{patch_id}.json"
+        canonical_metadata_path = patches_root / patch_id / "patch.json"
+        if canonical_metadata_path.exists():
+            if legacy_metadata_path.exists():
+                legacy_metadata_path.unlink()
+            return
+        if not legacy_metadata_path.exists():
+            return
+        canonical_metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            legacy_metadata_path.replace(canonical_metadata_path)
+        except FileNotFoundError:
+            if not canonical_metadata_path.exists():
+                raise
 
     def resolve_delta_path(self, path_value: str) -> Path:
         path = Path(path_value)
@@ -432,6 +546,7 @@ def _lineage_entry_from_patch(patch: dict[str, Any], baked_into_model: bool = Fa
         "created_at": patch.get("created_at"),
         "runtime": patch.get("runtime"),
         "sequential_edit": patch.get("sequential_edit", False),
+        "parent_patch_ids": patch.get("parent_patch_ids", []),
         "lineage_only": patch.get("lineage_only", False),
         "baked_into_model": baked_into_model or patch.get("baked_into_model", False),
     }
@@ -439,3 +554,7 @@ def _lineage_entry_from_patch(patch: dict[str, Any], baked_into_model: bool = Fa
 
 def _is_baked_lineage(patch: dict[str, Any]) -> bool:
     return bool(patch.get("lineage_only") or patch.get("baked_into_model"))
+
+
+def _has_tensor_deltas(patch: dict[str, Any]) -> bool:
+    return any(str(path).endswith(".safetensors") for path in patch.get("delta_paths", []))

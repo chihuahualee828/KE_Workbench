@@ -38,8 +38,10 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "memit" ? <MemitForm models={models} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
-          <PatchHistory patches={patches} onPatchesChanged={onPatchesChanged} />
-          <ResultPanel result={result} job={job} />
+          <PatchHistory patches={patches} runtime={runtime} onPatchesChanged={onPatchesChanged} />
+          <div className="min-w-0">
+            <ResultPanel result={result} job={job} />
+          </div>
         </div>
       ) : null}
     </div>
@@ -234,7 +236,7 @@ function RomeForm({
   return (
     <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={romeModels.length ? romeModels : models} value={modelId} onChange={setModelId} />
+        <ModelSelector models={romeModels.length ? romeModels : models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <TextInput label="Subject" value={subject} onChange={setSubject} />
         <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
         <TextInput label="New Object" value={newObject} onChange={setNewObject} />
@@ -373,7 +375,7 @@ function MemitForm({
   return (
     <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={memitModels.length ? memitModels : models} value={modelId} onChange={setModelId} />
+        <ModelSelector models={memitModels.length ? memitModels : models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="label" htmlFor="memit-edits-json">

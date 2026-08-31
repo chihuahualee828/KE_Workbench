@@ -125,6 +125,7 @@ export function ModelCacheManager({ models, onModelsChanged }: { models: Support
       const runtimeResult = await api.modelRuntime();
       setRuntime(runtimeResult);
       announceModelRuntimeStatuses(runtimeResult);
+      await onModelsChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

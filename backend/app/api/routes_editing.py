@@ -195,6 +195,31 @@ def export_patch(patch_id: str, request: PatchExportRequest) -> dict:
         raise HTTPException(status_code=404, detail="Patch not found") from exc
 
 
+@router.post("/patches/{patch_id}/load")
+def load_patch(patch_id: str) -> dict:
+    try:
+        patch = patch_service.get_patch(patch_id)
+        model_id = patch["base_model"]
+        if not model_runtime_service.runtime_status(model_id)["loaded"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Load {model_id} before loading this saved patch.",
+            )
+        previous_active_state = patch_service.active_patches_by_model()
+        state = patch_service.load_saved_patch(patch_id)
+        try:
+            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+        except Exception:
+            patch_service.restore_active_patches(previous_active_state)
+            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+            raise
+        return state
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Patch not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/patches/{patch_id}/discard")
 def discard_patch(patch_id: str) -> dict:
     try:
@@ -205,6 +230,20 @@ def discard_patch(patch_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Patch not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/patches")
+def delete_all_patches() -> dict:
+    state = patch_service.deactivate_all_patches()
+    try:
+        for model_id in state["model_ids"]:
+            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+    except Exception:
+        patch_service.restore_active_patches(state["active_patches_by_model"])
+        for model_id in state["model_ids"]:
+            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+        raise
+    return patch_service.delete_all_patch_artifacts()
 
 
 @router.post("/patches/{patch_id}/revert-to")
