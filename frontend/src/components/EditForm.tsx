@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, FlaskConical, Layers, Loader2, LocateFixed, Save, Upload } from "lucide-react";
+import { BarChart3, Download, FlaskConical, Layers, Loader2, LocateFixed, Save, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -35,7 +35,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
         ))}
       </div>
       {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "memit" ? <MemitForm models={models} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
           <PatchHistory patches={patches} runtime={runtime} onPatchesChanged={onPatchesChanged} />
@@ -298,7 +298,7 @@ function RomeForm({
           <FlaskConical size={16} />
           {busy ? "Editing" : "Apply ROME"}
         </button>
-        <ExportActiveModelControl modelId={modelId} disabled={busy || evaluating} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -308,6 +308,7 @@ function RomeForm({
 
 function MemitForm({
   models,
+  runtime,
   result,
   job,
   setResult,
@@ -315,6 +316,7 @@ function MemitForm({
   onPatchesChanged
 }: {
   models: SupportedModel[];
+  runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
   job: EditJob | null;
   setResult: (result: Record<string, unknown> | null) => void;
@@ -327,6 +329,7 @@ function MemitForm({
   const [layers, setLayers] = usePersistentState("kew:edit:memit:layers", "3,4,5,6,7,8");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
 
   useEffect(() => {
     if (memitModels.length === 0) return;
@@ -402,7 +405,7 @@ function MemitForm({
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
         </button>
-        <ExportActiveModelControl modelId={modelId} disabled={busy} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -410,21 +413,46 @@ function MemitForm({
   );
 }
 
-function ExportActiveModelControl({ modelId, disabled = false }: { modelId: string; disabled?: boolean }) {
-  const [exportDirectory] = usePersistentState("kew:settings:modelExportPath", "");
+function ExportActiveModelControl({ modelId, modelLoaded, disabled = false }: { modelId: string; modelLoaded: boolean; disabled?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const targetPath = exportDirectory.trim() ? buildExportPath(exportDirectory, modelId, "model") : "";
 
   async function saveModel() {
     setMessage("");
     setError("");
+    const suggestedName = `${safeFilename(modelId)}-edited.zip`;
+    const pickerWindow = window as SaveFilePickerWindow;
+
     setBusy(true);
     try {
-      const result = await api.exportModel({ model_id: modelId, output_path: targetPath });
-      setMessage(`Saved model to ${result.output_path}`);
+      if (!pickerWindow.showSaveFilePicker) {
+        const response = await api.downloadModelArchive({ model_id: modelId });
+        const archive = await response.blob();
+        const url = URL.createObjectURL(archive);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = suggestedName;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setMessage("Started model archive download.");
+        return;
+      }
+
+      const handle = await pickerWindow.showSaveFilePicker({
+        suggestedName,
+        types: [{ description: "ZIP archive", accept: { "application/zip": [".zip"] } }]
+      });
+      const writable = await handle.createWritable();
+      const response = await api.downloadModelArchive({ model_id: modelId });
+      if (!response.body) {
+        await writable.abort();
+        throw new Error("The browser did not provide a download stream.");
+      }
+      await response.body.pipeTo(writable);
+      setMessage(`Saved ${suggestedName}.`);
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -433,22 +461,20 @@ function ExportActiveModelControl({ modelId, disabled = false }: { modelId: stri
 
   return (
     <div className="grid gap-3 border-t border-line pt-3">
-      <div className="label">Save Current Model</div>
+      <div className="label">Export Current Model</div>
       <div className="rounded-md border border-line bg-panel px-3 py-2">
-        <div className="truncate font-mono text-xs text-ink/60" title={targetPath || "Set default save directory in Settings"}>
-          {targetPath || "Set default save directory in Settings"}
-        </div>
+        <div className="text-xs text-ink/60">Downloads a standard model ZIP with the current edited weights.</div>
       </div>
       <div className="flex justify-end">
         <button
           type="button"
           className="ghost-button min-h-9 px-3 py-1"
           onClick={saveModel}
-          disabled={disabled || busy || !targetPath}
-          title="Save current active model weights and lineage"
+          disabled={disabled || busy || !modelLoaded}
+          title={modelLoaded ? "Choose a location and download the current edited model as a ZIP archive" : "Load the selected model before exporting"}
         >
-          <Save size={15} />
-          {busy ? "Saving" : "Save"}
+          <Download size={15} />
+          {busy ? "Preparing" : "Save Model ZIP"}
         </button>
       </div>
       {message ? <div className="text-xs text-cyan">{message}</div> : null}
@@ -467,11 +493,21 @@ function buildEditPrompt(subject: string, relationPrompt: string) {
   return relationPrompt.includes("{}") ? relationPrompt.replace("{}", subject) : `${subject} ${relationPrompt}`.trim();
 }
 
-function buildExportPath(directory: string, id: string, mode: "model" | "patch") {
-  const base = directory.trim().replace(/\/+$/, "");
-  const safeId = id.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${base}/${safeId}-${mode}-${timestamp}`;
+type ModelArchiveWritable = WritableStream<Uint8Array> & {
+  abort: () => Promise<void>;
+};
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: Array<{ description: string; accept: Record<string, string[]> }>;
+  }) => Promise<{
+    createWritable: () => Promise<ModelArchiveWritable>;
+  }>;
+};
+
+function safeFilename(value: string) {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "edited-model";
 }
 
 function TextInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
