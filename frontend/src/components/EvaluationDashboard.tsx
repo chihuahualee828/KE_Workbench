@@ -7,12 +7,13 @@ import { api } from "@/lib/api";
 import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
+import { useWorkbenchSession } from "./WorkbenchSession";
 
 export function EvaluationDashboard({ models, patches, runtime = [] }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[] }) {
   const [modelId, setModelId] = usePersistentState("kew:evaluate:modelId", "gpt2");
   const [patchId, setPatchId] = usePersistentState("kew:evaluate:patchId", patches[0]?.patch_id ?? "");
   const [prompts, setPrompts] = usePersistentState("kew:evaluate:prompts", "The Space Needle is located in the city of\nThe landmark known as the Space Needle is in\nThe Eiffel Tower is located in the city of");
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const { evaluationResult: result, setEvaluationResult: setResult } = useWorkbenchSession();
   const [busy, setBusy] = useState(false);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
