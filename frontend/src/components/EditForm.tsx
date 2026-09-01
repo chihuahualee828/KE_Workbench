@@ -684,6 +684,24 @@ function parseLayer(value: string, maxLayer: number) {
   return Number.isSafeInteger(layer) && layer >= 0 && layer <= maxLayer ? layer : null;
 }
 
+function parseMemitLayers(value: string, maxLayer: number): number[] | null {
+  const entries = value.split(",").map((entry) => entry.trim());
+  if (!entries.length || entries.some((entry) => !/^\d+$/.test(entry))) return null;
+  const layers = entries.map(Number);
+  if (layers.some((layer) => !Number.isSafeInteger(layer) || layer < 0 || layer > maxLayer)) return null;
+  return new Set(layers).size === layers.length ? layers : null;
+}
+
+function isEditableMemitLayerInput(value: string, maxLayer: number) {
+  if (value === "") return true;
+  if (!/^\s*\d+\s*(?:,\s*\d+\s*)*,?\s*$/.test(value)) return false;
+  const completeValue = value.trim().replace(/,$/, "").trim();
+  return !completeValue || completeValue.split(",").every((entry) => {
+    const layer = Number(entry.trim());
+    return Number.isSafeInteger(layer) && layer >= 0 && layer <= maxLayer;
+  });
+}
+
 function buildEditPrompt(subject: string, relationPrompt: string) {
   return relationPrompt.includes("{}") ? relationPrompt.replace("{}", subject) : `${subject} ${relationPrompt}`.trim();
 }
