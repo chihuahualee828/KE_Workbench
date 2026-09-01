@@ -8,8 +8,9 @@ import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
+import { useWorkbenchSession } from "./WorkbenchSession";
 
-export function GenerationPanel({ models, patches = [], runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
+export function GenerationPanel({ models, patches = [], runtime = [], onPatchesChanged, sessionScope = "generation" }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void>; sessionScope?: string }) {
   const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2");
   const [prompt, setPrompt] = usePersistentState("kew:generation:prompt", "The Space Needle is located in the city of");
   const [patchId, setPatchId] = usePersistentState("kew:generation:patchId", "");
@@ -19,7 +20,8 @@ export function GenerationPanel({ models, patches = [], runtime = [], onPatchesC
   const [topP, setTopP] = usePersistentState("kew:generation:topP", 0.95);
   const [topK, setTopK] = usePersistentState("kew:generation:topK", 50);
   const [numBeams, setNumBeams] = usePersistentState("kew:generation:numBeams", 4);
-  const [output, setOutput] = useState("");
+  const { generationOutput, setGenerationOutput } = useWorkbenchSession();
+  const output = generationOutput(sessionScope);
   const [busy, setBusy] = useState(false);
   const [runtimeRefreshKey, setRuntimeRefreshKey] = useState(0);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
@@ -39,7 +41,7 @@ export function GenerationPanel({ models, patches = [], runtime = [], onPatchesC
         num_beams: clampNumber(numBeams, 1, 16),
         patch_id: patchId || null
       });
-      setOutput(result.text);
+      setGenerationOutput(sessionScope, result.text);
     } finally {
       setRuntimeRefreshKey((value) => value + 1);
       setBusy(false);

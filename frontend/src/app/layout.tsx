@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { TopbarJobsMenu } from "@/components/TopbarJobsMenu";
+import { WorkbenchSessionProvider } from "@/components/WorkbenchSession";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -41,7 +42,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </nav>
           </div>
         </header>
-        <main className="mx-auto min-h-screen max-w-7xl">{children}</main>
+        <WorkbenchSessionProvider>
+          <main className="mx-auto min-h-screen max-w-7xl">{children}</main>
+        </WorkbenchSessionProvider>
       </body>
     </html>
   );

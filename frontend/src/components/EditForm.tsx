@@ -8,6 +8,7 @@ import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/t
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
+import { useWorkbenchSession } from "./WorkbenchSession";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
@@ -24,8 +25,9 @@ type MemitEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "memit" | "patches">("kew:edit:tab", "rome");
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
-  const [job, setJob] = useState<EditJob | null>(null);
+  const { edit, setEdit } = useWorkbenchSession();
+  const setResult = (result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result }));
+  const setJob = (job: EditJob | null) => setEdit((current) => ({ ...current, job }));
 
   return (
     <div className="grid gap-4">
@@ -44,13 +46,13 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
           </button>
         ))}
       </div>
-      {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={result} job={job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
           <PatchHistory patches={patches} runtime={runtime} onPatchesChanged={onPatchesChanged} />
           <div className="min-w-0">
-            <ResultPanel result={result} job={job} />
+            <ResultPanel result={edit.result} job={edit.job} />
           </div>
         </div>
       ) : null}

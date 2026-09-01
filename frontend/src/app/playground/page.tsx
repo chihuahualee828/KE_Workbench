@@ -15,7 +15,7 @@ export default function PlaygroundPage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <GenerationPanel models={models} patches={patches} runtime={runtime} />
+        <GenerationPanel models={models} patches={patches} runtime={runtime} sessionScope="generate" />
       </section>
     </div>
   );
