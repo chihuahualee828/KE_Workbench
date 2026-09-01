@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, Download, FlaskConical, Layers, Loader2, LocateFixed, Save, Upload } from "lucide-react";
+import { BarChart3, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -11,6 +11,16 @@ import { PatchHistory } from "./PatchHistory";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
+
+type MemitEditDraft = {
+  subject: string;
+  relation_prompt: string;
+  ground_truth: string;
+  new_object: string;
+  rephrase_prompts?: string[];
+};
+
+type MemitEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "memit" | "patches">("kew:edit:tab", "rome");
@@ -326,10 +336,22 @@ function MemitForm({
   const memitModels = useMemo(() => models.filter((model) => model.supports_memit), [models]);
   const [modelId, setModelId] = usePersistentState("kew:edit:memit:modelId", memitModels[0]?.id ?? "gpt2-xl");
   const [edits, setEdits] = usePersistentState("kew:edit:memit:edits", '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
-  const [layers, setLayers] = usePersistentState("kew:edit:memit:layers", "3,4,5,6,7,8");
+  const [inputMode, setInputMode] = usePersistentState<"form" | "json">("kew:edit:memit:inputMode", "form");
+  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
+  const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
+  const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:memit:evaluationPrompts", "Michael Jordan plays the sport of\nThe Space Needle is located in the city of");
+  const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
+  const selectedModelId = selectedModel?.id;
+  const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
+  const layers = layersByModel[modelId] ?? "";
+  const selectedLayers = parseMemitLayers(layers, maxLayer);
+  const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const editDrafts = useMemo(() => parseMemitEditDrafts(edits), [edits]);
 
   useEffect(() => {
     if (memitModels.length === 0) return;
@@ -338,17 +360,55 @@ function MemitForm({
     }
   }, [memitModels, modelId, setModelId]);
 
+  useEffect(() => {
+    let active = true;
+    if (!selectedModelId) return;
+    api.editDefaultLayers({ model_id: selectedModelId, method: "memit" })
+      .then((result) => {
+        const defaults = result.layers.filter((layer) => Number.isInteger(layer) && layer >= 0 && layer <= maxLayer);
+        if (!active || defaults.length === 0) return;
+        const defaultValue = defaults.join(",");
+        setEasyEditDefaultLayers((current) => ({ ...current, [selectedModelId]: defaults }));
+        setLayersByModel((current) => {
+          if (parseMemitLayers(current[selectedModelId] ?? "", maxLayer)) return current;
+          return { ...current, [selectedModelId]: defaultValue };
+        });
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, [maxLayer, selectedModelId, setLayersByModel]);
+
   async function run() {
+    if (!modelLoaded || busy) return;
     setBusy(true);
     setError("");
     setResult(null);
     setJob(null);
     try {
+      const parsedEdits = parseMemitEditDrafts(edits);
+      if (!parsedEdits?.length) {
+        throw new Error("Add at least one MEMIT fact before editing.");
+      }
+      const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
+      if (invalidEdit >= 0) {
+        throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
+      }
+      if (!selectedLayers?.length) {
+        throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
+      }
       const response = await api.memitEdit({
         model_id: modelId,
-        edits: JSON.parse(edits),
-        layers: layers.split(",").map((item) => Number(item.trim())).filter((item) => Number.isFinite(item)),
-        sequential_edit: false
+        edits: parsedEdits.map((edit) => ({
+          ...edit,
+          ground_truth: edit.ground_truth.trim() || null
+        })),
+        layers: selectedLayers,
+        evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
+        sequential_edit: sequentialEdit
       });
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
@@ -370,8 +430,68 @@ function MemitForm({
         throw new Error("MEMIT edits JSON must be an array of edit objects.");
       }
       setEdits(JSON.stringify(parsed, null, 2));
+      setInputMode("form");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function updateEditDraft(index: number, field: MemitEditableField, value: string) {
+    if (!editDrafts) return;
+    setEdits(JSON.stringify(editDrafts.map((edit, editIndex) => editIndex === index ? { ...edit, [field]: value } : edit), null, 2));
+  }
+
+  function addEditDraft() {
+    const nextEdits = editDrafts ?? [];
+    setEdits(JSON.stringify([...nextEdits, emptyMemitEditDraft()], null, 2));
+  }
+
+  function removeEditDraft(index: number) {
+    if (!editDrafts) return;
+    setEdits(JSON.stringify(editDrafts.filter((_, editIndex) => editIndex !== index), null, 2));
+  }
+
+  function showFormEditor() {
+    if (!editDrafts) {
+      setError("Fix the JSON before switching to the form editor.");
+      return;
+    }
+    setError("");
+    setInputMode("form");
+  }
+
+  function formatEditsJson() {
+    try {
+      const parsed = JSON.parse(edits);
+      if (!Array.isArray(parsed)) throw new Error("MEMIT edits JSON must be an array of edit objects.");
+      setEdits(JSON.stringify(parsed, null, 2));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function evaluatePrompts() {
+    const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (!modelLoaded || !prompts.length || busy || evaluating) return;
+    setEvaluating(true);
+    setError("");
+    try {
+      const generations = [];
+      for (const prompt of prompts) {
+        const response = await api.generate({
+          model_id: modelId,
+          prompt,
+          max_new_tokens: 32,
+          decoding_strategy: "greedy"
+        });
+        generations.push({ prompt, text: response.text });
+      }
+      setResult({ generations, evaluation_only: true, model_id: modelId });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEvaluating(false);
     }
   }
 
@@ -381,31 +501,99 @@ function MemitForm({
         <ModelSelector models={memitModels.length ? memitModels : models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <label className="label" htmlFor="memit-edits-json">
-              Batch Edits JSON
-            </label>
-            <label className="ghost-button min-h-8 shrink-0 cursor-pointer px-2 py-1 text-xs" title="Upload MEMIT edits JSON">
-              <Upload size={14} />
-              Upload JSON
-              <input
-                className="sr-only"
-                type="file"
-                accept="application/json,.json"
-                onChange={(event) => {
-                  void uploadEditsJson(event.target.files?.[0] ?? null);
-                  event.target.value = "";
-                }}
-              />
-            </label>
+            <span className="label">Batch Edits</span>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-md border border-line bg-white p-1">
+                <button className={`rounded px-2 py-1 text-xs ${inputMode === "form" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={showFormEditor} type="button">Form</button>
+                <button className={`rounded px-2 py-1 text-xs ${inputMode === "json" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setInputMode("json")} type="button">JSON</button>
+              </div>
+              <label className="ghost-button grid size-8 shrink-0 cursor-pointer place-items-center p-0" title="Upload MEMIT edits JSON">
+                <Upload size={14} />
+                <input
+                  className="sr-only"
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    void uploadEditsJson(event.target.files?.[0] ?? null);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
           </div>
-          <textarea id="memit-edits-json" className="control min-h-48 font-mono text-xs" value={edits} onChange={(event) => setEdits(event.target.value)} />
+          {inputMode === "form" && editDrafts ? (
+            <div className="grid max-h-96 gap-3 overflow-y-auto pr-1">
+              {editDrafts.map((edit, index) => (
+                <section key={index} className="grid gap-3 border border-line bg-panel p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium">Fact {index + 1}</span>
+                    <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={editDrafts.length === 1} onClick={() => removeEditDraft(index)} title="Remove fact" type="button">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                  <MemitFactInput label="Subject" value={edit.subject} onChange={(value) => updateEditDraft(index, "subject", value)} />
+                  <MemitFactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(value) => updateEditDraft(index, "relation_prompt", value)} />
+                  <MemitFactInput label="New Object" value={edit.new_object} onChange={(value) => updateEditDraft(index, "new_object", value)} />
+                  <MemitFactInput label="Ground Truth" value={edit.ground_truth} onChange={(value) => updateEditDraft(index, "ground_truth", value)} />
+                </section>
+              ))}
+              <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={addEditDraft} type="button">
+                <Plus size={14} />
+                Add fact
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={formatEditsJson} type="button">Format JSON</button>
+              </div>
+              <textarea id="memit-edits-json" className="control min-h-64 font-mono text-xs" value={edits} onChange={(event) => setEdits(event.target.value)} />
+            </>
+          )}
         </div>
-        <TextInput label="Layers" value={layers} onChange={setLayers} />
-        <button className="tool-button w-full" onClick={run} disabled={busy} title="Apply MEMIT edit">
+        <label className="grid gap-2">
+          <span className="label">Edit Layers</span>
+          <input
+            className="control"
+            inputMode="numeric"
+            value={layers}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (isEditableMemitLayerInput(value, maxLayer)) {
+                setLayersByModel((current) => ({ ...current, [modelId]: value }));
+              }
+            }}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
+            <span>Valid layers: 0-{maxLayer}</span>
+            <span>EasyEdit default: {easyEditDefaultLayerValues?.join(",") ?? "Loading..."}</span>
+          </div>
+        </label>
+        <div className="grid gap-2">
+          <span className="flex items-center justify-between gap-2">
+            <span className="label">Evaluation Prompts</span>
+            <button
+              type="button"
+              className="ghost-button min-h-8 px-2 py-1 text-xs"
+              onClick={evaluatePrompts}
+              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
+              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
+            >
+              <BarChart3 size={14} />
+              {evaluating ? "Evaluating" : "Evaluate"}
+            </button>
+          </span>
+          <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
+        </div>
+        <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
+          <span>Sequential edit</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+        </label>
+        <button className="tool-button w-full" onClick={run} disabled={busy || evaluating || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
         </button>
-        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -510,6 +698,46 @@ function safeFilename(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "edited-model";
 }
 
+function emptyMemitEditDraft(): MemitEditDraft {
+  return {
+    subject: "",
+    relation_prompt: "{} is",
+    ground_truth: "",
+    new_object: ""
+  };
+}
+
+function parseMemitEditDrafts(value: string): MemitEditDraft[] | null {
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((item) => {
+      if (!item || typeof item !== "object") return emptyMemitEditDraft();
+      const edit = item as Record<string, unknown>;
+      return {
+        subject: typeof edit.subject === "string" ? edit.subject : "",
+        relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
+        ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
+        new_object: typeof edit.new_object === "string" ? edit.new_object : "",
+        rephrase_prompts: Array.isArray(edit.rephrase_prompts)
+          ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
+          : undefined
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+function MemitFactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="grid gap-1">
+      <span className="label">{label}</span>
+      <input className="control" value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
 function TextInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="grid gap-2">
@@ -575,4 +803,3 @@ function parseGenerations(result: Record<string, unknown> | null) {
     })
     .filter((item): item is { prompt: string; text: string } => Boolean(item?.text));
 }
-

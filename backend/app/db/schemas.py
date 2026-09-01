@@ -83,6 +83,7 @@ class MemitEditRequest(BaseModel):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec]
     layers: list[int] | None = None
+    evaluation_prompts: list[str] = Field(default_factory=list)
     locality_inputs: dict[str, dict[str, list[str]]] | None = None
     portability_inputs: dict[str, dict[str, list[str]]] | None = None
     sequential_edit: bool = False
