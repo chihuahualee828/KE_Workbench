@@ -18,6 +18,7 @@ def run_rome_edit(
     locality_inputs: dict | None,
     portability_inputs: dict | None,
     sequential_edit: bool,
+    mom2_adjustment: bool,
 ) -> dict:
     edit = edit_to_patch_entry(subject, relation_prompt, new_object)
     if ground_truth is not None:
@@ -42,6 +43,7 @@ def run_rome_edit(
         portability_inputs=portability_inputs,
         sequential_edit=sequential_edit,
         layer_source=layer_source,
+        mom2_adjustment=mom2_adjustment,
     )
     result["generations"] = _generate_evaluation_outputs(
         model_id=model_id,

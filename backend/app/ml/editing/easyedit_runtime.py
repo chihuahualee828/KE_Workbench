@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +83,7 @@ def run_easyedit(
     portability_inputs: dict[str, dict[str, list[str]]] | None = None,
     sequential_edit: bool = False,
     layer_source: str | None = None,
+    mom2_adjustment: bool | None = None,
 ) -> dict[str, Any]:
     method_key = method.lower()
     spec = METHODS.get(method_key)
@@ -98,11 +102,14 @@ def run_easyedit(
     hparams_path = _resolve_hparams_path(model, spec["hparams_key"])
     hparams = hparams_cls.from_hparams(str(hparams_path))
     print(f"Loaded EasyEdit hparams from {hparams_path}.")
-    print(f"Original hparams: {hparams}")
+
     _override_model_name(hparams, model)
     _override_layers(hparams, layers)
+    _override_mom2_adjustment(hparams, mom2_adjustment)
+    _configure_stats_dir(hparams)
     easyedit_model_name = hparams.model_name
     effective_layers = _hparams_layers(hparams)
+    print(f"{method_key.upper()} hparams: {hparams}")
 
     prompts = [build_prompt(edit["subject"], edit["relation_prompt"]) for edit in edits]
     target_new = [edit["new_object"] for edit in edits]
@@ -190,6 +197,7 @@ def run_easyedit(
                     "sequential_edit": sequential_edit,
                     "parent_patch_ids": active_patch_ids if sequential_edit else [],
                     "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
+                    "mom2_adjustment": bool(getattr(hparams, "mom2_adjustment", False)),
                     "used_loaded_runtime": used_loaded_runtime,
                 },
                 patch_id=patch_id,
@@ -233,6 +241,7 @@ def _load_easyedit(hparams_class_name: str) -> tuple[Any, Any]:
             "install its requirements, and set EASYEDIT_ROOT to that checkout."
         ) from exc
 
+    _configure_easyedit_statistics_loader()
     hparams_cls = getattr(easyeditor, hparams_class_name, None)
     if hparams_cls is None:
         raise EasyEditRuntimeError(
@@ -240,6 +249,26 @@ def _load_easyedit(hparams_class_name: str) -> tuple[Any, Any]:
             "Update EasyEdit from https://github.com/zjunlp/EasyEdit."
         )
     return BaseEditor, hparams_cls
+
+
+def _configure_easyedit_statistics_loader() -> None:
+    """Avoid worker spawning for EasyEdit's nested, non-picklable collate function."""
+    try:
+        from easyeditor.models.rome import layer_stats as layer_stats_module
+    except ImportError:
+        return
+
+    if getattr(layer_stats_module, "_workbench_single_process_loader", False):
+        return
+
+    original_tally = layer_stats_module.tally
+
+    def single_process_tally(*args, **kwargs):
+        kwargs["num_workers"] = 0
+        return original_tally(*args, **kwargs)
+
+    layer_stats_module.tally = single_process_tally
+    layer_stats_module._workbench_single_process_loader = True
 
 
 def _add_easyedit_to_python_path() -> None:
@@ -362,6 +391,273 @@ def _override_layers(hparams: Any, layers: list[int] | None) -> None:
         setattr(hparams, "layers", layers)
     if hasattr(hparams, "layer"):
         setattr(hparams, "layer", layers[0])
+
+
+def get_mom2_statistics_status(
+    model_id: str,
+    method: str,
+    layers: list[int] | None = None,
+) -> dict[str, Any]:
+    """Report the MOM2 cache files EasyEdit will use for this runtime model."""
+    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
+    _override_mom2_adjustment(hparams, True)
+
+    statistics = []
+    for layer in effective_layers:
+        path = _mom2_statistics_path(hparams, None, layer)
+        statistics.append({"layer": layer, "path": str(path), "ready": path.exists()})
+    missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
+    return {
+        "model_id": model_id,
+        "method": method.lower(),
+        "mom2_adjustment": True,
+        "dataset": str(getattr(hparams, "mom2_dataset")),
+        "layers": effective_layers,
+        "stats_dir": str(getattr(hparams, "stats_dir")),
+        "ready": not missing_layers,
+        "missing_layers": missing_layers,
+        "statistics": statistics,
+    }
+
+
+def require_mom2_statistics(
+    model_id: str,
+    method: str,
+    layers: list[int] | None,
+    mom2_adjustment: bool,
+) -> dict[str, Any]:
+    if not mom2_adjustment:
+        return {"model_id": model_id, "method": method.lower(), "mom2_adjustment": False, "ready": True}
+
+    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
+    _override_mom2_adjustment(hparams, True)
+    runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    statistics = []
+    for layer in effective_layers:
+        path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
+        statistics.append({"layer": layer, "path": str(path), "ready": path.exists()})
+    missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
+    if missing_layers:
+        rendered_layers = ", ".join(str(layer) for layer in missing_layers)
+        raise EasyEditRuntimeError(
+            f"MOM2 statistics are missing for {model_id} layer(s) {rendered_layers}. "
+            "Prepare them from Settings before applying this edit."
+        )
+    return {
+        "model_id": model_id,
+        "method": method.lower(),
+        "mom2_adjustment": True,
+        "layers": effective_layers,
+        "stats_dir": str(getattr(hparams, "stats_dir")),
+        "ready": True,
+        "missing_layers": [],
+        "statistics": statistics,
+    }
+
+
+def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None = None) -> dict[str, Any]:
+    """Compute the missing EasyEdit MOM2 covariance caches for selected layers."""
+    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
+    _override_mom2_adjustment(hparams, True)
+
+    with model_runtime_service.exclusive_runtime_access():
+        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(hparams.model_name), method.lower())
+        _override_easyedit_device(hparams, runtime_bundle.get("device"))
+
+        from easyeditor.models.rome.layer_stats import layer_stats
+
+        for layer in effective_layers:
+            path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
+            if path.exists():
+                print(f"MOM2 statistics already cached for layer {layer}: {path}")
+                continue
+            print(f"Preparing MOM2 statistics for layer {layer}: {path}")
+            layer_stats(
+                runtime_bundle["model"],
+                runtime_bundle["tokenizer"],
+                str(getattr(hparams, "rewrite_module_tmp")).format(layer),
+                getattr(hparams, "stats_dir"),
+                getattr(hparams, "mom2_dataset"),
+                to_collect=["mom2"],
+                sample_size=getattr(hparams, "mom2_n_samples"),
+                precision=getattr(hparams, "mom2_dtype"),
+                hparams=hparams,
+            )
+
+    return get_mom2_statistics_status(model_id, method, effective_layers)
+
+
+def import_mom2_statistics(
+    model_id: str,
+    method: str,
+    dataset: str,
+    layers: list[int] | None,
+    files: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Validate and atomically install precomputed MOM2 cache files."""
+    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
+    expected_dataset = str(getattr(hparams, "mom2_dataset"))
+    if dataset.strip() != expected_dataset:
+        raise EasyEditRuntimeError(
+            f"{method.upper()} for {model_id} expects {expected_dataset!r} MOM2 statistics, not {dataset!r}."
+        )
+
+    expected_files = {
+        _mom2_statistics_path(hparams, None, layer).name: (layer, _mom2_statistics_path(hparams, None, layer))
+        for layer in effective_layers
+    }
+    imported_layers: list[int] = []
+    for uploaded_name, uploaded_file in files:
+        filename = Path(uploaded_name).name
+        if Path(filename).suffix.lower() != ".npz":
+            raise EasyEditRuntimeError(f"{filename!r} is not an NPZ statistics file.")
+        expected = expected_files.get(filename)
+        if expected is None:
+            raise EasyEditRuntimeError(
+                f"{filename!r} does not match a selected {method.upper()} layer for {model_id}."
+            )
+        layer, destination = expected
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent, delete=False) as temporary:
+                temporary_path = temporary.name
+                shutil.copyfileobj(uploaded_file, temporary)
+            _validate_mom2_archive(Path(temporary_path), getattr(hparams, "mom2_n_samples"))
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            imported_layers.append(layer)
+        finally:
+            if temporary_path is not None:
+                Path(temporary_path).unlink(missing_ok=True)
+
+    status = get_mom2_statistics_status(model_id, method, effective_layers)
+    status["imported_layers"] = sorted(set(imported_layers))
+    return status
+
+
+def list_mom2_statistics(model_id: str, method: str) -> dict[str, Any]:
+    """List all cached second-moment files that match a model/method hparams profile."""
+    hparams, _ = _load_edit_hparams(model_id, method, None)
+    model = model_registry.get(model_id)
+    layer_count = int(model.get("n_layers", 0))
+    statistics = []
+    for layer in range(max(0, layer_count)):
+        path = _mom2_statistics_path(hparams, None, layer)
+        if not path.exists():
+            continue
+        stat = path.stat()
+        statistics.append(
+            {
+                "layer": layer,
+                "path": str(path),
+                "filename": path.name,
+                "size_bytes": stat.st_size,
+                "modified_at": stat.st_mtime,
+            }
+        )
+    return {
+        "model_id": model_id,
+        "method": method.lower(),
+        "dataset": str(getattr(hparams, "mom2_dataset")),
+        "stats_dir": str(getattr(hparams, "stats_dir")),
+        "statistics": statistics,
+    }
+
+
+def delete_mom2_statistics(model_id: str, method: str, layers: list[int]) -> dict[str, Any]:
+    if not layers:
+        raise EasyEditRuntimeError("Select one or more second-moment statistics files to delete.")
+    hparams, _ = _load_edit_hparams(model_id, method, None)
+    model = model_registry.get(model_id)
+    layer_count = int(model.get("n_layers", 0))
+    invalid_layers = [layer for layer in layers if not isinstance(layer, int) or layer < 0 or layer >= layer_count]
+    if invalid_layers:
+        raise EasyEditRuntimeError(f"Invalid {model_id} layer(s): {', '.join(str(layer) for layer in invalid_layers)}.")
+
+    deleted_layers = []
+    for layer in sorted(set(layers)):
+        path = _mom2_statistics_path(hparams, None, layer)
+        if path.exists():
+            path.unlink()
+            deleted_layers.append(layer)
+    result = list_mom2_statistics(model_id, method)
+    result["deleted_layers"] = deleted_layers
+    return result
+
+
+def _load_edit_hparams(model_id: str, method: str, layers: list[int] | None) -> tuple[Any, list[int]]:
+    method_key = method.lower()
+    spec = METHODS.get(method_key)
+    if spec is None:
+        raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
+
+    model = model_registry.get(model_id)
+    if not model.get(spec["support_key"], False):
+        raise EasyEditUnsupportedError(f"{model_id} is not configured for {method_key.upper()}.")
+
+    _, hparams_cls = _load_easyedit(spec["hparams_class"])
+    hparams = hparams_cls.from_hparams(str(_resolve_hparams_path(model, spec["hparams_key"])))
+    _override_model_name(hparams, model)
+    _override_layers(hparams, layers)
+    _configure_stats_dir(hparams)
+    effective_layers = _hparams_layers(hparams)
+    if not effective_layers:
+        raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers for {model_id}.")
+    return hparams, effective_layers
+
+
+def _override_mom2_adjustment(hparams: Any, enabled: bool | None) -> None:
+    if enabled is not None and hasattr(hparams, "mom2_adjustment"):
+        setattr(hparams, "mom2_adjustment", enabled)
+
+
+def _configure_stats_dir(hparams: Any) -> None:
+    if not hasattr(hparams, "stats_dir"):
+        return
+    backend_root = Path(__file__).resolve().parents[3]
+    data_dir = settings.data_dir
+    if not data_dir.is_absolute():
+        data_dir = (backend_root / data_dir).resolve()
+    setattr(hparams, "stats_dir", str(data_dir / "stats"))
+
+
+def _mom2_statistics_path(hparams: Any, model: Any | None, layer: int) -> Path:
+    model_source = getattr(model.config, "_name_or_path", None) if model is not None else getattr(hparams, "model_name", "model")
+    model_name = str(model_source).rsplit("/", 1)[-1]
+    layer_name = str(getattr(hparams, "rewrite_module_tmp")).format(layer)
+    dataset = str(getattr(hparams, "mom2_dataset"))
+    precision = str(getattr(hparams, "mom2_dtype"))
+    sample_size = getattr(hparams, "mom2_n_samples")
+    size_suffix = "" if sample_size is None else f"_{sample_size}"
+    return Path(str(getattr(hparams, "stats_dir"))) / f"{model_name}/{dataset}_stats/{layer_name}_{precision}_mom2{size_suffix}.npz"
+
+
+def _validate_mom2_archive(path: Path, expected_sample_size: int | None) -> None:
+    try:
+        import numpy as np
+
+        with np.load(path, allow_pickle=False) as archive:
+            keys = set(archive.files)
+            required = {"sample_size", "mom2.count", "mom2.mom2"}
+            missing = required - keys
+            if missing:
+                raise EasyEditRuntimeError(
+                    f"Statistics archive is missing required data: {', '.join(sorted(missing))}."
+                )
+            if expected_sample_size is not None and int(archive["sample_size"]) != expected_sample_size:
+                raise EasyEditRuntimeError(
+                    f"Statistics archive uses sample size {int(archive['sample_size'])}, "
+                    f"but this hparams configuration requires {expected_sample_size}."
+                )
+            matrix = archive["mom2.mom2"]
+            if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+                raise EasyEditRuntimeError("Statistics archive has an invalid second-moment matrix.")
+    except EasyEditRuntimeError:
+        raise
+    except Exception as exc:
+        raise EasyEditRuntimeError("Unable to read the uploaded MOM2 statistics archive.") from exc
 
 
 def _hparams_layers(hparams: Any) -> list[int]:
