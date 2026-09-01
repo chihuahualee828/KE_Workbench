@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
@@ -129,6 +130,8 @@ function RomeForm({
   const targetLayerNumber = parseLayer(targetLayer, maxLayer);
   const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+
+  useLoadedModelSelection(romeModels, runtime, setModelId);
 
   useEffect(() => {
     if (romeModels.length === 0) return;
@@ -354,6 +357,8 @@ function MemitForm({
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const editDrafts = useMemo(() => parseMemitEditDrafts(edits), [edits]);
+
+  useLoadedModelSelection(memitModels, runtime, setModelId);
 
   useEffect(() => {
     if (memitModels.length === 0) return;

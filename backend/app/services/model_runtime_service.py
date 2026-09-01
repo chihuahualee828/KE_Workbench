@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 import zipfile
 
-from app.ml.adapters.gpt2_adapter import adapter_runtime_lock, get_gpt2_adapter, unload_all_adapters
+from app.ml.adapters.gpt2_adapter import adapter_runtime_lock, get_gpt2_adapter, unload_all_adapters, unload_other_adapters
 from app.services.model_cache_service import model_cache_service
 from app.services.model_registry import model_registry
 
@@ -73,7 +73,7 @@ class ModelRuntimeService:
             "created_at": _now(),
             "updated_at": _now(),
         }
-        with self._lock:
+        with self._condition:
             self._jobs[job_id] = job
             self._runtime_version += 1
             self._condition.notify_all()
@@ -121,13 +121,14 @@ class ModelRuntimeService:
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
                     torch.cuda.ipc_collect()
+                print("Model runtime unloaded and GPU memory cleared.")
             except ImportError:
                 pass
             status = self.runtime_status(model_id)
             status["memory"] = _runtime_memory()
             status["discarded_patches_by_model"] = discarded_patches_by_model
-            self._publish_runtime_update()
-            return status
+        self._publish_runtime_update()
+        return status
 
     def unload_all(self) -> None:
         with adapter_runtime_lock():
@@ -263,7 +264,7 @@ class ModelRuntimeService:
         return adapter_runtime_lock()
 
     def _load_model(self, job_id: str) -> None:
-        with self._lock:
+        with self._condition:
             job = self._jobs[job_id]
             job["status"] = "loading"
             job["message"] = "Loading model weights onto GPU if available"
@@ -277,9 +278,17 @@ class ModelRuntimeService:
             adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
             local_files_only = model_cache_service.cache_status(model_id)["cached"]
             adapter.load_tokenizer(local_files_only=local_files_only)
-            adapter.load_model(local_files_only=local_files_only)
+            with adapter_runtime_lock():
+                replaced_model_ids = [loaded_model_id for loaded_model_id in self._loaded_model_ids() if loaded_model_id != model_id]
+                if replaced_model_ids:
+                    unload_other_adapters(adapter)
+                    from app.services.patch_service import patch_service
+
+                    for replaced_model_id in replaced_model_ids:
+                        patch_service.deactivate_runtime_patches_for_model(replaced_model_id)
+                adapter.load_model(local_files_only=local_files_only)
             device = adapter.model_device() or "unknown device"
-            with self._lock:
+            with self._condition:
                 self._jobs[job_id].update(
                     {
                         "status": "completed",
@@ -291,7 +300,7 @@ class ModelRuntimeService:
                 self._runtime_version += 1
                 self._condition.notify_all()
         except Exception as exc:
-            with self._lock:
+            with self._condition:
                 self._jobs[job_id].update(
                     {
                         "status": "failed",
@@ -329,7 +338,6 @@ class ModelRuntimeService:
             "created_at": _now(),
             "updated_at": _now(),
         }
-
 
     def _loaded_model_ids(self) -> list[str]:
         loaded_model_ids: list[str] = []

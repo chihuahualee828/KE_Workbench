@@ -5,11 +5,22 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const eventName = "kew:model-runtime-load-started";
 const statusEventName = "kew:model-runtime-status-changed";
 const connectionEventName = "kew:model-runtime-connection-changed";
+const activeModelEventName = "kew:active-runtime-model-changed";
 const activeStatuses = ["queued", "loading"];
+const modelSelectionKeys = [
+  "kew:generation:modelId",
+  "kew:lens:modelId",
+  "kew:trace:modelId",
+  "kew:evaluate:modelId",
+  "kew:edit:rome:modelId",
+  "kew:edit:memit:modelId",
+  "kew:settings:mom2:modelId"
+];
 const waiters = new Map<string, Promise<ModelRuntimeJob>>();
 let runtimeConnected = true;
 
 export function announceModelRuntimeLoad(job: ModelRuntimeJob) {
+  if (job.status === "completed") announceActiveRuntimeModel(job.model_id);
   window.dispatchEvent(new CustomEvent<ModelRuntimeJob>(eventName, { detail: job }));
 }
 
@@ -22,7 +33,21 @@ export function listenForModelRuntimeLoads(callback: (job: ModelRuntimeJob) => v
 }
 
 export function announceModelRuntimeStatus(status: ModelRuntimeStatus) {
+  if (status.loaded) announceActiveRuntimeModel(status.model_id);
   window.dispatchEvent(new CustomEvent<ModelRuntimeStatus>(statusEventName, { detail: status }));
+}
+
+export function listenForActiveRuntimeModel(callback: (modelId: string) => void) {
+  function handle(event: Event) {
+    callback((event as CustomEvent<string>).detail);
+  }
+  window.addEventListener(activeModelEventName, handle);
+  return () => window.removeEventListener(activeModelEventName, handle);
+}
+
+function announceActiveRuntimeModel(modelId: string) {
+  modelSelectionKeys.forEach((key) => window.localStorage.setItem(key, JSON.stringify(modelId)));
+  window.dispatchEvent(new CustomEvent<string>(activeModelEventName, { detail: modelId }));
 }
 
 export function announceModelRuntimeStatuses(statuses: ModelRuntimeStatus[]) {

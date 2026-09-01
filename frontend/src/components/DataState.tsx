@@ -41,6 +41,9 @@ export function useWorkbenchData() {
   useEffect(() => {
     const stopListeningForLoads = listenForModelRuntimeLoads((job) => {
       setRuntime((current) => applyRuntimeJobToRuntime(current, job));
+      if (job.status === "completed") {
+        void refresh().catch(() => undefined);
+      }
     });
     const stopListeningForStatuses = listenForModelRuntimeStatuses((runtimeStatus) => {
       setRuntime((current) => applyRuntimeStatusToRuntime(current, runtimeStatus));

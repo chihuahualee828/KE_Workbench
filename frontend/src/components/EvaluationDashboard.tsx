@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { api } from "@/lib/api";
 import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { useWorkbenchSession } from "./WorkbenchSession";
@@ -16,6 +17,8 @@ export function EvaluationDashboard({ models, patches, runtime = [] }: { models:
   const { evaluationResult: result, setEvaluationResult: setResult } = useWorkbenchSession();
   const [busy, setBusy] = useState(false);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
+
+  useLoadedModelSelection(models, runtime, setModelId);
 
   async function run() {
     if (!modelLoaded || busy) return;
