@@ -151,6 +151,10 @@ export const api = {
     }),
   experiments: () => request<Experiment[]>("/api/experiments"),
   experiment: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}`),
+  deleteExperiment: (experimentId: string) =>
+    request<{ experiment_id: string }>(`/api/experiments/${experimentId}`, {
+      method: "DELETE"
+    }),
   clearExperiments: () =>
     request<{ deleted_experiment_count: number }>("/api/experiments", {
       method: "DELETE"

@@ -20,6 +20,16 @@ def get_experiment(experiment_id: str) -> dict:
     return experiment
 
 
+@router.delete("/experiments/{experiment_id}")
+def delete_experiment(experiment_id: str) -> dict:
+    try:
+        return experiment_service.delete_experiment(experiment_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Experiment not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.delete("/experiments")
 def clear_experiments() -> dict[str, int]:
     try:
