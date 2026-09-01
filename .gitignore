@@ -5,6 +5,7 @@ __pycache__/
 .next/
 node_modules/
 data/
+logs/
 *.db
 *.sqlite
 *.pyc
