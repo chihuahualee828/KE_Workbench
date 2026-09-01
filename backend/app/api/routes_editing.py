@@ -315,6 +315,16 @@ def discard_patch(patch_id: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.delete("/patches/{patch_id}")
+def delete_patch(patch_id: str) -> dict:
+    try:
+        return patch_service.delete_patch_artifact(patch_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Patch not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.delete("/patches")
 def delete_all_patches() -> dict:
     state = patch_service.deactivate_all_patches()

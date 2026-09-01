@@ -230,6 +230,21 @@ class PatchService:
             patches_root.mkdir(parents=True, exist_ok=True)
         return {"deleted_patch_count": patch_count}
 
+    def delete_patch_artifact(self, patch_id: str) -> dict[str, str]:
+        if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id:
+            raise FileNotFoundError(patch_id)
+        patch = self.get_patch(patch_id)
+        model_id = str(patch["base_model"])
+        with self._lock:
+            if patch_id in self.active_patches_by_model().get(model_id, []):
+                raise ValueError(f"Discard or revert patch {patch_id} before deleting its saved artifact.")
+
+            patch_dir = local_store.root / "patches" / patch_id
+            if not patch_dir.exists():
+                raise FileNotFoundError(patch_id)
+            shutil.rmtree(patch_dir)
+        return {"patch_id": patch_id}
+
     def import_model_lineage(self, model: dict[str, Any]) -> dict[str, Any]:
         local_path = Path(model.get("local_path") or model.get("hf_id") or "")
         lineage_path = local_path / self.lineage_filename

@@ -164,6 +164,10 @@ export const api = {
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/discard`, {
       method: "POST"
     }),
+  deletePatch: (patchId: string) =>
+    request<{ patch_id: string }>(`/api/patches/${patchId}`, {
+      method: "DELETE"
+    }),
   revertToPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/revert-to`, {
       method: "POST"

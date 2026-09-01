@@ -19,12 +19,18 @@ export function PatchHistory({
   const [busyPatchId, setBusyPatchId] = useState("");
   const [savingPatchId, setSavingPatchId] = useState("");
   const [loadingPatchId, setLoadingPatchId] = useState("");
+  const [deletingPatchId, setDeletingPatchId] = useState("");
   const [message, setMessage] = useState("");
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
+  const [patchPendingDeletion, setPatchPendingDeletion] = useState<Patch | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [clearingHistory, setClearingHistory] = useState(false);
   const [exportDirectory] = usePersistentState("kew:settings:modelExportPath", "");
   const [error, setError] = useState("");
+  const loadedModelIds = useMemo(
+    () => new Set(runtime.filter((status) => status.loaded).map((status) => status.model_id)),
+    [runtime]
+  );
   const activePatches = useMemo(
     () =>
       patches
@@ -100,18 +106,31 @@ export function PatchHistory({
     setMessage("");
     setError("");
     try {
-      const state = await api.loadPatch(patch.patch_id);
-      setSelectedPatch((current) =>
-        current?.patch_id === patch.patch_id
-          ? { ...current, active: true, active_index: state.active_patches.indexOf(patch.patch_id) }
-          : current
-      );
+      await api.loadPatch(patch.patch_id);
+      setSelectedPatch(null);
       setMessage(`Loaded ${patch.patch_id} into ${patch.base_model}.`);
       await onPatchesChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingPatchId("");
+    }
+  }
+
+  async function deletePatch(patch: Patch) {
+    setDeletingPatchId(patch.patch_id);
+    setMessage("");
+    setError("");
+    try {
+      await api.deletePatch(patch.patch_id);
+      setPatchPendingDeletion(null);
+      setSelectedPatch((current) => current?.patch_id === patch.patch_id ? null : current);
+      setMessage(`Deleted saved patch ${patch.patch_id}.`);
+      await onPatchesChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingPatchId("");
     }
   }
 
@@ -161,10 +180,15 @@ export function PatchHistory({
           latestActiveIndexByModel={latestActiveIndexByModel}
           busyPatchId={busyPatchId}
           savingPatchId={savingPatchId}
+          loadingPatchId={loadingPatchId}
+          deletingPatchId={deletingPatchId}
+          loadedModelIds={loadedModelIds}
           canSavePatches={Boolean(exportDirectory.trim())}
           onDiscard={discardPatch}
           onRevertTo={revertToPatch}
           onSavePatch={savePatch}
+          onLoadPatch={loadPatch}
+          onDeletePatch={setPatchPendingDeletion}
           onViewPatch={setSelectedPatch}
           mode="active"
         />
@@ -181,12 +205,18 @@ export function PatchHistory({
           latestActiveIndexByModel={latestActiveIndexByModel}
           busyPatchId={busyPatchId}
           savingPatchId={savingPatchId}
+          loadingPatchId={loadingPatchId}
+          deletingPatchId={deletingPatchId}
+          loadedModelIds={loadedModelIds}
           canSavePatches={Boolean(exportDirectory.trim())}
           onDiscard={discardPatch}
           onRevertTo={revertToPatch}
           onSavePatch={savePatch}
+          onLoadPatch={loadPatch}
+          onDeletePatch={setPatchPendingDeletion}
           onViewPatch={setSelectedPatch}
           mode="library"
+          scrollable
         />
         {patches.length === 0 ? <div className="rounded-md border border-line bg-panel p-4 text-sm text-ink/70">No patches saved yet.</div> : null}
       </div>
@@ -209,6 +239,14 @@ export function PatchHistory({
           onConfirm={clearHistory}
         />
       ) : null}
+      {patchPendingDeletion ? (
+        <DeletePatchDialog
+          deleting={deletingPatchId === patchPendingDeletion.patch_id}
+          patch={patchPendingDeletion}
+          onCancel={() => setPatchPendingDeletion(null)}
+          onConfirm={() => deletePatch(patchPendingDeletion)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -218,48 +256,50 @@ function PatchTable({
   latestActiveIndexByModel,
   busyPatchId,
   savingPatchId,
+  loadingPatchId,
+  deletingPatchId,
+  loadedModelIds,
   canSavePatches,
   onDiscard,
   onRevertTo,
   onSavePatch,
+  onLoadPatch,
+  onDeletePatch,
   onViewPatch,
-  mode
+  mode,
+  scrollable = false
 }: {
   patches: Patch[];
   latestActiveIndexByModel: Record<string, number>;
   busyPatchId: string;
   savingPatchId: string;
+  loadingPatchId: string;
+  deletingPatchId: string;
+  loadedModelIds: Set<string>;
   canSavePatches: boolean;
   onDiscard: (patchId: string) => void;
   onRevertTo: (patchId: string) => void;
   onSavePatch: (patchId: string) => void;
+  onLoadPatch: (patch: Patch) => void;
+  onDeletePatch: (patch: Patch) => void;
   onViewPatch: (patch: Patch) => void;
   mode: "active" | "library";
+  scrollable?: boolean;
 }) {
   if (patches.length === 0) return null;
   return (
-    <div className="overflow-x-auto pb-1">
-      <table className="w-full min-w-[880px] table-fixed border-collapse text-sm">
-        <colgroup>
-          <col className="w-[148px]" />
-          <col className="w-[88px]" />
-          <col className="w-[86px]" />
-          <col className="w-[104px]" />
-          <col className="w-[64px]" />
-          <col className="w-[58px]" />
-          <col className="w-[156px]" />
-          <col className="w-[176px]" />
-        </colgroup>
+    <div className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
+      <table className="w-full table-fixed border-collapse text-sm">
         <thead>
           <tr className="border-b border-line text-left">
-            <th className="py-2 pr-3">Patch</th>
-            <th className="py-2 pr-3">State</th>
-            <th className="py-2 pr-3">Method</th>
-            <th className="py-2 pr-3">Model</th>
-            <th className="py-2 pr-3">Layers</th>
-            <th className="py-2 pr-3">Edits</th>
-            <th className="py-2 pr-3">Created</th>
-            <th className="py-2">Actions</th>
+            <th className="sticky top-0 z-10 w-[130px] bg-white py-2 pr-3">Patch</th>
+            <th className="sticky top-0 z-10 w-[88px] bg-white py-2 pr-3">State</th>
+            <th className="sticky top-0 z-10 w-[72px] bg-white py-2 pr-3">Method</th>
+            <th className="sticky top-0 z-10 hidden w-[188px] bg-white py-2 pr-3 2xl:table-cell">Model</th>
+            <th className="sticky top-0 z-10 hidden w-[64px] bg-white py-2 pr-3 lg:table-cell">Layers</th>
+            <th className="sticky top-0 z-10 w-[48px] bg-white py-2 pr-3">Edits</th>
+            <th className="sticky top-0 z-10 hidden w-[142px] bg-white py-2 pr-3 lg:table-cell">Created</th>
+            <th className="sticky top-0 z-10 w-[124px] bg-white py-2 text-right">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -269,6 +309,8 @@ function PatchTable({
             const isBakedLineage = Boolean(patch.lineage_only || patch.baked_into_model);
             const canRevertHere = Boolean(patch.active && !isLatestActive && !isBakedLineage);
             const canDiscardLatest = Boolean(isLatestActive && !isBakedLineage);
+            const hasTensorDeltas = Boolean((patch.delta_paths ?? []).some((path) => path.endsWith(".safetensors")));
+            const canLoad = Boolean(!patch.active && !isBakedLineage && hasTensorDeltas && loadedModelIds.has(patch.base_model));
             const actionLabel = canRevertHere ? "Revert Here" : "Discard";
             const actionTitle = canDiscardLatest
               ? "Discard the most recently loaded patch and step the model back"
@@ -277,6 +319,13 @@ function PatchTable({
                   ? "Discard all loaded patches after this point"
                   : "This baked lineage is already the current model state"
                 : "Saved patch artifact; not part of the current active model lineage";
+            const loadTitle = isBakedLineage
+              ? "This patch is already baked into an imported model"
+              : !hasTensorDeltas
+                ? "This patch has no saved tensor deltas to load"
+                : loadedModelIds.has(patch.base_model)
+                  ? `Load this patch into ${patch.base_model}`
+                  : `Load ${patch.base_model} before loading this patch`;
             const onClick = canRevertHere ? onRevertTo : onDiscard;
             return (
               <tr key={`${mode}-${patch.patch_id}`} className="border-b border-line/70">
@@ -295,32 +344,61 @@ function PatchTable({
                   )}
                 </td>
                 <td className="py-3 pr-3 whitespace-nowrap">{patch.method.toUpperCase()}</td>
-                <td className="py-3 pr-3 break-words">{patch.base_model}</td>
-                <td className="py-3 pr-3">{patch.modified_layers.join(", ") || "-"}</td>
+                <td className="hidden py-3 pr-3 2xl:table-cell">
+                  <span className="block truncate" title={patch.base_model}>{patch.base_model}</span>
+                </td>
+                <td className="hidden py-3 pr-3 lg:table-cell">{patch.modified_layers.join(", ") || "-"}</td>
                 <td className="py-3 pr-3">{patch.edits.length}</td>
-                <td className="py-3 pr-3 font-mono text-xs whitespace-nowrap">{formatPatchDate(patch.created_at)}</td>
-                <td className="py-3">
-                  <div className="flex items-center gap-2 whitespace-nowrap">
+                <td className="hidden py-3 pr-3 font-mono text-xs whitespace-nowrap lg:table-cell">{formatPatchDate(patch.created_at)}</td>
+                <td className="py-3 text-right">
+                  <div className="flex justify-end gap-1">
                     <button
-                      className="ghost-button min-h-8 px-2 py-1 text-xs"
+                      aria-label={`Export patch ${patch.patch_id}`}
+                      className="ghost-button grid size-9 place-items-center p-0"
                       disabled={savingPatchId === patch.patch_id || !canSavePatches}
                       onClick={() => onSavePatch(patch.patch_id)}
                       title={canSavePatches ? "Export this patch metadata and tensor deltas" : "Set the default export directory in Settings first"}
                       type="button"
                     >
-                      <Save size={14} />
-                      {savingPatchId === patch.patch_id ? "Exporting" : "Export Patch"}
+                      <Save className={savingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
                     </button>
-                    <button
-                      className="ghost-button min-h-8 px-2 py-1 text-xs"
-                      disabled={(!canRevertHere && !canDiscardLatest) || busyPatchId === patch.patch_id}
-                      onClick={() => onClick(patch.patch_id)}
-                      title={actionTitle}
-                      type="button"
-                    >
-                      <XCircle size={14} />
-                      {busyPatchId === patch.patch_id ? "Updating" : actionLabel}
-                    </button>
+                    {patch.active ? (
+                      <button
+                        aria-label={`${actionLabel} patch ${patch.patch_id}`}
+                        className="ghost-button grid size-9 place-items-center p-0"
+                        disabled={(!canRevertHere && !canDiscardLatest) || busyPatchId === patch.patch_id}
+                        onClick={() => onClick(patch.patch_id)}
+                        title={actionTitle}
+                        type="button"
+                      >
+                        <XCircle className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          aria-label={`Load patch ${patch.patch_id} into model`}
+                          className="ghost-button grid size-9 place-items-center p-0"
+                          disabled={!canLoad || loadingPatchId === patch.patch_id}
+                          onClick={() => onLoadPatch(patch)}
+                          title={loadTitle}
+                          type="button"
+                        >
+                          <Layers className={loadingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
+                        </button>
+                        {mode === "library" ? (
+                          <button
+                            aria-label={`Delete saved patch ${patch.patch_id}`}
+                            className="ghost-button grid size-9 place-items-center p-0 text-rust hover:text-rust"
+                            disabled={deletingPatchId === patch.patch_id}
+                            onClick={() => onDeletePatch(patch)}
+                            title="Delete this saved patch and its tensor deltas"
+                            type="button"
+                          >
+                            <Trash2 className={deletingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
+                          </button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -454,6 +532,37 @@ function ClearPatchHistoryDialog({
           <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={clearing} onClick={onConfirm} type="button">
             <Trash2 size={15} />
             {clearing ? "Clearing" : "Clear History"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DeletePatchDialog({
+  patch,
+  deleting,
+  onCancel,
+  onConfirm
+}: {
+  patch: Patch;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 p-4" onMouseDown={onCancel} role="presentation">
+      <section aria-labelledby="delete-patch-title" aria-modal="true" className="w-full max-w-md rounded-lg border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <span className="label">Destructive Action</span>
+        <h2 id="delete-patch-title" className="mt-1 text-base font-semibold">Delete saved patch?</h2>
+        <p className="mt-3 text-sm leading-6 text-ink/70">
+          This permanently deletes <span className="font-mono text-xs">{patch.patch_id}</span> and its saved tensor deltas. It cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="ghost-button min-h-9 px-3 py-1" disabled={deleting} onClick={onCancel} type="button">Cancel</button>
+          <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={deleting} onClick={onConfirm} type="button">
+            <Trash2 size={15} />
+            {deleting ? "Deleting" : "Delete Patch"}
           </button>
         </div>
       </section>
