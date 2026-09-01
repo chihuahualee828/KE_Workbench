@@ -674,8 +674,19 @@ def _hparams_layers(hparams: Any) -> list[int]:
     return []
 
 
-def _unwrap_model(model: Any) -> Any:
-    return getattr(model, "model", model)
+def _state_dict_for_weight_names(model: Any, names: list[str]) -> dict[str, Any]:
+    """Return the state dict whose keys match the configured EasyEdit modules."""
+    candidates = [model]
+    inner_model = getattr(model, "model", None)
+    if inner_model is not None and inner_model is not model:
+        candidates.append(inner_model)
+
+    fallback = candidates[0].state_dict()
+    for candidate in candidates:
+        state_dict = fallback if candidate is candidates[0] else candidate.state_dict()
+        if any(name in state_dict for name in names):
+            return state_dict
+    return fallback
 
 
 def _snapshot_rewrite_weights(model: Any, hparams: Any) -> dict[str, Any]:
@@ -688,10 +699,10 @@ def _snapshot_rewrite_weights(model: Any, hparams: Any) -> dict[str, Any]:
     if not rewrite_module_tmp:
         return {}
 
-    state_dict = _unwrap_model(model).state_dict()
+    names = [f"{rewrite_module_tmp.format(layer)}.weight" for layer in _hparams_layers(hparams)]
+    state_dict = _state_dict_for_weight_names(model, names)
     weights = {}
-    for layer in _hparams_layers(hparams):
-        name = f"{rewrite_module_tmp.format(layer)}.weight"
+    for name in names:
         value = state_dict.get(name)
         if value is not None and torch.is_tensor(value):
             weights[name] = value.detach().cpu().clone()
@@ -708,8 +719,7 @@ def _save_weight_deltas(edited_model: Any, baseline_weights: Any, patch_id: str)
     except ImportError as exc:
         raise EasyEditRuntimeError("Install torch and safetensors to save EasyEdit deltas.") from exc
 
-    model = _unwrap_model(edited_model)
-    state_dict = model.state_dict()
+    state_dict = _state_dict_for_weight_names(edited_model, list(dict(baseline_weights)))
     deltas = {}
 
     for name, original in dict(baseline_weights).items():
@@ -739,8 +749,7 @@ def _restore_weights(edited_model: Any, baseline_weights: Any) -> None:
     except ImportError as exc:
         raise EasyEditRuntimeError("Install torch to restore EasyEdit weights.") from exc
 
-    model = _unwrap_model(edited_model)
-    state_dict = model.state_dict()
+    state_dict = _state_dict_for_weight_names(edited_model, list(dict(baseline_weights)))
     with torch.no_grad():
         for name, original in dict(baseline_weights).items():
             current = state_dict.get(name)
