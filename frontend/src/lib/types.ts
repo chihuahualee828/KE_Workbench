@@ -63,6 +63,7 @@ export type Patch = {
   delta_paths?: string[];
   runtime?: string;
   sequential_edit?: boolean;
+  mom2_adjustment?: boolean;
   parent_patch_ids?: string[];
   layer_source?: string;
   active?: boolean;

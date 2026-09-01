@@ -1,6 +1,7 @@
 "use client";
 
-import { BarChart3, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
+import { BarChart3, Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -9,6 +10,7 @@ import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
+import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -118,10 +120,13 @@ function RomeForm({
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
   const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:rome:evaluationPrompts", "The landmark called the Space Needle can be found in");
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:rome:sequentialEdit", false);
+  const [mom2Adjustment, setMom2Adjustment] = usePersistentState("kew:edit:rome:mom2Adjustment", false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [locatingLayer, setLocatingLayer] = useState(false);
+  const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
+  const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const [layerNotice, setLayerNotice] = useState("");
   const selectedModel = useMemo(() => romeModels.find((model) => model.id === modelId), [modelId, romeModels]);
   const selectedModelId = selectedModel?.id;
@@ -185,13 +190,24 @@ function RomeForm({
         ground_truth: groundTruth || null,
         target_layer: targetLayerNumber,
         evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
-        sequential_edit: sequentialEdit
+        sequential_edit: sequentialEdit,
+        mom2_adjustment: mom2Adjustment
       });
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (mom2Adjustment && /MOM2 statistics are missing/i.test(message)) {
+        try {
+          const status = await api.mom2StatisticsStatus({ model_id: modelId, method: "rome", layers: [targetLayerNumber] });
+          setMissingMom2Layers(status.missing_layers);
+          return;
+        } catch {
+          // Preserve the original error when the status lookup is unavailable.
+        }
+      }
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -309,6 +325,17 @@ function RomeForm({
           <span>Sequential edit</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
         </label>
+        <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
+          <span>Second-Moment Adjustment</span>
+          <input type="checkbox" checked={mom2Adjustment} onChange={(event) => setMom2Adjustment(event.target.checked)} />
+        </label>
+        <div className="flex items-center justify-between gap-3">
+          {mom2Adjustment ? <p className="text-xs text-ink/60">Requires prepared Wikipedia statistics for the selected layer.</p> : <span />}
+          <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={() => setMom2CacheOpen(true)} title="Peek cached second-moment statistics" type="button">
+            <Database size={14} />
+            Cache
+          </button>
+        </div>
         <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? "Apply ROME edit at the selected layer" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
           {busy ? "Editing" : "Apply ROME"}
@@ -317,6 +344,8 @@ function RomeForm({
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
+      {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
+      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="rome" onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
   );
 }
@@ -346,9 +375,12 @@ function MemitForm({
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
   const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:memit:evaluationPrompts", "Michael Jordan plays the sport of\nThe Space Needle is located in the city of");
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
+  const mom2Adjustment = true;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
+  const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
+  const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
   const selectedModelId = selectedModel?.id;
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
@@ -415,13 +447,24 @@ function MemitForm({
         })),
         layers: selectedLayers,
         evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
-        sequential_edit: sequentialEdit
+        sequential_edit: sequentialEdit,
+        mom2_adjustment: mom2Adjustment
       });
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (/MOM2 statistics are missing/i.test(message)) {
+        try {
+          const status = await api.mom2StatisticsStatus({ model_id: modelId, method: "memit", layers: selectedLayers });
+          setMissingMom2Layers(status.missing_layers);
+          return;
+        } catch {
+          // Preserve the original error when the status lookup is unavailable.
+        }
+      }
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -596,6 +639,17 @@ function MemitForm({
           <span>Sequential edit</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
         </label>
+        <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
+          <span>Second-Moment Adjustment</span>
+          <input type="checkbox" checked={mom2Adjustment} disabled title="Required for MEMIT" />
+        </label>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-ink/60">Required for MEMIT. Prepare Wikipedia statistics for every selected layer.</p>
+          <button className="ghost-button min-h-8 shrink-0 px-2 py-1 text-xs" onClick={() => setMom2CacheOpen(true)} title="Peek cached second-moment statistics" type="button">
+            <Database size={14} />
+            Cache
+          </button>
+        </div>
         <button className="tool-button w-full" onClick={run} disabled={busy || evaluating || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
@@ -604,6 +658,26 @@ function MemitForm({
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
+      {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
+      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function MissingMom2StatisticsDialog({ layers, onClose }: { layers: number[]; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }} role="presentation">
+      <section aria-labelledby="missing-mom2-title" aria-modal="true" className="my-auto w-full max-w-md rounded-md border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <span className="label">Second-Moment Statistics Required</span>
+        <h2 id="missing-mom2-title" className="mt-1 text-base font-semibold">Statistics are missing for layer{layers.length === 1 ? "" : "s"} {layers.join(", ")}</h2>
+        <p className="mt-3 text-sm leading-6 text-ink/70">This edit was not started. Prepare the selected layers locally or import compatible NPZ files in Settings, then apply the edit again.</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="ghost-button min-h-9 px-3 py-1" onClick={onClose} type="button">Close</button>
+          <Link className="tool-button min-h-9 px-3 py-1" href="/settings" onClick={onClose}>Open Settings</Link>
+        </div>
+      </section>
     </div>
   );
 }
