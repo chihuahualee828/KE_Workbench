@@ -48,6 +48,12 @@ export function ModelSelector({
   );
   const selectedRuntimeActive = runtimeJob?.model_id === value && ["queued", "loading"].includes(runtimeJob.status);
 
+  useEffect(() => {
+    if (models.length && !models.some((model) => model.id === value)) {
+      onChange(models[0].id);
+    }
+  }, [models, onChange, value]);
+
   async function refreshCache() {
     if (!runtimeConnected) return;
     try {

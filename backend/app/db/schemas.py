@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class GenerateRequest(BaseModel):
-    model_id: str = "gpt2"
+    model_id: str = "gpt2-xl"
     prompt: str
     max_new_tokens: int = Field(default=20, ge=1, le=128)
     decoding_strategy: Literal["greedy", "sampling", "beam"] = "greedy"
@@ -23,7 +23,7 @@ class GenerateResponse(BaseModel):
 
 
 class LogitLensRequest(BaseModel):
-    model_id: str = "gpt2"
+    model_id: str = "gpt2-xl"
     prompt: str
     target_token: str | None = None
     top_k: int = Field(default=10, ge=1, le=50)
@@ -48,7 +48,7 @@ class CorruptionConfig(BaseModel):
 
 
 class CausalTraceRequest(BaseModel):
-    model_id: str = "gpt2"
+    model_id: str = "gpt2-xl"
     prompt: str
     subject: str
     target: str
@@ -97,7 +97,7 @@ class Mom2StatisticsRequest(BaseModel):
 
 
 class EvaluationRequest(BaseModel):
-    model_id: str = "gpt2"
+    model_id: str = "gpt2-xl"
     patch_id: str
     prompts: list[str] = Field(default_factory=list)
 

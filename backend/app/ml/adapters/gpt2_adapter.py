@@ -13,7 +13,7 @@ _ADAPTER_LOCK = RLock()
 class GPT2Adapter(ModelAdapter):
     model_type = "gpt2"
 
-    def __init__(self, model_id: str = "gpt2", n_layers: int = 12) -> None:
+    def __init__(self, model_id: str = "gpt2-xl", n_layers: int = 48) -> None:
         self.model_id = model_id
         self.n_layers = n_layers
         self._model: Any | None = None
@@ -198,7 +198,7 @@ class GPT2Adapter(ModelAdapter):
         return []
 
 
-def get_gpt2_adapter(model_id: str = "gpt2", n_layers: int = 12) -> GPT2Adapter:
+def get_gpt2_adapter(model_id: str = "gpt2-xl", n_layers: int = 48) -> GPT2Adapter:
     key = (model_id, n_layers)
     with _ADAPTER_LOCK:
         adapter = _ADAPTERS.get(key)

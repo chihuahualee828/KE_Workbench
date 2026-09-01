@@ -12,14 +12,15 @@ import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
 export function LogitLensPanel({ models, runtime = [] }: { models: SupportedModel[]; runtime?: ModelRuntimeStatus[] }) {
-  const [modelId, setModelId] = usePersistentState("kew:lens:modelId", models[0]?.id ?? "gpt2");
+  const [modelId, setModelId] = usePersistentState("kew:lens:modelId", models[0]?.id ?? "gpt2-xl");
   const [prompt, setPrompt] = usePersistentState("kew:lens:prompt", "The Space Needle is located in the city of");
   const [targetToken, setTargetToken] = usePersistentState("kew:lens:targetToken", " Seattle");
   const [layers, setLayers] = useState<LogitLensLayer[]>([]);
   const [busy, setBusy] = useState(false);
+  const lensModels = useMemo(() => models.filter((model) => model.supports_logit_lens), [models]);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
-  useLoadedModelSelection(models, runtime, setModelId);
+  useLoadedModelSelection(lensModels, runtime, setModelId);
 
   const chart = useMemo(
     () =>
@@ -49,7 +50,7 @@ export function LogitLensPanel({ models, runtime = [] }: { models: SupportedMode
   return (
     <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={models} value={modelId} onChange={setModelId} />
+        <ModelSelector models={lensModels} value={modelId} onChange={setModelId} />
         <PromptEditor value={prompt} onChange={setPrompt} rows={4} />
         <label className="grid gap-2">
           <span className="label">Target Token</span>

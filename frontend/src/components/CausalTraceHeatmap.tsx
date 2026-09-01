@@ -12,7 +12,7 @@ import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 
 export function CausalTraceHeatmap({ models, runtime = [] }: { models: SupportedModel[]; runtime?: ModelRuntimeStatus[] }) {
-  const [modelId, setModelId] = usePersistentState("kew:trace:modelId", models[0]?.id ?? "gpt2");
+  const [modelId, setModelId] = usePersistentState("kew:trace:modelId", models[0]?.id ?? "gpt2-xl");
   const [prompt, setPrompt] = usePersistentState("kew:trace:prompt", "The Space Needle is located in the city of");
   const [subject, setSubject] = usePersistentState("kew:trace:subject", "The Space Needle");
   const [target, setTarget] = usePersistentState("kew:trace:target", "Seattle");
@@ -22,9 +22,10 @@ export function CausalTraceHeatmap({ models, runtime = [] }: { models: Supported
   const [summary, setSummary] = useState<{ clean_probability: number; corrupted_probability: number } | null>(null);
   const [selected, setSelected] = useState<TraceCell | null>(null);
   const [busy, setBusy] = useState(false);
+  const traceModels = useMemo(() => models.filter((model) => model.supports_causal_trace), [models]);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
 
-  useLoadedModelSelection(models, runtime, setModelId);
+  useLoadedModelSelection(traceModels, runtime, setModelId);
 
   const layers = useMemo(() => Array.from(new Set(cells.map((cell) => cell.layer))), [cells]);
   const maxEffect = Math.max(0.01, ...cells.map((cell) => Math.abs(cell.indirect_effect)));
@@ -52,7 +53,7 @@ export function CausalTraceHeatmap({ models, runtime = [] }: { models: Supported
   return (
     <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={models} value={modelId} onChange={setModelId} />
+        <ModelSelector models={traceModels} value={modelId} onChange={setModelId} />
         <PromptEditor value={prompt} onChange={setPrompt} rows={4} />
         <label className="grid gap-2">
           <span className="label">Subject</span>
