@@ -1,6 +1,6 @@
 "use client";
 
-import { Layers, Save, Trash2, X, XCircle } from "lucide-react";
+import { GitBranch, Layers, RotateCcw, Save, Trash2, X, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -37,7 +37,7 @@ export function PatchHistory({
         .filter((patch) => patch.active)
         .sort((left, right) => {
           if (left.base_model !== right.base_model) return left.base_model.localeCompare(right.base_model);
-          return (left.active_index ?? 0) - (right.active_index ?? 0);
+          return (right.active_index ?? 0) - (left.active_index ?? 0);
         }),
     [patches]
   );
@@ -287,11 +287,20 @@ function PatchTable({
   scrollable?: boolean;
 }) {
   if (patches.length === 0) return null;
+  const lineageGraph = mode === "library" ? buildLineageGraph(patches) : null;
   return (
     <div className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
       <table className="w-full table-fixed border-collapse text-sm">
+        <colgroup>
+          {lineageGraph ? <col className="w-14" /> : null}
+        </colgroup>
         <thead>
           <tr className="border-b border-line text-left">
+            {lineageGraph ? (
+              <th className="sticky top-0 z-10 w-14 bg-white py-2 text-center" title="Sequential edit lineage">
+                <GitBranch className="mx-auto text-ink/60" size={16} />
+              </th>
+            ) : null}
             <th className="sticky top-0 z-10 w-[130px] bg-white py-2 pr-3">Patch</th>
             <th className="sticky top-0 z-10 w-[88px] bg-white py-2 pr-3">State</th>
             <th className="sticky top-0 z-10 w-[72px] bg-white py-2 pr-3">Method</th>
@@ -304,21 +313,19 @@ function PatchTable({
         </thead>
         <tbody>
           {patches.map((patch) => {
+            const graphRow = lineageGraph?.rowsByPatchId[patch.patch_id];
             const latestIndex = latestActiveIndexByModel[patch.base_model] ?? -1;
             const isLatestActive = Boolean(patch.active && patch.active_index === latestIndex);
             const isBakedLineage = Boolean(patch.lineage_only || patch.baked_into_model);
             const canRevertHere = Boolean(patch.active && !isLatestActive && !isBakedLineage);
-            const canDiscardLatest = Boolean(isLatestActive && !isBakedLineage);
+            const canDiscard = Boolean(patch.active && !isBakedLineage);
             const hasTensorDeltas = Boolean((patch.delta_paths ?? []).some((path) => path.endsWith(".safetensors")));
             const canLoad = Boolean(!patch.active && !isBakedLineage && hasTensorDeltas && loadedModelIds.has(patch.base_model));
-            const actionLabel = canRevertHere ? "Revert Here" : "Discard";
-            const actionTitle = canDiscardLatest
-              ? "Discard the most recently loaded patch and step the model back"
-              : patch.active
-                ? canRevertHere
-                  ? "Discard all loaded patches after this point"
-                  : "This baked lineage is already the current model state"
-                : "Saved patch artifact; not part of the current active model lineage";
+            const actionTitle = patch.active
+              ? canDiscard
+                ? "Discard this patch and every dependent patch applied after it"
+                : "This baked lineage is already the current model state"
+              : "Saved patch artifact; not part of the current active model lineage";
             const loadTitle = isBakedLineage
               ? "This patch is already baked into an imported model"
               : !hasTensorDeltas
@@ -326,9 +333,17 @@ function PatchTable({
                 : loadedModelIds.has(patch.base_model)
                   ? `Load this patch into ${patch.base_model}`
                   : `Load ${patch.base_model} before loading this patch`;
-            const onClick = canRevertHere ? onRevertTo : onDiscard;
             return (
               <tr key={`${mode}-${patch.patch_id}`} className="border-b border-line/70">
+                {lineageGraph && graphRow ? (
+                  <td
+                    className="relative w-14 p-0 align-stretch"
+                    title={graphRow.parentPatchId ? `Sequential edit from ${graphRow.parentPatchId}` : "Independent edit root"}
+                  >
+                    <div className="h-14" />
+                    <PatchLineageGraph row={graphRow} laneCount={lineageGraph.laneCount} />
+                  </td>
+                ) : null}
                 <td className="py-3 pr-3 font-mono text-xs whitespace-nowrap">
                   <button className="text-left text-ink underline decoration-line underline-offset-4 transition hover:decoration-cyan hover:text-cyan" onClick={() => onViewPatch(patch)} title="View patch details" type="button">
                     {patch.patch_id}
@@ -337,7 +352,7 @@ function PatchTable({
                 <td className="py-3 pr-3">
                   {patch.active ? (
                     <span className="rounded border border-cyan/30 bg-cyan/10 px-2 py-1 text-xs font-medium text-cyan">
-                      {isBakedLineage ? "Baked" : isLatestActive ? "Loaded" : `Loaded #${(patch.active_index ?? 0) + 1}`}
+                      {isBakedLineage ? "Baked" : "Loaded"}
                     </span>
                   ) : (
                     <span className="rounded border border-line bg-panel px-2 py-1 text-xs text-ink/50">Saved</span>
@@ -363,16 +378,30 @@ function PatchTable({
                       <Save className={savingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
                     </button>
                     {patch.active ? (
-                      <button
-                        aria-label={`${actionLabel} patch ${patch.patch_id}`}
-                        className="ghost-button grid size-9 place-items-center p-0"
-                        disabled={(!canRevertHere && !canDiscardLatest) || busyPatchId === patch.patch_id}
-                        onClick={() => onClick(patch.patch_id)}
-                        title={actionTitle}
-                        type="button"
-                      >
-                        <XCircle className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
-                      </button>
+                      <>
+                        {canRevertHere ? (
+                          <button
+                            aria-label={`Revert to patch ${patch.patch_id}`}
+                            className="ghost-button grid size-9 place-items-center p-0"
+                            disabled={busyPatchId === patch.patch_id}
+                            onClick={() => onRevertTo(patch.patch_id)}
+                            title="Keep this patch and discard every patch applied after it"
+                            type="button"
+                          >
+                            <RotateCcw className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
+                          </button>
+                        ) : null}
+                        <button
+                          aria-label={`Discard patch ${patch.patch_id}`}
+                          className="ghost-button grid size-9 place-items-center p-0"
+                          disabled={!canDiscard || busyPatchId === patch.patch_id}
+                          onClick={() => onDiscard(patch.patch_id)}
+                          title={actionTitle}
+                          type="button"
+                        >
+                          <XCircle className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
+                        </button>
+                      </>
                     ) : (
                       <>
                         <button
@@ -422,6 +451,95 @@ function formatPatchDate(value: string) {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (number: number) => String(number).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+type LineageGraphRow = {
+  lane: number;
+  parentLane: number | null;
+  parentPatchId: string | null;
+  incomingLanes: number[];
+  outgoingLanes: number[];
+};
+
+function buildLineageGraph(patches: Patch[]): { laneCount: number; rowsByPatchId: Record<string, LineageGraphRow> } {
+  const patchIds = new Set(patches.map((patch) => patch.patch_id));
+  const lanes: Array<string | null> = [];
+  const rowsByPatchId: Record<string, LineageGraphRow> = {};
+  let laneCount = 1;
+
+  for (const patch of patches) {
+    const directParentId = patch.sequential_edit ? patch.parent_patch_ids?.at(-1) ?? null : null;
+    const parentPatchId = directParentId && patchIds.has(directParentId) ? directParentId : null;
+    let lane = lanes.indexOf(patch.patch_id);
+    const incomingLanes = lanes
+      .map((candidate, index) => candidate ? index : -1)
+      .filter((index) => index >= 0);
+    if (lane < 0) {
+      lane = lanes.findIndex((candidate) => candidate === null);
+      if (lane < 0) lane = lanes.length;
+      lanes[lane] = patch.patch_id;
+    }
+
+    let parentLane: number | null = null;
+
+    if (parentPatchId) {
+      parentLane = lanes.indexOf(parentPatchId);
+      if (parentLane < 0) {
+        parentLane = lane;
+        lanes[lane] = parentPatchId;
+      } else if (parentLane !== lane) {
+        lanes[lane] = null;
+      }
+    } else {
+      lanes[lane] = null;
+    }
+
+    const outgoingLanes = lanes
+      .map((candidate, index) => candidate ? index : -1)
+      .filter((index) => index >= 0);
+    laneCount = Math.max(laneCount, lanes.length);
+    rowsByPatchId[patch.patch_id] = {
+      lane,
+      parentLane,
+      parentPatchId,
+      incomingLanes,
+      outgoingLanes
+    };
+  }
+
+  return { laneCount, rowsByPatchId };
+}
+
+function PatchLineageGraph({ row, laneCount }: { row: LineageGraphRow; laneCount: number }) {
+  const laneWidth = 16;
+  const width = Math.max(56, laneCount * laneWidth + 8);
+  const laneX = (lane: number) => lane * laneWidth + 10;
+  return (
+    <>
+      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-14 text-cyan" preserveAspectRatio="none" viewBox={`0 0 ${width} 100`}>
+        {row.incomingLanes.map((lane) => (
+          <line key={`in-${lane}`} stroke="currentColor" strokeOpacity="0.35" strokeWidth="1.5" x1={laneX(lane)} x2={laneX(lane)} y1="0" y2="50" />
+        ))}
+        {row.outgoingLanes.map((lane) => (
+          <line key={`out-${lane}`} stroke="currentColor" strokeOpacity="0.35" strokeWidth="1.5" x1={laneX(lane)} x2={laneX(lane)} y1="50" y2="100" />
+        ))}
+        {row.parentLane !== null && row.parentLane !== row.lane ? (
+          <path
+            d={`M ${laneX(row.lane)} 50 C ${laneX(row.lane)} 76, ${laneX(row.parentLane)} 76, ${laneX(row.parentLane)} 100`}
+            fill="none"
+            stroke="currentColor"
+            strokeOpacity="0.55"
+            strokeWidth="1.5"
+          />
+        ) : null}
+      </svg>
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-cyan bg-white"
+        style={{ left: `${laneX(row.lane)}px` }}
+      />
+    </>
+  );
 }
 
 function PatchDetailsDialog({
