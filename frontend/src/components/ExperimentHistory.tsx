@@ -2,7 +2,7 @@
 
 import { CheckCircle2, CircleAlert, Clock3, Loader2, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useMemo, useState } from "react";
+import { type PointerEvent, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { Experiment, ExperimentDetails } from "@/lib/types";
@@ -19,6 +19,7 @@ export function ExperimentHistory({
   const [details, setDetails] = useState<ExperimentDetails | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [deletingExperimentId, setDeletingExperimentId] = useState("");
   const [error, setError] = useState("");
   const sortedExperiments = useMemo(
     () => [...experiments].sort((left, right) => right.created_at.localeCompare(left.created_at)),
@@ -46,6 +47,21 @@ export function ExperimentHistory({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setClearing(false);
+    }
+  }
+
+  async function deleteExperiment(experiment: Experiment) {
+    if (experiment.status === "running") return;
+    setDeletingExperimentId(experiment.id);
+    setError("");
+    try {
+      await api.deleteExperiment(experiment.id);
+      setDetails((current) => current?.id === experiment.id ? null : current);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingExperimentId("");
     }
   }
 
@@ -80,23 +96,14 @@ export function ExperimentHistory({
 
       <div className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
         {sortedExperiments.map((experiment) => (
-          <button
-            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left text-sm transition hover:bg-panel"
+          <ExperimentHistoryCard
+            deleting={deletingExperimentId === experiment.id}
+            experiment={experiment}
             key={experiment.id}
-            onClick={() => openDetails(experiment)}
-            type="button"
-          >
-            <span className="min-w-0">
-              <span className="flex items-center gap-2 font-medium">
-                <ExperimentStatusIcon status={experiment.status} />
-                <span className="truncate">{formatExperimentType(experiment.type)}</span>
-              </span>
-              <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
-            </span>
-            <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(experiment.status)}`}>
-              {experiment.status}
-            </span>
-          </button>
+            swipeToDelete={experiment.status !== "running"}
+            onDelete={() => void deleteExperiment(experiment)}
+            onOpen={() => void openDetails(experiment)}
+          />
         ))}
         {sortedExperiments.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No experiments recorded yet.</div> : null}
       </div>
@@ -104,6 +111,98 @@ export function ExperimentHistory({
       {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-2 text-xs text-rust">{error}</div> : null}
       {details ? <ExperimentDetailsDialog details={details} onClose={() => setDetails(null)} /> : null}
     </section>
+  );
+}
+
+function ExperimentHistoryCard({
+  experiment,
+  deleting,
+  swipeToDelete,
+  onDelete,
+  onOpen
+}: {
+  experiment: Experiment;
+  deleting: boolean;
+  swipeToDelete: boolean;
+  onDelete: () => void;
+  onOpen: () => void;
+}) {
+  const [deleteRevealed, setDeleteRevealed] = useState(false);
+  const pointerStartX = useRef<number | null>(null);
+  const suppressNextOpen = useRef(false);
+
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (!swipeToDelete) return;
+    pointerStartX.current = event.clientX;
+  }
+
+  function handlePointerUp(event: PointerEvent<HTMLButtonElement>) {
+    if (!swipeToDelete || pointerStartX.current === null) return;
+    const deltaX = event.clientX - pointerStartX.current;
+    pointerStartX.current = null;
+    if (deltaX <= -48) {
+      suppressNextOpen.current = true;
+      setDeleteRevealed(true);
+    } else if (deltaX >= 24 && deleteRevealed) {
+      suppressNextOpen.current = true;
+      setDeleteRevealed(false);
+    }
+  }
+
+  function handleOpen() {
+    if (suppressNextOpen.current) {
+      suppressNextOpen.current = false;
+      return;
+    }
+    onOpen();
+  }
+
+  const content = (
+    <>
+      <span className="min-w-0">
+        <span className="flex items-center gap-2 font-medium">
+          <ExperimentStatusIcon status={experiment.status} />
+          <span className="truncate">{formatExperimentType(experiment.type)}</span>
+        </span>
+        <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
+      </span>
+      <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(experiment.status)}`}>
+        {experiment.status}
+      </span>
+    </>
+  );
+
+  if (!swipeToDelete) {
+    return (
+      <button className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left text-sm transition hover:bg-panel" onClick={onOpen} type="button">
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative overflow-hidden bg-rust">
+      <button
+        aria-label={`Delete ${formatExperimentType(experiment.type)} experiment`}
+        className="absolute inset-y-0 right-0 grid w-20 place-items-center bg-rust text-xs font-medium text-white"
+        disabled={deleting}
+        onClick={onDelete}
+        type="button"
+      >
+        {deleting ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={17} />}
+        <span>Delete</span>
+      </button>
+      <button
+        className="relative grid w-full touch-pan-y grid-cols-[minmax(0,1fr)_auto] items-center gap-3 bg-white px-3 py-2 text-left text-sm transition-transform duration-200 hover:bg-panel"
+        onClick={handleOpen}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        style={{ transform: deleteRevealed ? "translateX(-80px)" : undefined }}
+        type="button"
+      >
+        {content}
+      </button>
+    </div>
   );
 }
 

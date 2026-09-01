@@ -104,6 +104,30 @@ class ExperimentService:
             self._condition.notify_all()
         return {"deleted_experiment_count": experiment_count}
 
+    def delete_experiment(self, experiment_id: str) -> dict[str, str]:
+        if not experiment_id.startswith("exp_") or Path(experiment_id).name != experiment_id:
+            raise FileNotFoundError(experiment_id)
+
+        with self._condition:
+            experiment = self.get_experiment(experiment_id)
+            if experiment is None:
+                raise FileNotFoundError(experiment_id)
+            if experiment.get("status") == "running":
+                raise RuntimeError("Wait for the running experiment to finish before deleting it.")
+
+            experiments_root = local_store.root / "experiments"
+            related_jobs = [
+                str(item["id"])
+                for item in local_store.list_json("experiments")
+                if item.get("id", "").startswith("job_") and item.get("experiment_id") == experiment_id
+            ]
+            for job_id in related_jobs:
+                (experiments_root / f"{job_id}.json").unlink(missing_ok=True)
+            (experiments_root / f"{experiment_id}.json").unlink(missing_ok=True)
+            shutil.rmtree(experiments_root / experiment_id, ignore_errors=True)
+            self._condition.notify_all()
+        return {"experiment_id": experiment_id}
+
     def reconcile_interrupted_jobs(self) -> int:
         """Mark persisted running jobs as failed after a backend restart."""
         interruption_message = "Backend restarted before this job completed."
