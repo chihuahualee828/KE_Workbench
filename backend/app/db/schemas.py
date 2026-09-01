@@ -68,6 +68,7 @@ class RomeEditRequest(BaseModel):
     locality_inputs: dict[str, dict[str, list[str]]] | None = None
     portability_inputs: dict[str, dict[str, list[str]]] | None = None
     sequential_edit: bool = False
+    mom2_adjustment: bool = False
 
 
 class EditSpec(BaseModel):
@@ -85,6 +86,13 @@ class MemitEditRequest(BaseModel):
     locality_inputs: dict[str, dict[str, list[str]]] | None = None
     portability_inputs: dict[str, dict[str, list[str]]] | None = None
     sequential_edit: bool = False
+    mom2_adjustment: Literal[True] = True
+
+
+class Mom2StatisticsRequest(BaseModel):
+    model_id: str
+    method: Literal["rome", "memit"]
+    layers: list[int] | None = None
 
 
 class EvaluationRequest(BaseModel):

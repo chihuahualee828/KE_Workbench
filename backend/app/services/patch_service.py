@@ -271,6 +271,8 @@ class PatchService:
                 "baked_into_model": True,
                 "imported_from_model_path": str(local_path),
             }
+            if isinstance(entry.get("mom2_adjustment"), bool):
+                metadata["mom2_adjustment"] = entry["mom2_adjustment"]
             local_store.write_json(self._metadata_relative_path(patch_id), metadata)
 
         active_source = payload.get("active_patches")
@@ -546,6 +548,7 @@ def _lineage_entry_from_patch(patch: dict[str, Any], baked_into_model: bool = Fa
         "created_at": patch.get("created_at"),
         "runtime": patch.get("runtime"),
         "sequential_edit": patch.get("sequential_edit", False),
+        "mom2_adjustment": patch.get("mom2_adjustment"),
         "parent_patch_ids": patch.get("parent_patch_ids", []),
         "lineage_only": patch.get("lineage_only", False),
         "baked_into_model": baked_into_model or patch.get("baked_into_model", False),

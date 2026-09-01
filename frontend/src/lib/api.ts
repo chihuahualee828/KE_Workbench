@@ -48,6 +48,21 @@ async function download(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
+async function upload<T>(path: string, body: FormData): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { method: "POST", body, cache: "no-store" });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const payload = await response.json();
+      detail = payload.detail ?? detail;
+    } catch {
+      detail = response.statusText;
+    }
+    throw new Error(`${response.status} ${detail}`);
+  }
+  return response.json() as Promise<T>;
+}
+
 export const api = {
   health: () => request<{ status: string }>("/api/health"),
   settings: () => request<AppSettings>("/api/settings"),
@@ -194,6 +209,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  mom2StatisticsStatus: (body: { model_id: string; method: "rome" | "memit"; layers?: number[] | null }) =>
+    request<{ model_id: string; method: string; mom2_adjustment: boolean; dataset: string; layers: number[]; ready: boolean; missing_layers: number[]; stats_dir?: string; statistics: Array<{ layer: number; path: string; ready: boolean }> }>("/api/edit/mom2/status", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  prepareMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; layers?: number[] | null }) =>
+    request<EditJob>("/api/edit/mom2/prepare", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  importMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; dataset: string; layers: number[]; files: File[] }) => {
+    const form = new FormData();
+    form.set("model_id", body.model_id);
+    form.set("method", body.method);
+    form.set("dataset", body.dataset);
+    form.set("layers", JSON.stringify(body.layers));
+    body.files.forEach((file) => form.append("files", file));
+    return upload<{ ready: boolean; missing_layers: number[]; dataset: string; imported_layers: number[] }>("/api/edit/mom2/import", form);
+  },
+  mom2Cache: (body: { model_id: string; method: "rome" | "memit" }) =>
+    request<{ model_id: string; method: string; dataset: string; stats_dir: string; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  deleteMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; layers: number[] }) =>
+    request<{ model_id: string; method: string; dataset: string; stats_dir: string; deleted_layers: number[]; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
+      method: "DELETE",
+      body: JSON.stringify(body)
+    }),
   romeEdit: (body: {
     model_id: string;
     subject: string;
@@ -206,6 +250,7 @@ export const api = {
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     sequential_edit?: boolean;
+    mom2_adjustment?: boolean;
   }) =>
     request<EditJob>("/api/edit/rome", {
       method: "POST",
@@ -218,6 +263,7 @@ export const api = {
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     sequential_edit?: boolean;
+    mom2_adjustment?: boolean;
   }) =>
     request<EditJob>("/api/edit/memit", {
       method: "POST",

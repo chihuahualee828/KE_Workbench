@@ -6,14 +6,20 @@ import sys
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from app.db.schemas import MemitEditRequest, RomeEditRequest, JobResponse, PatchListResponse
+from app.db.schemas import MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
     get_easyedit_default_layers,
+    import_mom2_statistics,
+    list_mom2_statistics,
+    get_mom2_statistics_status,
+    prepare_mom2_statistics,
+    require_mom2_statistics,
+    delete_mom2_statistics,
 )
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.rome_wrapper import run_rome_edit
@@ -47,6 +53,7 @@ def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
 @router.post("/edit/rome", response_model=JobResponse)
 def rome_edit(request: RomeEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
+    _require_mom2_statistics(request.model_id, "rome", [request.target_layer] if request.target_layer is not None else None, request.mom2_adjustment)
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
@@ -56,6 +63,7 @@ def rome_edit(request: RomeEditRequest) -> JobResponse:
 @router.post("/edit/memit", response_model=JobResponse)
 def memit_edit(request: MemitEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
+    _require_mom2_statistics(request.model_id, "memit", request.layers, request.mom2_adjustment)
     experiment = experiment_service.create("memit_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("MEMIT", job["id"], run_memit_edit, request.model_dump())
@@ -82,10 +90,85 @@ def wait_edit_job(
     return _job_response(job)
 
 
+@router.post("/edit/mom2/status")
+def mom2_statistics_status(request: Mom2StatisticsRequest) -> dict:
+    try:
+        return get_mom2_statistics_status(request.model_id, request.method, request.layers)
+    except EasyEditUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/edit/mom2/prepare", response_model=JobResponse)
+def prepare_mom2(request: Mom2StatisticsRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    experiment = experiment_service.create("prepare_mom2_statistics", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread("MOM2 statistics", job["id"], prepare_mom2_statistics, request.model_dump())
+    return _job_response(job)
+
+
+@router.post("/edit/mom2/import")
+def import_mom2(
+    model_id: str = Form(...),
+    method: str = Form(...),
+    dataset: str = Form(...),
+    layers: str = Form(...),
+    files: list[UploadFile] = File(...),
+) -> dict:
+    try:
+        if method not in {"rome", "memit"}:
+            raise ValueError("Method must be rome or memit.")
+        parsed_layers = json.loads(layers)
+        if not isinstance(parsed_layers, list) or not all(isinstance(layer, int) for layer in parsed_layers):
+            raise ValueError("Layers must be a JSON array of integers.")
+        return import_mom2_statistics(
+            model_id,
+            method,
+            dataset,
+            parsed_layers,
+            [(file.filename or "upload.npz", file.file) for file in files],
+        )
+    except (EasyEditUnsupportedError, EasyEditRuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/edit/mom2/cache")
+def list_mom2_cache(request: Mom2StatisticsRequest) -> dict:
+    try:
+        return list_mom2_statistics(request.model_id, request.method)
+    except EasyEditUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.delete("/edit/mom2/cache")
+def delete_mom2_cache(request: Mom2StatisticsRequest) -> dict:
+    if _edit_job_lock.locked():
+        raise HTTPException(status_code=409, detail="Wait for the active edit or statistics job before deleting cached statistics.")
+    try:
+        return delete_mom2_statistics(request.model_id, request.method, request.layers or [])
+    except EasyEditUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _require_loaded_model(model_id: str) -> None:
     try:
         model_runtime_service.require_loaded_runtime_bundle(model_id)
     except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _require_mom2_statistics(model_id: str, method: str, layers: list[int] | None, mom2_adjustment: bool) -> None:
+    try:
+        require_mom2_statistics(model_id, method, layers, mom2_adjustment)
+    except EasyEditUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
