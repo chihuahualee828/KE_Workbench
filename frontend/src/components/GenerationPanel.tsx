@@ -12,7 +12,7 @@ import { PromptEditor } from "./PromptEditor";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
 export function GenerationPanel({ models, patches = [], runtime = [], onPatchesChanged, sessionScope = "generation" }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void>; sessionScope?: string }) {
-  const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2");
+  const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2-xl");
   const [prompt, setPrompt] = usePersistentState("kew:generation:prompt", "The Space Needle is located in the city of");
   const [patchId, setPatchId] = usePersistentState("kew:generation:patchId", "");
   const [maxNewTokens, setMaxNewTokens] = usePersistentState("kew:generation:maxNewTokens", 32);

@@ -267,7 +267,7 @@ function RomeForm({
   return (
     <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={romeModels.length ? romeModels : models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        <ModelSelector models={romeModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <TextInput label="Subject" value={subject} onChange={setSubject} />
         <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
         <TextInput label="New Object" value={newObject} onChange={setNewObject} />
@@ -548,7 +548,7 @@ function MemitForm({
   return (
     <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
-        <ModelSelector models={memitModels.length ? memitModels : models} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="label">Batch Edits</span>

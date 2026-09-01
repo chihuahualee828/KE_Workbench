@@ -9,8 +9,8 @@ This repository ships a runnable MVP scaffold plus a real EasyEdit integration f
 - FastAPI backend with `/api/models`, `/api/generate`, `/api/logit-lens`, `/api/causal-trace`, `/api/edit/rome`, `/api/edit/memit`, `/api/patches`, `/api/evaluate`, and `/api/experiments`.
 - Next.js frontend with prompt playground, logit lens chart/table, causal tracing heatmap, edit forms, patch history, and evaluation dashboard.
 - Local filesystem storage under `data/experiments` and `data/patches`.
-- Explicit model registry for `gpt2`, `gpt2-medium`, `gpt2-xl`, and `EleutherAI/pythia-70m`.
-- EasyEdit-backed ROME and MEMIT editing for compatible models, starting with `gpt2-xl`.
+- Built-in model catalog derived from the EasyEdit ROME and MEMIT hparams, including GPT-2 XL, GPT-J, Baichuan 2, ChatGLM/GLM, InternLM, Llama, Mistral, and Qwen families.
+- Method-specific edit selectors: ROME and MEMIT show only models with their respective EasyEdit hparams, while generation and the workbench show their combined catalog.
 - Saved safetensors weight deltas when EasyEdit returns original changed weights. Base model weights are applied temporarily for generation and then rolled back in memory.
 - Model cache management UI for Hugging Face downloads, cache size inspection, and deleting local cached models.
 
