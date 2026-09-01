@@ -4,7 +4,7 @@ import { ApiStatus, useWorkbenchData } from "@/components/DataState";
 import { SettingsPanel } from "@/components/SettingsPanel";
 
 export default function SettingsPage() {
-  const { status } = useWorkbenchData();
+  const { models, runtime, status } = useWorkbenchData();
   return (
     <div>
       <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -15,7 +15,7 @@ export default function SettingsPage() {
         <ApiStatus status={status} />
       </section>
       <section className="section">
-        <SettingsPanel />
+        <SettingsPanel models={models} runtime={runtime} />
       </section>
     </div>
   );

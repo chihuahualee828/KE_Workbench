@@ -477,6 +477,7 @@ function PatchDetailsDialog({
           <DetailItem label="Created" value={formatPatchDate(patch.created_at)} />
           <DetailItem label="Modified Layers" value={patch.modified_layers.join(", ") || "Not recorded"} />
           <DetailItem label="Edit Mode" value={patch.sequential_edit ? "Sequential" : "Single edit"} />
+          <DetailItem label="Second-Moment Adjustment" value={patch.mom2_adjustment === undefined ? "Not recorded" : patch.mom2_adjustment ? "Enabled" : "Disabled"} />
           <DetailItem label="Tensor Deltas" value={tensorDeltas.length ? `${tensorDeltas.length} saved file${tensorDeltas.length === 1 ? "" : "s"}` : "Not available"} />
           {patch.sequential_edit ? <DetailItem label="Prior Patches" value={patch.parent_patch_ids ? String(patch.parent_patch_ids.length) : "Not recorded"} /> : null}
           {patch.layer_source ? <DetailItem label="Layer Source" value={patch.layer_source.replace(/_/g, " ")} /> : null}
