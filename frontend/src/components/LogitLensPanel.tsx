@@ -6,6 +6,7 @@ import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 
 import { api } from "@/lib/api";
 import type { LogitLensLayer, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
+import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
@@ -17,6 +18,8 @@ export function LogitLensPanel({ models, runtime = [] }: { models: SupportedMode
   const [layers, setLayers] = useState<LogitLensLayer[]>([]);
   const [busy, setBusy] = useState(false);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
+
+  useLoadedModelSelection(models, runtime, setModelId);
 
   const chart = useMemo(
     () =>

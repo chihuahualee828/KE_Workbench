@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { ModelRuntimeStatus, SupportedModel, TraceCell } from "@/lib/types";
+import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
@@ -22,6 +23,8 @@ export function CausalTraceHeatmap({ models, runtime = [] }: { models: Supported
   const [selected, setSelected] = useState<TraceCell | null>(null);
   const [busy, setBusy] = useState(false);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
+
+  useLoadedModelSelection(models, runtime, setModelId);
 
   const layers = useMemo(() => Array.from(new Set(cells.map((cell) => cell.layer))), [cells]);
   const maxEffect = Math.max(0.01, ...cells.map((cell) => Math.abs(cell.indirect_effect)));

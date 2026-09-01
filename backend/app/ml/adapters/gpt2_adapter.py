@@ -220,6 +220,12 @@ def unload_all_adapters() -> None:
     _collect_runtime_memory()
 
 
+def unload_other_adapters(active_adapter: GPT2Adapter) -> None:
+    """Release every runtime adapter except the one about to be loaded."""
+    with _ADAPTER_LOCK:
+        _unload_other_adapters_locked(active_adapter)
+
+
 @contextmanager
 def adapter_runtime_lock():
     with _ADAPTER_LOCK:
