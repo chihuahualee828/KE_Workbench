@@ -260,6 +260,7 @@ export const api = {
     model_id: string;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
     layers?: number[] | null;
+    evaluation_prompts: string[];
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     sequential_edit?: boolean;
