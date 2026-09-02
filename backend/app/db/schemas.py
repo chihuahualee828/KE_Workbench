@@ -71,6 +71,16 @@ class RomeEditRequest(BaseModel):
     mom2_adjustment: bool = False
 
 
+class KnEditRequest(BaseModel):
+    model_id: str = "gpt2-xl"
+    subject: str
+    relation_prompt: str
+    new_object: str
+    ground_truth: str = Field(min_length=1)
+    evaluation_prompts: list[str] = Field(default_factory=list)
+    sequential_edit: bool = False
+
+
 class EditSpec(BaseModel):
     subject: str
     relation_prompt: str

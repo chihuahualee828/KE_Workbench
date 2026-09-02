@@ -33,10 +33,12 @@ export function ModelCacheManager({
   const [localLayers, setLocalLayers] = usePersistentState("kew:modelManager:localLayers", "0");
   const [localRome, setLocalRome] = usePersistentState("kew:modelManager:localRome", false);
   const [localMemit, setLocalMemit] = usePersistentState("kew:modelManager:localMemit", false);
+  const [localKn, setLocalKn] = usePersistentState("kew:modelManager:localKn", false);
   const [localTrace, setLocalTrace] = usePersistentState("kew:modelManager:localTrace", false);
   const [localLens, setLocalLens] = usePersistentState("kew:modelManager:localLens", false);
   const [romeHparams, setRomeHparams] = usePersistentState("kew:modelManager:romeHparams", "");
   const [memitHparams, setMemitHparams] = usePersistentState("kew:modelManager:memitHparams", "");
+  const [knHparams, setKnHparams] = usePersistentState("kew:modelManager:knHparams", "");
 
   useEffect(() => {
     if (localModelType === "gpt2") return;
@@ -154,8 +156,10 @@ export function ModelCacheManager({
         supports_causal_trace: localTrace,
         supports_rome: localRome,
         supports_memit: localMemit,
+        supports_kn: localKn,
         rome_hparams: romeHparams || null,
-        memit_hparams: memitHparams || null
+        memit_hparams: memitHparams || null,
+        kn_hparams: knHparams || null
       });
       await onModelsChanged?.();
       await refresh();
@@ -362,12 +366,14 @@ export function ModelCacheManager({
               <TextInput label="Layers" value={localLayers} onChange={setLocalLayers} placeholder="48" />
               <TextInput label="ROME HParams" value={romeHparams} onChange={setRomeHparams} placeholder="hparams/ROME/gpt2-xl.yaml" />
               <TextInput label="MEMIT HParams" value={memitHparams} onChange={setMemitHparams} placeholder="hparams/MEMIT/gpt2-xl.yaml" />
+              <TextInput label="KN HParams" value={knHparams} onChange={setKnHparams} placeholder="hparams/KN/gpt2-xl.yaml" />
             </div>
             <div className="flex flex-wrap gap-4 text-sm">
               <Check label="Logit Lens" checked={localLens} onChange={setLocalLens} />
               <Check label="Causal Trace" checked={localTrace} onChange={setLocalTrace} disabled={localModelType !== "gpt2"} />
               <Check label="ROME" checked={localRome} onChange={setLocalRome} />
               <Check label="MEMIT" checked={localMemit} onChange={setLocalMemit} />
+              <Check label="KN" checked={localKn} onChange={setLocalKn} />
             </div>
             <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || !localId.trim() || !localPath.trim()} title={runtimeConnected ? "Register local model path" : "API is offline"}>
               <PlusCircle size={16} />

@@ -88,8 +88,10 @@ export const api = {
     supports_causal_trace: boolean;
     supports_rome: boolean;
     supports_memit: boolean;
+    supports_kn: boolean;
     rome_hparams?: string | null;
     memit_hparams?: string | null;
+    kn_hparams?: string | null;
   }) =>
     request<SupportedModel>("/api/models/local", {
       method: "POST",
@@ -275,6 +277,19 @@ export const api = {
     mom2_adjustment?: boolean;
   }) =>
     request<EditJob>("/api/edit/memit", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  knEdit: (body: {
+    model_id: string;
+    subject: string;
+    relation_prompt: string;
+    new_object: string;
+    ground_truth: string;
+    evaluation_prompts: string[];
+    sequential_edit?: boolean;
+  }) =>
+    request<EditJob>("/api/edit/kn", {
       method: "POST",
       body: JSON.stringify(body)
     }),

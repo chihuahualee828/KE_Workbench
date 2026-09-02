@@ -145,6 +145,26 @@ Runs EasyEdit MEMIT for a compatible model such as `gpt2-xl`.
 }
 ```
 
+## Knowledge Neurons Edit
+
+`POST /api/edit/kn`
+
+Runs EasyEdit Knowledge Neurons for one fact. KN needs the original object to identify the relevant MLP neurons. The workbench stores the changed neuron vectors as a sparse, reversible patch.
+
+```json
+{
+  "model_id": "gpt2-xl",
+  "subject": "The Space Needle",
+  "relation_prompt": "{} is located in the city of",
+  "ground_truth": "Seattle",
+  "new_object": "Paris",
+  "evaluation_prompts": [
+    "The landmark called the Space Needle can be found in"
+  ],
+  "sequential_edit": false
+}
+```
+
 ## Evaluation
 
 `POST /api/evaluate`

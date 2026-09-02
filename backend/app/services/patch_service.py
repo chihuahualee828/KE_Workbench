@@ -506,12 +506,56 @@ class PatchService:
         return None
 
     def _apply_patch_to_model(self, model: Any, patch: dict[str, Any]) -> None:
+        if patch.get("sparse_delta_format") == "kn_v1":
+            self._apply_kn_sparse_patch(model, patch, direction=1)
+            return
         for parameter, delta in self._patch_deltas(model, patch):
             parameter.data.add_(delta)
 
     def _revert_patch_from_model(self, model: Any, patch: dict[str, Any]) -> None:
+        if patch.get("sparse_delta_format") == "kn_v1":
+            self._apply_kn_sparse_patch(model, patch, direction=-1)
+            return
         for parameter, delta in self._patch_deltas(model, patch):
             parameter.data.sub_(delta)
+
+    def _apply_kn_sparse_patch(self, model: Any, patch: dict[str, Any], direction: int) -> None:
+        """Apply KN's sparse MLP-output vectors without materializing full-layer deltas."""
+        try:
+            import torch
+            from safetensors.torch import load_file
+        except ImportError as exc:
+            raise RuntimeError("Install torch and safetensors to apply saved KN patches.") from exc
+
+        specs = patch.get("sparse_delta_specs")
+        if not isinstance(specs, list):
+            raise ValueError(f"KN patch {patch.get('patch_id')} is missing sparse delta metadata.")
+        parameter_map = dict(model.named_parameters())
+        for path_value in patch.get("delta_paths", []):
+            path = self.resolve_delta_path(path_value)
+            if path.suffix != ".safetensors":
+                continue
+            tensors = load_file(str(path))
+            for spec in specs:
+                if not isinstance(spec, dict):
+                    continue
+                entry = spec.get("entry")
+                parameter = parameter_map.get(spec.get("parameter"))
+                orientation = spec.get("orientation")
+                if not isinstance(entry, str) or parameter is None or orientation not in {"row", "column"}:
+                    continue
+                indices = tensors.get(f"{entry}.indices")
+                values = tensors.get(f"{entry}.values")
+                if indices is None or values is None:
+                    continue
+                indices = indices.to(device=parameter.device, dtype=torch.long)
+                values = values.to(device=parameter.device, dtype=parameter.dtype)
+                if direction < 0:
+                    values = -values
+                if orientation == "row":
+                    parameter.data.index_add_(0, indices, values)
+                else:
+                    parameter.data.index_add_(1, indices, values.transpose(0, 1))
 
     def _patch_deltas(self, model: Any, patch: dict[str, Any]):
         try:

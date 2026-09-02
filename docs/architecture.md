@@ -9,8 +9,8 @@ flowchart LR
   API --> PATCH[Patch service]
   API --> ML[ML runtime]
   ML --> ADAPT[Model adapters]
-  ML --> EDIT[EasyEdit ROME/MEMIT wrappers]
-  EDIT --> EE[EasyEdit BaseEditor]
+  ML --> EDIT[EasyEdit ROME/KN/MEMIT wrappers]
+  EDIT --> EE[EasyEdit runtime]
   EXP --> FS[(data/experiments)]
   PATCH --> FS2[(data/patches)]
 ```
@@ -33,7 +33,7 @@ flowchart LR
 
 Install `backend[ml]`, clone EasyEdit, install EasyEdit's requirements, and set `EASYEDIT_ROOT` to run model-backed generation, logit lens, tracing, and editing through Hugging Face Transformers and EasyEdit.
 
-ROME and MEMIT use EasyEdit through `easyedit_runtime.py`. The runtime:
+ROME, KN, and MEMIT use EasyEdit through `easyedit_runtime.py`. The runtime:
 
 - resolves compatible hparams from `EASYEDIT_ROOT`, such as `hparams/ROME/gpt2-xl.yaml`;
 - constructs method-specific hyperparams and `BaseEditor`;
@@ -41,3 +41,4 @@ ROME and MEMIT use EasyEdit through `easyedit_runtime.py`. The runtime:
 - calls `editor.edit(...)` with prompts, ground truth, targets, and optional evaluation inputs;
 - saves EasyEdit metrics;
 - extracts changed-weight deltas from EasyEdit's returned original weights and persists them as safetensors when available.
+- captures KN's changed MLP-neuron vectors as sparse safetensors, so they can be replayed and reverted without retaining full MLP matrices.

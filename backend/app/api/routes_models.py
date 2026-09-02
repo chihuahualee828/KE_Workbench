@@ -34,8 +34,10 @@ class LocalModelRequest(BaseModel):
     supports_causal_trace: bool = False
     supports_rome: bool = False
     supports_memit: bool = False
+    supports_kn: bool = False
     rome_hparams: str | None = None
     memit_hparams: str | None = None
+    kn_hparams: str | None = None
 
 
 class ModelExportRequest(BaseModel):
