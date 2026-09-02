@@ -19,6 +19,7 @@ def _hub_model(
     supports_causal_trace: bool = False,
     rome_hparams: str | None = None,
     memit_hparams: str | None = None,
+    kn_hparams: str | None = None,
     estimated_vram_gb: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     easyedit = {
@@ -26,6 +27,7 @@ def _hub_model(
         for key, value in {
             "rome_hparams": rome_hparams,
             "memit_hparams": memit_hparams,
+            "kn_hparams": kn_hparams,
             "estimated_vram_gb": estimated_vram_gb,
         }.items()
         if value
@@ -41,6 +43,7 @@ def _hub_model(
         "supports_causal_trace": supports_causal_trace,
         "supports_rome": bool(rome_hparams),
         "supports_memit": bool(memit_hparams),
+        "supports_kn": bool(kn_hparams),
         "easyedit": easyedit,
         "source": "hub",
     }
@@ -56,6 +59,7 @@ SUPPORTED_MODELS = [
         supports_causal_trace=True,
         rome_hparams="hparams/ROME/gpt2-xl.yaml",
         memit_hparams="hparams/MEMIT/gpt2-xl.yaml",
+        kn_hparams="hparams/KN/gpt2-xl.yaml",
         estimated_vram_gb={"rome": 10, "memit": 11},
     ),
     _hub_model(
@@ -66,6 +70,7 @@ SUPPORTED_MODELS = [
         n_layers=28,
         rome_hparams="hparams/ROME/gpt-j-6B.yaml",
         memit_hparams="hparams/MEMIT/gpt-j-6B.yaml",
+        kn_hparams="hparams/KN/gpt-j-6B.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
     ),
     _hub_model(
@@ -76,6 +81,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         rome_hparams="hparams/ROME/baichuan-7b.yaml",
         memit_hparams="hparams/MEMIT/baichuan-7b.yaml",
+        kn_hparams="hparams/KN/baichuan-7b.yaml",
     ),
     _hub_model(
         model_id="chatglm2-6b",
@@ -85,6 +91,7 @@ SUPPORTED_MODELS = [
         n_layers=28,
         rome_hparams="hparams/ROME/chatglm2-6b.yaml",
         memit_hparams="hparams/MEMIT/chatglm2-6b.yaml",
+        kn_hparams="hparams/KN/chatglm2-6b.yaml",
     ),
     _hub_model(
         model_id="chatglm4-9b",
@@ -102,6 +109,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         rome_hparams="hparams/ROME/internlm-7b.yaml",
         memit_hparams="hparams/MEMIT/internlm-7b.yaml",
+        kn_hparams="hparams/KN/internlm-7b.yaml",
     ),
     _hub_model(
         model_id="llama-7b",
@@ -111,6 +119,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         rome_hparams="hparams/ROME/llama-7b.yaml",
         memit_hparams="hparams/MEMIT/llama-7b.yaml",
+        kn_hparams="hparams/KN/llama-7b.yaml",
     ),
     _hub_model(
         model_id="llama3-8b",
@@ -119,6 +128,7 @@ SUPPORTED_MODELS = [
         model_type="llama",
         n_layers=32,
         rome_hparams="hparams/ROME/llama3-8b.yaml",
+        kn_hparams="hparams/KN/llama3-8b.yaml",
         estimated_vram_gb={"rome": 18},
     ),
     _hub_model(
@@ -129,6 +139,7 @@ SUPPORTED_MODELS = [
         n_layers=28,
         rome_hparams="hparams/ROME/llama3.2-3b.yaml",
         memit_hparams="hparams/MEMIT/llama3.2-3b.yaml",
+        kn_hparams="hparams/KN/llama3.2-3b.yaml",
         estimated_vram_gb={"rome": 8, "memit": 9},
     ),
     _hub_model(
@@ -139,6 +150,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         rome_hparams="hparams/ROME/mistral-7b.yaml",
         memit_hparams="hparams/MEMIT/mistral-7b.yaml",
+        kn_hparams="hparams/KN/mistral-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
     ),
     _hub_model(
@@ -149,6 +161,7 @@ SUPPORTED_MODELS = [
         n_layers=28,
         rome_hparams="hparams/ROME/qwen2.5-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen2.5-7b.yaml",
+        kn_hparams="hparams/KN/qwen2.5-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
     ),
     _hub_model(
@@ -159,6 +172,7 @@ SUPPORTED_MODELS = [
         n_layers=28,
         rome_hparams="hparams/ROME/qwen2-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen2-7b.yaml",
+        kn_hparams="hparams/KN/qwen2-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
     ),
     _hub_model(
@@ -169,6 +183,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         rome_hparams="hparams/ROME/qwen-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen-7b.yaml",
+        kn_hparams="hparams/KN/qwen-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
     ),
     _hub_model(
@@ -236,6 +251,12 @@ class ModelRegistry:
             raise ValueError("ROME local models need a ROME hparams path.")
         if model.get("supports_memit") and not model.get("memit_hparams"):
             raise ValueError("MEMIT local models need a MEMIT hparams path.")
+        if model.get("supports_kn") and not model.get("kn_hparams"):
+            raise ValueError("KN local models need a KN hparams path.")
+        if model.get("supports_kn") and model_type not in {
+            "gpt2", "gptj", "llama", "baichuan", "chatglm", "internlm", "mistral", "qwen"
+        }:
+            raise ValueError("KN local support needs a supported model type, not auto.")
 
         stored = {
             "id": model_id,
@@ -250,11 +271,13 @@ class ModelRegistry:
             "supports_causal_trace": bool(model.get("supports_causal_trace", False)),
             "supports_rome": bool(model.get("supports_rome", False)),
             "supports_memit": bool(model.get("supports_memit", False)),
+            "supports_kn": bool(model.get("supports_kn", False)),
             "easyedit": {
                 key: value
                 for key, value in {
                     "rome_hparams": model.get("rome_hparams") or None,
                     "memit_hparams": model.get("memit_hparams") or None,
+                    "kn_hparams": model.get("kn_hparams") or None,
                 }.items()
                 if value
             },

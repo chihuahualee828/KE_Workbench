@@ -36,6 +36,11 @@ METHODS = {
         "hparams_key": "memit_hparams",
         "support_key": "supports_memit",
     },
+    "kn": {
+        "hparams_class": "KNHyperParams",
+        "hparams_key": "kn_hparams",
+        "support_key": "supports_kn",
+    },
 }
 
 
@@ -228,6 +233,279 @@ def run_easyedit(
             baseline_weights = None
             metrics = None
             _collect_runtime_memory()
+
+
+def run_easyedit_kn(
+    model_id: str,
+    edit: dict[str, Any],
+    sequential_edit: bool = False,
+) -> dict[str, Any]:
+    """Run EasyEdit Knowledge Neurons and save only its changed neuron vectors.
+
+    KN mutates a sparse set of MLP-output vectors rather than a configured full
+    rewrite matrix. Capturing those vectors directly keeps the resulting workbench
+    patch small and replayable without retaining a full model-weight snapshot.
+    """
+    model_info = model_registry.get(model_id)
+    if not model_info.get("supports_kn", False):
+        raise EasyEditUnsupportedError(
+            f"{model_id} is not configured for KN in this workbench. "
+            "Select a model with EasyEdit KN hparams."
+        )
+
+    ground_truth = str(edit.get("ground_truth") or "").strip()
+    if not ground_truth:
+        raise EasyEditUnsupportedError("KN requires the original object as ground_truth.")
+
+    _, hparams_cls = _load_easyedit("KNHyperParams")
+    hparams_path = _resolve_hparams_path(model_info, "kn_hparams")
+    hparams = hparams_cls.from_hparams(str(hparams_path))
+    _override_model_name(hparams, model_info)
+    prompt = build_prompt(str(edit["subject"]), str(edit["relation_prompt"]))
+    active_patch_ids: list[str] = []
+    runtime_bundle: dict[str, Any] | None = None
+    snapshots: list[dict[str, Any]] = []
+    weights_restored = False
+
+    with model_runtime_service.exclusive_runtime_access():
+        active_patch_ids = patch_service.active_patches_for_model(model_id)
+        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        runtime_model = runtime_bundle["model"]
+        runtime_tokenizer = runtime_bundle["tokenizer"]
+
+        try:
+            if not sequential_edit:
+                patch_service.sync_patch_stack_to_model(runtime_model, model_id, [])
+            _configure_loaded_tokenizer(runtime_tokenizer, str(hparams.model_name), "kn")
+            _override_easyedit_device(hparams, runtime_bundle.get("device"))
+            KnowledgeNeurons, resolve_model_type = _load_kn_components()
+            kn = KnowledgeNeurons(
+                runtime_model,
+                runtime_tokenizer,
+                model_type=_resolve_kn_model_type(model_info, resolve_model_type),
+                device=runtime_bundle.get("device") or "cpu",
+            )
+            refined_neurons = _normalize_kn_neurons(
+                kn.get_refined_neurons(
+                    [prompt],
+                    ground_truth,
+                    p=hparams.p,
+                    batch_size=hparams.batch_size,
+                    steps=hparams.steps,
+                    coarse_adaptive_threshold=hparams.adaptive_threshold,
+                    refine=hparams.refine,
+                ),
+                n_layers=int(model_info["n_layers"]),
+            )
+            if not refined_neurons:
+                raise EasyEditRuntimeError(
+                    "EasyEdit KN did not identify any knowledge neurons for this fact. "
+                    "Try a more specific relation prompt or adjust the KN hparams."
+                )
+
+            snapshots = _snapshot_kn_neuron_vectors(kn, refined_neurons)
+            metrics, _ = kn.edit_knowledge(
+                prompt,
+                target=str(edit["new_object"]),
+                neurons=refined_neurons,
+                undo_modification=False,
+            )
+            patch_id = patch_service.new_patch_id()
+            tensor_delta_paths, sparse_delta_specs = _save_kn_sparse_deltas(
+                runtime_model,
+                snapshots,
+                patch_id,
+            )
+            if not tensor_delta_paths:
+                raise EasyEditRuntimeError(
+                    "EasyEdit KN completed, but did not produce any changed neuron vectors."
+                )
+
+            _restore_kn_neuron_vectors(runtime_model, snapshots)
+            weights_restored = True
+            patch = patch_service.create_patch(
+                model_id=model_id,
+                method="kn",
+                edits=[edit],
+                modified_layers=sorted({layer for layer, _ in refined_neurons}),
+                metrics=_jsonable(metrics),
+                delta_paths=tensor_delta_paths,
+                runtime="easyedit",
+                extra_metadata={
+                    "easyedit_hparams": str(hparams_path),
+                    "hf_model": model_info["hf_id"],
+                    "sequential_edit": sequential_edit,
+                    "parent_patch_ids": active_patch_ids if sequential_edit else [],
+                    "used_loaded_runtime": True,
+                    "kn_neurons": [{"layer": layer, "neuron": neuron} for layer, neuron in refined_neurons],
+                    "sparse_delta_format": "kn_v1",
+                    "sparse_delta_specs": sparse_delta_specs,
+                },
+                patch_id=patch_id,
+            )
+            patch_service.activate_patch(patch_id, append=sequential_edit)
+            patch_service.sync_active_patches_to_model(runtime_model, model_id)
+            local_store.write_json(
+                f"patches/{patch['patch_id']}/easyedit_metrics.json",
+                {"metrics": _jsonable(metrics)},
+            )
+            return {
+                "patch_id": patch["patch_id"],
+                "metrics": _jsonable(metrics),
+                "patch": patch,
+                "runtime": "easyedit",
+                "neuron_count": len(refined_neurons),
+                "modified_layers": patch["modified_layers"],
+                "used_loaded_runtime": True,
+            }
+        finally:
+            if snapshots and not weights_restored:
+                _restore_kn_neuron_vectors(runtime_model, snapshots)
+            patch_service.sync_active_patches_to_model(runtime_model, model_id)
+            _collect_runtime_memory()
+
+
+def _load_kn_components() -> tuple[Any, Any]:
+    _add_easyedit_to_python_path()
+    try:
+        from easyeditor.models.kn.knowledge_neurons.knowledge_neurons import KnowledgeNeurons, model_type
+    except ImportError as exc:
+        raise EasyEditRuntimeError(
+            "Installed EasyEdit does not include the Knowledge Neurons runtime. "
+            "Update EasyEdit and install its requirements."
+        ) from exc
+    return KnowledgeNeurons, model_type
+
+
+def _resolve_kn_model_type(model_info: dict[str, Any], resolver: Any) -> str:
+    model_name = str(model_info.get("hf_id") or model_info.get("id") or "")
+    try:
+        return str(resolver(model_name))
+    except ValueError:
+        fallback_types = {
+            "gpt2": "gpt2",
+            "gptj": "gptj",
+            "llama": "llama",
+            "baichuan": "baichuan",
+            "chatglm": "chatglm2",
+            "internlm": "internlm",
+            "mistral": "mistral",
+            "qwen": "qwen2" if "qwen2" in str(model_info.get("id", "")).lower() else "qwen",
+        }
+        fallback = fallback_types.get(str(model_info.get("model_type") or "").lower())
+        if fallback:
+            return fallback
+        raise EasyEditUnsupportedError(f"KN does not support this model architecture: {model_name}")
+
+
+def _normalize_kn_neurons(value: Any, n_layers: int) -> list[tuple[int, int]]:
+    if not isinstance(value, (list, tuple)):
+        raise EasyEditRuntimeError("EasyEdit KN returned an invalid neuron list.")
+    neurons: list[tuple[int, int]] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        layer, neuron = int(item[0]), int(item[1])
+        if not 0 <= layer < n_layers or neuron < 0:
+            continue
+        if (layer, neuron) not in neurons:
+            neurons.append((layer, neuron))
+    return neurons
+
+
+def _snapshot_kn_neuron_vectors(kn: Any, neurons: list[tuple[int, int]]) -> list[dict[str, Any]]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise EasyEditRuntimeError("Install torch to save KN neuron deltas.") from exc
+
+    grouped: dict[int, list[int]] = {}
+    for layer, neuron in neurons:
+        grouped.setdefault(layer, []).append(neuron)
+
+    parameter_names = {id(parameter): name for name, parameter in kn.model.named_parameters()}
+    orientation = "row" if kn.model_type in {"gpt2", "chatglm2"} else "column"
+    snapshots = []
+    for layer, raw_indices in grouped.items():
+        weight = kn._get_output_ff_layer(layer)
+        parameter_name = parameter_names.get(id(weight))
+        if parameter_name is None or not torch.is_tensor(weight):
+            raise EasyEditRuntimeError(f"Unable to identify KN output-weight parameter for layer {layer}.")
+        indices = sorted(set(raw_indices))
+        limit = weight.shape[0] if orientation == "row" else weight.shape[1]
+        if any(index >= limit for index in indices):
+            raise EasyEditRuntimeError(f"EasyEdit KN returned an invalid neuron index for layer {layer}.")
+        vector = weight[indices, :] if orientation == "row" else weight[:, indices].transpose(0, 1)
+        snapshots.append(
+            {
+                "parameter": parameter_name,
+                "orientation": orientation,
+                "indices": indices,
+                "vectors": vector.detach().cpu().clone(),
+            }
+        )
+    return snapshots
+
+
+def _save_kn_sparse_deltas(
+    model: Any,
+    snapshots: list[dict[str, Any]],
+    patch_id: str,
+) -> tuple[list[str], list[dict[str, str]]]:
+    try:
+        import torch
+        from safetensors.torch import save_file
+    except ImportError as exc:
+        raise EasyEditRuntimeError("Install torch and safetensors to save KN neuron deltas.") from exc
+
+    parameter_map = dict(model.named_parameters())
+    tensors: dict[str, Any] = {}
+    specs: list[dict[str, str]] = []
+    for snapshot in snapshots:
+        parameter = parameter_map.get(snapshot["parameter"])
+        if parameter is None:
+            continue
+        indices = torch.tensor(snapshot["indices"], dtype=torch.int64, device=parameter.device)
+        current = parameter.detach()[indices, :] if snapshot["orientation"] == "row" else parameter.detach()[:, indices].transpose(0, 1)
+        delta = (current.detach().cpu() - snapshot["vectors"]).contiguous()
+        changed = torch.count_nonzero(delta, dim=1) > 0
+        if not bool(torch.any(changed)):
+            continue
+        entry_name = f"entry_{len(specs)}"
+        tensors[f"{entry_name}.indices"] = torch.tensor(snapshot["indices"], dtype=torch.int64)[changed]
+        tensors[f"{entry_name}.values"] = delta[changed]
+        specs.append(
+            {
+                "entry": entry_name,
+                "parameter": str(snapshot["parameter"]),
+                "orientation": str(snapshot["orientation"]),
+            }
+        )
+    if not tensors:
+        return [], []
+    path = patch_service.patch_dir(patch_id) / "kn_sparse_deltas.safetensors"
+    save_file(tensors, str(path), metadata={"format": "kew_kn_sparse_v1"})
+    return [str(path)], specs
+
+
+def _restore_kn_neuron_vectors(model: Any, snapshots: list[dict[str, Any]]) -> None:
+    try:
+        import torch
+    except ImportError as exc:
+        raise EasyEditRuntimeError("Install torch to restore KN neuron vectors.") from exc
+
+    parameter_map = dict(model.named_parameters())
+    with torch.no_grad():
+        for snapshot in snapshots:
+            parameter = parameter_map.get(snapshot["parameter"])
+            if parameter is None:
+                continue
+            indices = torch.tensor(snapshot["indices"], dtype=torch.int64, device=parameter.device)
+            values = snapshot["vectors"].to(device=parameter.device, dtype=parameter.dtype)
+            if snapshot["orientation"] == "row":
+                parameter[indices, :] = values
+            else:
+                parameter[:, indices] = values.transpose(0, 1)
 
 
 def _load_easyedit(hparams_class_name: str) -> tuple[Any, Any]:

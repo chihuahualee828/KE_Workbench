@@ -27,7 +27,7 @@ type MemitEditDraft = {
 type MemitEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
-  const [tab, setTab] = usePersistentState<"rome" | "memit" | "patches">("kew:edit:tab", "rome");
+  const [tab, setTab] = usePersistentState<"rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
   const setResult = (result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result }));
   const setJob = (job: EditJob | null) => setEdit((current) => ({ ...current, job }));
@@ -37,19 +37,21 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       <div className="inline-flex w-fit rounded-md border border-line bg-white p-1">
         {[
           ["rome", "ROME"],
+          ["kn", "KN"],
           ["memit", "MEMIT"],
           ["patches", "Patches"]
         ].map(([id, label]) => (
           <button
             key={id}
             className={`rounded px-3 py-2 text-sm ${tab === id ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "memit" | "patches")}
+            onClick={() => setTab(id as "rome" | "kn" | "memit" | "patches")}
           >
             {label}
           </button>
         ))}
       </div>
       {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
@@ -59,6 +61,141 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function KnForm({
+  models,
+  runtime,
+  result,
+  job,
+  setResult,
+  setJob,
+  onPatchesChanged
+}: {
+  models: SupportedModel[];
+  runtime: ModelRuntimeStatus[];
+  result: Record<string, unknown> | null;
+  job: EditJob | null;
+  setResult: (result: Record<string, unknown> | null) => void;
+  setJob: (job: EditJob | null) => void;
+  onPatchesChanged?: () => void | Promise<void>;
+}) {
+  const knModels = useMemo(() => models.filter((model) => model.supports_kn), [models]);
+  const [modelId, setModelId] = usePersistentState("kew:edit:kn:modelId", knModels[0]?.id ?? "gpt2-xl");
+  const [subject, setSubject] = usePersistentState("kew:edit:kn:subject", "The Space Needle");
+  const [relationPrompt, setRelationPrompt] = usePersistentState("kew:edit:kn:relationPrompt", "{} is located in the city of");
+  const [newObject, setNewObject] = usePersistentState("kew:edit:kn:newObject", "Paris");
+  const [groundTruth, setGroundTruth] = usePersistentState("kew:edit:kn:groundTruth", "Seattle");
+  const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:kn:evaluationPrompts", "The landmark called the Space Needle can be found in");
+  const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:kn:sequentialEdit", false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+
+  useLoadedModelSelection(knModels, runtime, setModelId);
+
+  useEffect(() => {
+    if (knModels.length && !knModels.some((model) => model.id === modelId)) {
+      setModelId(knModels[0].id);
+    }
+  }, [knModels, modelId, setModelId]);
+
+  async function run() {
+    if (!modelLoaded || busy) return;
+    if (!subject.trim() || !relationPrompt.trim() || !newObject.trim() || !groundTruth.trim()) {
+      setError("KN needs a subject, relation prompt, new object, and original object.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setResult(null);
+    setJob(null);
+    try {
+      const response = await api.knEdit({
+        model_id: modelId,
+        subject,
+        relation_prompt: relationPrompt,
+        new_object: newObject,
+        ground_truth: groundTruth,
+        evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
+        sequential_edit: sequentialEdit
+      });
+      const completed = await watchEditJob(response, setJob);
+      setResult(completed.result ?? null);
+      await onPatchesChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function evaluatePrompts() {
+    const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (!modelLoaded || !prompts.length || busy || evaluating) return;
+    setEvaluating(true);
+    setError("");
+    try {
+      const generations = [];
+      for (const prompt of prompts) {
+        const response = await api.generate({
+          model_id: modelId,
+          prompt,
+          max_new_tokens: 32,
+          decoding_strategy: "greedy"
+        });
+        generations.push({ prompt, text: response.text });
+      }
+      setResult({ generations, evaluation_only: true, model_id: modelId });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
+      <section className="panel grid gap-4">
+        <ModelSelector models={knModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        <div className="rounded-md border border-line bg-panel p-3 text-sm leading-6 text-ink/70">
+          Knowledge Neurons finds fact-specific MLP neurons, then updates their output vectors. The original object is required to identify the neurons.
+        </div>
+        <TextInput label="Subject" value={subject} onChange={setSubject} />
+        <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
+        <TextInput label="New Object" value={newObject} onChange={setNewObject} />
+        <TextInput label="Original Object" value={groundTruth} onChange={setGroundTruth} />
+        <div className="grid gap-2">
+          <span className="flex items-center justify-between gap-2">
+            <span className="label">Evaluation Prompts</span>
+            <button
+              type="button"
+              className="ghost-button min-h-8 px-2 py-1 text-xs"
+              onClick={evaluatePrompts}
+              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
+              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
+            >
+              <BarChart3 size={14} />
+              {evaluating ? "Evaluating" : "Evaluate"}
+            </button>
+          </span>
+          <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
+        </div>
+        <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
+          <span>Sequential edit</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+        </label>
+        <button className="tool-button w-full" onClick={run} disabled={busy || evaluating || !modelLoaded} title={modelLoaded ? "Identify knowledge neurons and apply the KN edit" : "Load the selected model before editing"}>
+          <FlaskConical size={16} />
+          {busy ? "Editing" : "Apply KN"}
+        </button>
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
+        {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
+      </section>
+      <ResultPanel result={result} job={job} />
     </div>
   );
 }

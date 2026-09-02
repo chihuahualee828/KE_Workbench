@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from app.db.schemas import MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, JobResponse, PatchListResponse
+from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -22,6 +22,7 @@ from app.ml.editing.easyedit_runtime import (
     delete_mom2_statistics,
 )
 from app.ml.editing.memit_wrapper import run_memit_edit
+from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
@@ -57,6 +58,15 @@ def rome_edit(request: RomeEditRequest) -> JobResponse:
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
+    return _job_response(job)
+
+
+@router.post("/edit/kn", response_model=JobResponse)
+def kn_edit(request: KnEditRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    experiment = experiment_service.create("kn_edit", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread("KN", job["id"], run_kn_edit, request.model_dump())
     return _job_response(job)
 
 

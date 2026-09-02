@@ -12,6 +12,7 @@ const capabilities = [
   "Logit lens",
   "Causal tracing",
   "ROME single edits",
+  "Knowledge Neurons single edits",
   "MEMIT batch edits",
   "Patch evaluation"
 ];

@@ -11,9 +11,11 @@ export type SupportedModel = {
   supports_causal_trace: boolean;
   supports_rome: boolean;
   supports_memit: boolean;
+  supports_kn: boolean;
   easyedit?: {
     rome_hparams?: string;
     memit_hparams?: string;
+    kn_hparams?: string;
     estimated_vram_gb?: Record<string, number>;
   };
   lineage_imported?: number;
