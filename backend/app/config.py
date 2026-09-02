@@ -43,11 +43,20 @@ def _resolve_existing_path(value: str, marker: str | None = None) -> Path:
     return candidates[0]
 
 
+def _resolve_data_dir() -> Path:
+    """Resolve storage once so imports do not depend on a later cwd change."""
+    configured = os.getenv("DATA_DIR")
+    if not configured:
+        return (_backend_root / "data").resolve()
+    path = Path(configured).expanduser()
+    return path.resolve() if path.is_absolute() else (_backend_root / path).resolve()
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./data/workbench.db")
-    data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
+    data_dir: Path = _resolve_data_dir()
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     easyedit_root: Path = _resolve_existing_path(os.getenv("EASYEDIT_ROOT", "./EasyEdit"), marker="easyeditor")
     editing_runtime: str = os.getenv("EDITING_RUNTIME", "easyedit")

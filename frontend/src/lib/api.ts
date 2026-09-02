@@ -84,18 +84,35 @@ export const api = {
     model_type: string;
     n_layers: number;
     supports_generation: boolean;
-    supports_logit_lens: boolean;
-    supports_causal_trace: boolean;
-    supports_rome: boolean;
-    supports_memit: boolean;
-    supports_kn: boolean;
+    supports_logit_lens?: boolean;
+    supports_causal_trace?: boolean;
+    supports_rome?: boolean;
+    supports_memit?: boolean;
+    supports_kn?: boolean;
     rome_hparams?: string | null;
     memit_hparams?: string | null;
     kn_hparams?: string | null;
+    import_job_id?: string | null;
   }) =>
     request<SupportedModel>("/api/models/local", {
       method: "POST",
       body: JSON.stringify(body)
+    }),
+  createLocalFolderImport: (body: { source_name: string; total_bytes: number }) =>
+    request<ModelDownloadJob>("/api/models/local/import/jobs", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  uploadLocalFolderChunk: (jobId: string, relativePath: string, offset: number, chunk: Blob) => {
+    const form = new FormData();
+    form.append("relative_path", relativePath);
+    form.append("offset", String(offset));
+    form.append("chunk", chunk, "model-file-chunk");
+    return upload<ModelDownloadJob>(`/api/models/local/import/jobs/${jobId}/chunks`, form);
+  },
+  completeLocalFolderImport: (jobId: string) =>
+    request<ModelDownloadJob>(`/api/models/local/import/jobs/${jobId}/complete`, {
+      method: "POST"
     }),
   deleteLocalModel: (body: { model_id: string }) =>
     request<{ status: string; model_id: string }>("/api/models/local", {

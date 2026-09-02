@@ -37,7 +37,12 @@ def run_causal_trace(
     runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
     tokenizer = runtime_bundle["tokenizer"]
     model = runtime_bundle["model"]
-    adapter = get_gpt2_adapter(model_id=model_info["hf_id"], n_layers=model_info["n_layers"])
+    adapter = get_gpt2_adapter(
+        model_id=model_info["hf_id"],
+        n_layers=model_info["n_layers"],
+        trust_remote_code=bool(model_info.get("trust_remote_code", False)),
+        generation_use_cache=bool(model_info.get("generation_use_cache", True)),
+    )
     patch_service.sync_active_patches_to_model(model, model_id)
     model.eval()
 

@@ -12,7 +12,7 @@ This repository ships a runnable MVP scaffold plus a real EasyEdit integration f
 - Built-in model catalog derived from EasyEdit ROME, KN, and MEMIT hparams, including GPT-2 XL, GPT-J, Baichuan 2, ChatGLM/GLM, InternLM, Llama, Mistral, and Qwen families.
 - Method-specific edit selectors show only models with compatible EasyEdit hparams, while generation and the workbench show their combined catalog.
 - Saved safetensors weight deltas when EasyEdit returns original changed weights. Base model weights are applied temporarily for generation and then rolled back in memory.
-- Model cache management UI for Hugging Face downloads, cache size inspection, and deleting local cached models.
+- Model cache management UI for Hugging Face downloads, browser-imported local models, cache size inspection, and deleting managed cached models.
 
 ## Local Setup
 
@@ -92,7 +92,13 @@ For ROME, leaving `target_layer` as `null` runs causal tracing first, selects th
 
 The UI shows whether each supported Hugging Face model is cached locally. Use the `Download` action before generation, tracing, or editing if you want to avoid a long first-run wait. The cache manager can also delete a model's local Hugging Face cache directory when you no longer want to keep it.
 
-Disk cache and backend memory are separate states. A model can be fully downloaded but still take time to load weights into the running backend process. Use `Load` to preload weights before pressing Generate/Edit, and `Unload` to release the backend's model reference.
+Disk cache and backend memory are separate states. A model can be fully downloaded or imported but still take time to load weights into the running backend process. Use `Load` to preload weights before pressing Generate/Edit, and `Unload` to release the backend's model reference.
+
+### Local model imports
+
+The original **Register Local Model** form still accepts an existing local path. As an alternative, use **Choose Model Folder** to select a complete Hugging Face model export from the system file picker. Selecting the folder reads its root `config.json` in the browser and fills the browser-visible source-folder path; if that file is missing or incompatible, Register is disabled. The folder files are not sent to the backend until **Register** is clicked. Register then starts the upload/validation job and moves a compatible model into the managed cache.
+
+After Register, managed imports live in the backend data directory at `data/models/imported_models/<model-id>` (normally `backend/data/models/imported_models/<model-id>` when running backend-only development). Import IDs are assigned in upload order within the inferred model family, for example `gpt2-xl_local1`, `gpt2-xl_local2`; their display names follow the same suffix pattern. Removing a managed import deletes both its registration and that copied model directory after it has been unloaded.
 
 Backend endpoints:
 

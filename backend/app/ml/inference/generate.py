@@ -20,7 +20,12 @@ def generate_text(
     use_active_patches: bool = True,
 ) -> dict[str, str]:
     model = model_registry.get(model_id)
-    adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+    adapter = get_gpt2_adapter(
+        model_id=model["hf_id"],
+        n_layers=model["n_layers"],
+        trust_remote_code=bool(model.get("trust_remote_code", False)),
+        generation_use_cache=bool(model.get("generation_use_cache", True)),
+    )
     local_files_only = model_cache_service.cache_status(model_id)["cached"]
     with adapter_runtime_lock():
         model_runtime_service.require_loaded_runtime_bundle(model_id)

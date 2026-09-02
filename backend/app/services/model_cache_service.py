@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from app.config import settings
@@ -26,6 +26,8 @@ MODEL_DOWNLOAD_IGNORE_PATTERNS = [
 ]
 
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "downloading", "canceling"}
+ACTIVE_IMPORT_STATUSES = {"uploading", "validating", "registering", "canceling"}
+ACTIVE_MODEL_JOB_STATUSES = ACTIVE_DOWNLOAD_STATUSES | ACTIVE_IMPORT_STATUSES
 HUB_SIZE_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 SNAPSHOT_DOWNLOAD_SCRIPT = """
@@ -53,6 +55,7 @@ class ModelCacheService:
         self._runtime_hf_token: str | None = None
         self._hub_sizes = _read_hub_size_cache()
         self._lock = threading.Lock()
+        self._local_import_lock = threading.RLock()
 
     def list_cache_statuses(self) -> list[dict[str, Any]]:
         return [self.cache_status(model["id"]) for model in model_registry.list_models()]
@@ -229,23 +232,25 @@ class ModelCacheService:
             active_job_ids = {
                 job_id
                 for job_id, job in self._jobs.items()
-                if job["status"] in ACTIVE_DOWNLOAD_STATUSES
+                if job["status"] in ACTIVE_MODEL_JOB_STATUSES
             }
             for job_id in [
                 job_id
                 for job_id, job in self._jobs.items()
-                if job["status"] not in ACTIVE_DOWNLOAD_STATUSES
+                if job["status"] not in ACTIVE_MODEL_JOB_STATUSES
             ]:
                 self._jobs.pop(job_id, None)
 
         deleted = 0
-        for path in _jobs_dir().glob("model_download_*.json"):
+        for path in _jobs_dir().glob("model_*.json"):
             if path.stem in active_job_ids:
                 continue
             job = _read_job(path.stem)
-            if job and job["status"] in ACTIVE_DOWNLOAD_STATUSES:
+            if job and job["status"] in ACTIVE_MODEL_JOB_STATUSES:
                 continue
             path.unlink(missing_ok=True)
+            if job and job.get("job_type") == "local_import":
+                shutil.rmtree(_local_import_job_dir(path.stem), ignore_errors=True)
             deleted += 1
         return deleted
 
@@ -258,9 +263,23 @@ class ModelCacheService:
             if job is None:
                 job = _read_job(job_id)
             if not job:
-                raise ValueError("Model download job not found.")
-            if job["status"] not in ACTIVE_DOWNLOAD_STATUSES:
-                raise RuntimeError(f"Cannot cancel download job with status {job['status']}.")
+                raise ValueError("Model transfer job not found.")
+            if job["status"] not in ACTIVE_MODEL_JOB_STATUSES:
+                raise RuntimeError(f"Cannot cancel transfer job with status {job['status']}.")
+            if job.get("job_type") == "local_import":
+                job.update(
+                    {
+                        "status": "canceled",
+                        "cancel_requested": True,
+                        "message": "Local model import canceled",
+                        "updated_at": _now(),
+                    }
+                )
+                if in_memory:
+                    self._jobs[job_id] = job
+                _write_job(job)
+                shutil.rmtree(_local_import_job_dir(job_id), ignore_errors=True)
+                return dict(job)
             job.update(
                 {
                     "status": "canceling",
@@ -291,6 +310,343 @@ class ModelCacheService:
         if cache_path.exists():
             self._delete_with_huggingface_cache_api(model["hf_id"], cache_path)
         return self.cache_status(model_id)
+
+    def stage_local_model(self, files: list[tuple[str, BinaryIO]]) -> dict[str, Any]:
+        """Stage a folder import and return a validated, unregistered model preview."""
+        if not files:
+            raise ValueError("Select a model folder containing config.json and model weights.")
+
+        total_bytes = sum(_binary_stream_size(stream) for _, stream in files)
+        job = self._create_local_import_job(
+            source_name="Selected model folder",
+            source_kind="folder",
+            total_bytes=total_bytes,
+        )
+        job_id = job["job_id"]
+        staging_root = _local_import_job_dir(job_id)
+        source_root = staging_root / "source"
+        try:
+            with self._local_import_lock:
+                source_root.mkdir(parents=True, exist_ok=False)
+                seen_paths: set[Path] = set()
+                processed_bytes = 0
+                for filename, stream in files:
+                    relative_path = _safe_uploaded_relative_path(filename)
+                    if relative_path in seen_paths:
+                        raise ValueError(f"The selected folder contains duplicate file path: {relative_path}")
+                    seen_paths.add(relative_path)
+                    destination_path = source_root / relative_path
+                    destination_path.parent.mkdir(parents=True, exist_ok=True)
+                    copied = _copy_stream_to_path(stream, destination_path)
+                    processed_bytes += copied
+                    self._update_local_import_job(
+                        job_id,
+                        progress_current_bytes=processed_bytes,
+                        message="Copying selected model files into the import staging area",
+                    )
+            return self._validate_staged_local_import(job_id, source_root)
+        except Exception as exc:
+            self._fail_local_import_job(job_id, str(exc))
+            raise
+
+    def start_folder_import_job(self, source_name: str, total_bytes: int) -> dict[str, Any]:
+        """Create a visible import job before the browser starts transferring files."""
+        if total_bytes <= 0:
+            raise ValueError("The selected model folder does not contain any files to upload.")
+        display_name = Path(source_name).name.strip() or "Selected model folder"
+        return self._create_local_import_job(
+            source_name=display_name,
+            source_kind="folder",
+            total_bytes=total_bytes,
+        )
+
+    def append_folder_import_chunk(
+        self,
+        job_id: str,
+        relative_filename: str,
+        offset: int,
+        stream: BinaryIO,
+    ) -> dict[str, Any]:
+        """Append one browser upload chunk and persist its byte-level progress."""
+        if offset < 0:
+            raise ValueError("Upload chunk offset cannot be negative.")
+        relative_path = _safe_uploaded_relative_path(relative_filename)
+        with self._local_import_lock:
+            job = self._require_local_import_job(job_id)
+            if job.get("source_kind") != "folder":
+                raise ValueError("This import job does not accept model folder files.")
+            if job.get("status") != "uploading":
+                raise RuntimeError("This local import is no longer accepting uploaded files.")
+
+            uploaded_files = dict(job.get("uploaded_files") or {})
+            uploaded_for_file = int(uploaded_files.get(str(relative_path), 0))
+            if offset != uploaded_for_file:
+                raise RuntimeError("The upload chunk offset does not match the staged file.")
+
+            source_root = _local_import_job_dir(job_id) / "source"
+            source_root.mkdir(parents=True, exist_ok=True)
+            destination = (source_root / relative_path).resolve()
+            if not _is_path_within(destination, source_root.resolve()):
+                raise ValueError("Uploaded model files must have safe relative paths.")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            total_bytes = int(job.get("progress_total_bytes") or 0)
+            already_uploaded = int(job.get("progress_current_bytes") or 0)
+            remaining_bytes = total_bytes - already_uploaded
+            if remaining_bytes < 0:
+                raise RuntimeError("The import job has invalid upload progress.")
+            copied = _append_stream_to_path(stream, destination, remaining_bytes)
+            uploaded_files[str(relative_path)] = uploaded_for_file + copied
+            current_bytes = already_uploaded + copied
+            return self._update_local_import_job(
+                job_id,
+                progress_current_bytes=current_bytes,
+                uploaded_files=uploaded_files,
+                message=f"Uploading model files ({current_bytes} of {total_bytes} bytes)",
+            )
+
+    def complete_folder_import_upload(self, job_id: str) -> dict[str, Any]:
+        """Validate a fully transferred folder and produce its registration preview."""
+        with self._local_import_lock:
+            job = self._require_local_import_job(job_id)
+            if job.get("source_kind") != "folder":
+                raise ValueError("This import job is not a model folder upload.")
+            if job.get("status") != "uploading":
+                raise RuntimeError("This local import is no longer awaiting upload completion.")
+            total_bytes = int(job.get("progress_total_bytes") or 0)
+            current_bytes = int(job.get("progress_current_bytes") or 0)
+            if current_bytes != total_bytes:
+                raise RuntimeError(
+                    f"The folder upload is incomplete ({current_bytes} of {total_bytes} bytes received)."
+                )
+            try:
+                return self._validate_staged_local_import(job_id, _local_import_job_dir(job_id) / "source")
+            except Exception as exc:
+                self._fail_local_import_job(job_id, str(exc))
+                raise
+
+    def register_staged_local_model(self, import_job_id: str, model: dict[str, Any]) -> dict[str, Any]:
+        """Move a successful staged upload into the managed cache on Register."""
+        with self._local_import_lock:
+            job = self._require_local_import_job(import_job_id)
+            if job["status"] != "completed" or not job.get("preview"):
+                raise RuntimeError("Finish and validate the uploaded model before registering it.")
+            if job.get("registered_model_id"):
+                raise RuntimeError(f"Import job already registered {job['registered_model_id']}.")
+
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                raise ValueError("Model ID is required.")
+            if any(item["id"] == model_id for item in model_registry.list_models()):
+                raise ValueError(f"A model named {model_id} is already registered.")
+
+            staging_root = _local_import_job_dir(import_job_id)
+            staged_model_path = _staged_model_path(job, staging_root)
+            if not staged_model_path.is_dir() or not _is_path_within(staged_model_path, staging_root):
+                raise RuntimeError("The staged local import is no longer available.")
+
+            cache_root = _local_model_cache_root()
+            destination = cache_root / model_id
+            if destination.exists():
+                raise RuntimeError(f"Managed local cache path already exists: {destination}")
+            self._update_local_import_job(
+                import_job_id,
+                status="registering",
+                message="Registering validated model in the managed local cache",
+            )
+            moved = False
+            try:
+                cache_root.mkdir(parents=True, exist_ok=True)
+                staged_model_path.rename(destination)
+                moved = True
+                preview = dict(job["preview"])
+                registration = {
+                    **preview,
+                    "id": model_id,
+                    "name": str(model.get("name") or preview["name"]),
+                    # The inspected architecture remains the authority for an
+                    # upload. Analysis/editing capabilities are not manual
+                    # registration switches.
+                    **{
+                        key: bool(preview[key])
+                        for key in (
+                            "supports_generation",
+                            "supports_logit_lens",
+                            "supports_causal_trace",
+                            "supports_rome",
+                            "supports_memit",
+                            "supports_kn",
+                        )
+                    },
+                }
+                registration.pop("import_job_id", None)
+                registration["local_path"] = str(destination)
+                stored = model_registry.add_local_model(registration, managed_local=True)
+            except Exception:
+                if moved and destination.exists() and not staged_model_path.exists():
+                    destination.rename(staged_model_path)
+                self._update_local_import_job(
+                    import_job_id,
+                    status="completed",
+                    message="Registration failed; staged files were retained for retry.",
+                )
+                raise
+
+            self._update_local_import_job(
+                import_job_id,
+                status="completed",
+                message=f"Registered local model {stored['id']}",
+                registered_model_id=stored["id"],
+                progress_current_bytes=int(job.get("progress_total_bytes") or 0),
+                progress_total_bytes=int(job.get("progress_total_bytes") or 0),
+            )
+            shutil.rmtree(staging_root, ignore_errors=True)
+            return stored
+
+    def delete_local_model(self, model_id: str) -> dict[str, Any]:
+        """Remove a local registration and its files only when we imported them."""
+        model = model_registry.get(model_id)
+        if model.get("source") != "local":
+            raise ValueError("Only local model registrations can be removed here.")
+
+        local_path = Path(model.get("local_path") or "").expanduser().resolve()
+        managed_local = bool(model.get("managed_local"))
+        cache_root = _local_model_cache_root().resolve()
+        if managed_local and not _is_path_within(local_path, cache_root):
+            raise RuntimeError("Refusing to delete a managed local model outside the workbench cache.")
+
+        removed = model_registry.delete_local_model(model_id)
+        if managed_local and local_path.exists():
+            shutil.rmtree(local_path)
+        return {
+            "status": "deleted",
+            "model_id": model_id,
+            "deleted_cache_files": managed_local,
+            "cache_path": str(local_path),
+            "model": removed,
+        }
+
+    def _create_local_import_job(
+        self,
+        *,
+        source_name: str,
+        source_kind: str,
+        total_bytes: int,
+    ) -> dict[str, Any]:
+        if total_bytes < 0:
+            raise ValueError("Upload size cannot be negative.")
+        job_id = f"model_import_{uuid4().hex[:10]}"
+        job = {
+            "job_id": job_id,
+            "job_type": "local_import",
+            # Import jobs intentionally do not map to a cache-table model until
+            # the user has reviewed the inferred fields and clicked Register.
+            "model_id": f"local-import-{job_id.rsplit('_', 1)[-1]}",
+            "hf_id": "",
+            "source_name": source_name,
+            "source_kind": source_kind,
+            "status": "uploading",
+            "message": "Waiting for local model files",
+            "progress_current_bytes": 0,
+            "progress_total_bytes": total_bytes,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        with self._lock:
+            self._jobs[job_id] = job
+            _write_job(job)
+        return dict(job)
+
+    def _require_local_import_job(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            job = _read_job(job_id)
+            if job is not None:
+                with self._lock:
+                    self._jobs[job_id] = job
+        if not job or job.get("job_type") != "local_import":
+            raise ValueError("Local model import job not found.")
+        return dict(job)
+
+    def _update_local_import_job(self, job_id: str, **updates: Any) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                job = _read_job(job_id)
+            if not job or job.get("job_type") != "local_import":
+                raise ValueError("Local model import job not found.")
+            job.update(updates)
+            job["updated_at"] = _now()
+            self._jobs[job_id] = job
+            _write_job(job)
+            return dict(job)
+
+    def _fail_local_import_job(self, job_id: str, message: str) -> None:
+        try:
+            self._update_local_import_job(job_id, status="failed", message=message)
+        except ValueError:
+            return
+        shutil.rmtree(_local_import_job_dir(job_id), ignore_errors=True)
+
+    def _validate_staged_local_import(
+        self,
+        job_id: str,
+        staging_root: Path,
+    ) -> dict[str, Any]:
+        self._update_local_import_job(
+            job_id,
+            status="validating",
+            message="Reading config.json and validating model compatibility",
+        )
+        model_root = _uploaded_model_root(staging_root)
+        config = _read_uploaded_model_config(model_root)
+        metadata = model_registry.inspect_imported_local_model_config(config)
+        if not any(_is_transformer_weight_file(path) for path in model_root.rglob("*")):
+            raise ValueError(
+                "The selected model is missing supported Transformer weights "
+                "(model.safetensors or pytorch_model.bin)."
+            )
+        if not _has_tokenizer_assets(model_root):
+            raise ValueError(
+                "The selected model is missing tokenizer files. Include tokenizer.json, "
+                "tokenizer.model, vocab.txt, or GPT-2 vocab.json plus merges.txt."
+            )
+
+        model_id, local_index = model_registry.allocate_imported_model_id(metadata["base_model_id"])
+        preview = {
+            "id": model_id,
+            "name": f"{metadata['display_base_name']}_local{local_index}",
+            "local_path": str(model_root),
+            "base_model_id": metadata["base_model_id"],
+            "architecture_model_type": metadata["architecture_model_type"],
+            "model_type": metadata["model_type"],
+            "n_layers": metadata["n_layers"],
+            "supports_generation": metadata["supports_generation"],
+            "supports_logit_lens": metadata["supports_logit_lens"],
+            "supports_causal_trace": metadata["supports_causal_trace"],
+            "supports_rome": metadata["supports_rome"],
+            "supports_memit": metadata["supports_memit"],
+            "supports_kn": metadata["supports_kn"],
+            "trust_remote_code": metadata["trust_remote_code"],
+            "generation_use_cache": metadata["generation_use_cache"],
+            "rome_hparams": metadata["easyedit"].get("rome_hparams"),
+            "memit_hparams": metadata["easyedit"].get("memit_hparams"),
+            "kn_hparams": metadata["easyedit"].get("kn_hparams"),
+        }
+        relative_model_path = model_root.relative_to(_local_import_job_dir(job_id))
+        job = self._require_local_import_job(job_id)
+        total_bytes = int(job.get("progress_total_bytes") or 0)
+        return self._update_local_import_job(
+            job_id,
+            status="completed",
+            message="Upload validated. Review the filled fields and click Register.",
+            progress_current_bytes=total_bytes,
+            progress_total_bytes=total_bytes,
+            preview=preview,
+            metadata=metadata,
+            staged_model_relative=str(relative_model_path),
+        )
 
     def _download_model(self, job_id: str) -> None:
         with self._lock:
@@ -453,13 +809,17 @@ class ModelCacheService:
             jobs = [
                 dict(job)
                 for job in self._jobs.values()
-                if job["model_id"] == model_id and job["status"] in ACTIVE_DOWNLOAD_STATUSES
+                if job.get("job_type") != "local_import"
+                and job["model_id"] == model_id
+                and job["status"] in ACTIVE_DOWNLOAD_STATUSES
             ]
         if not jobs:
             jobs = [
                 job
                 for job in _read_jobs()
-                if job["model_id"] == model_id and job["status"] in ACTIVE_DOWNLOAD_STATUSES
+                if job.get("job_type") != "local_import"
+                and job["model_id"] == model_id
+                and job["status"] in ACTIVE_DOWNLOAD_STATUSES
             ]
             jobs = [self._reconcile_persisted_job(job, detached=True) for job in jobs]
             jobs = [job for job in jobs if job["status"] in ACTIVE_DOWNLOAD_STATUSES]
@@ -469,6 +829,35 @@ class ModelCacheService:
         return jobs[0]
 
     def _reconcile_persisted_job(self, job: dict[str, Any], detached: bool) -> dict[str, Any]:
+        if job.get("job_type") == "local_import":
+            if job["status"] not in ACTIVE_IMPORT_STATUSES:
+                return job
+            if job["status"] == "uploading":
+                # Upload chunks can be resumed after a backend restart because
+                # the received archive and byte offset are persisted.
+                return job
+            if job["status"] == "canceling" or job.get("cancel_requested"):
+                job.update(
+                    {
+                        "status": "canceled",
+                        "message": "Local model import canceled",
+                        "updated_at": _now(),
+                    }
+                )
+                _write_job(job)
+                shutil.rmtree(_local_import_job_dir(job["job_id"]), ignore_errors=True)
+                return job
+            if detached:
+                job.update(
+                    {
+                        "status": "failed",
+                        "message": "Local import processing stopped when the backend restarted. Upload again.",
+                        "updated_at": _now(),
+                    }
+                )
+                _write_job(job)
+                shutil.rmtree(_local_import_job_dir(job["job_id"]), ignore_errors=True)
+            return job
         if job["status"] not in ACTIVE_DOWNLOAD_STATUSES:
             return job
         if job["status"] == "canceling":
@@ -524,6 +913,123 @@ def _hf_cache_root() -> Path:
         return Path(explicit).expanduser()
     hf_home = Path(os.getenv("HF_HOME", "~/.cache/huggingface")).expanduser()
     return hf_home / "hub"
+
+
+def _local_model_cache_root() -> Path:
+    """The app-owned persistent store for browser-imported model snapshots.
+
+    Keeping these files under the backend data directory separates imported
+    local models from Hugging Face Hub's cache and makes them travel with the
+    workbench's own persisted data.
+    """
+    return settings.data_dir / "models" / "imported_models"
+
+
+def _safe_uploaded_relative_path(filename: str) -> Path:
+    if not filename or filename.startswith(("/", "\\")) or "\\" in filename:
+        raise ValueError("Uploaded model files must have safe relative paths.")
+    relative_path = Path(filename)
+    if relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
+        raise ValueError("Uploaded model files must have safe relative paths.")
+    return relative_path
+
+
+def _binary_stream_size(stream: BinaryIO) -> int:
+    """Read a seekable upload's remaining size without changing its position."""
+    try:
+        position = stream.tell()
+        stream.seek(0, os.SEEK_END)
+        end = stream.tell()
+        stream.seek(position)
+    except (AttributeError, OSError):
+        raise ValueError("Could not read an uploaded model file.") from None
+    return max(0, end - position)
+
+
+def _copy_stream_to_path(stream: BinaryIO, destination: Path) -> int:
+    copied = 0
+    with destination.open("wb") as target:
+        while chunk := stream.read(1024 * 1024):
+            target.write(chunk)
+            copied += len(chunk)
+    return copied
+
+
+def _append_stream_to_path(stream: BinaryIO, destination: Path, maximum_bytes: int) -> int:
+    """Append one request body while refusing to exceed the declared import size."""
+    copied = 0
+    with destination.open("ab") as target:
+        while chunk := stream.read(1024 * 1024):
+            copied += len(chunk)
+            if copied > maximum_bytes:
+                raise ValueError("Uploaded data exceeds the declared folder size.")
+            target.write(chunk)
+    return copied
+
+
+def _local_import_staging_root() -> Path:
+    path = settings.data_dir / "model_cache_jobs" / "local_import_staging"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _local_import_job_dir(job_id: str) -> Path:
+    if not job_id.startswith("model_import_") or any(character not in "0123456789abcdef_" for character in job_id.removeprefix("model_import_")):
+        raise ValueError("Invalid local import job identifier.")
+    return _local_import_staging_root() / job_id
+
+
+def _staged_model_path(job: dict[str, Any], staging_root: Path) -> Path:
+    relative_path = job.get("staged_model_relative")
+    if not isinstance(relative_path, str):
+        raise RuntimeError("The staged local import has no model path.")
+    path = (staging_root / relative_path).resolve()
+    if not _is_path_within(path, staging_root.resolve()):
+        raise RuntimeError("The staged local import path is unsafe.")
+    return path
+
+
+def _uploaded_model_root(staging_root: Path) -> Path:
+    config_paths = [path for path in staging_root.rglob("config.json") if path.is_file()]
+    if len(config_paths) != 1:
+        raise ValueError(
+            "Select exactly one Hugging Face model folder. It must contain one top-level config.json."
+        )
+    return config_paths[0].parent
+
+
+def _read_uploaded_model_config(model_root: Path) -> dict[str, Any]:
+    config_path = model_root / "config.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("The selected config.json is not valid UTF-8 JSON.") from exc
+    if not isinstance(config, dict):
+        raise ValueError("config.json must contain a JSON object.")
+    return config
+
+
+def _has_tokenizer_assets(model_root: Path) -> bool:
+    filenames = {path.name for path in model_root.rglob("*") if path.is_file()}
+    if {"vocab.json", "merges.txt"}.issubset(filenames):
+        return True
+    return bool(
+        {
+            "tokenizer.json",
+            "tokenizer.model",
+            "spiece.model",
+            "sentencepiece.bpe.model",
+            "vocab.txt",
+        }.intersection(filenames)
+    )
+
+
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _read_hub_size_cache() -> dict[str, dict[str, Any]]:
@@ -638,6 +1144,7 @@ def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -
         "incomplete_file_count": 0,
         "active_job": None,
         "is_local": True,
+        "managed_local": bool(model.get("managed_local")),
     }
 
 
@@ -661,19 +1168,30 @@ def _inspect_local_model_path(path: Path) -> dict[str, Any]:
 
 def _snapshot_is_complete(snapshot: Path) -> dict[str, bool]:
     has_config = (snapshot / "config.json").exists()
-    has_weights = any(
-        item.is_file()
-        and (
-            item.name.endswith(".safetensors")
-            or item.name.endswith(".bin")
-        )
-        for item in snapshot.rglob("*")
-    )
+    has_weights = any(_is_transformer_weight_file(item) for item in snapshot.rglob("*"))
     return {
         "has_config": has_config,
         "has_model_weights": has_weights,
         "complete": has_config and has_weights,
     }
+
+
+def _is_transformer_weight_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    filename = path.name
+    if filename in {
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    }:
+        return True
+    if filename.startswith(("model-", "pytorch_model-")) and filename.endswith(
+        (".safetensors", ".bin")
+    ):
+        return True
+    return False
 
 
 def _jobs_dir() -> Path:
@@ -701,7 +1219,7 @@ def _read_job(job_id: str) -> dict[str, Any] | None:
 
 def _read_jobs() -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
-    for path in _jobs_dir().glob("model_download_*.json"):
+    for path in _jobs_dir().glob("model_*.json"):
         job = _read_job(path.stem)
         if job is not None:
             jobs.append(job)

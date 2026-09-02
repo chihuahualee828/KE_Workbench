@@ -6,16 +6,24 @@ from typing import Any
 
 from app.ml.adapters.base import ModelAdapter
 
-_ADAPTERS: dict[tuple[str, int], "GPT2Adapter"] = {}
+_ADAPTERS: dict[tuple[str, int, bool, bool], "GPT2Adapter"] = {}
 _ADAPTER_LOCK = RLock()
 
 
 class GPT2Adapter(ModelAdapter):
     model_type = "gpt2"
 
-    def __init__(self, model_id: str = "gpt2-xl", n_layers: int = 48) -> None:
+    def __init__(
+        self,
+        model_id: str = "gpt2-xl",
+        n_layers: int = 48,
+        trust_remote_code: bool = False,
+        generation_use_cache: bool = True,
+    ) -> None:
         self.model_id = model_id
         self.n_layers = n_layers
+        self.trust_remote_code = trust_remote_code
+        self.generation_use_cache = generation_use_cache
         self._model: Any | None = None
         self._tokenizer: Any | None = None
         self._device: str | None = None
@@ -31,7 +39,10 @@ class GPT2Adapter(ModelAdapter):
             except ImportError as exc:
                 raise RuntimeError("Install backend[ml] to enable real model generation.") from exc
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            load_kwargs: dict[str, Any] = {"local_files_only": local_files_only}
+            load_kwargs: dict[str, Any] = {
+                "local_files_only": local_files_only,
+                "trust_remote_code": self.trust_remote_code,
+            }
             if device.startswith("cuda"):
                 try:
                     import accelerate  # noqa: F401
@@ -127,6 +138,7 @@ class GPT2Adapter(ModelAdapter):
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id,
                 local_files_only=local_files_only,
+                trust_remote_code=self.trust_remote_code,
             )
         return self._tokenizer
 
@@ -167,6 +179,7 @@ class GPT2Adapter(ModelAdapter):
                     **inputs,
                     max_new_tokens=max_new_tokens,
                     pad_token_id=tokenizer.eos_token_id,
+                    use_cache=self.generation_use_cache,
                     **generation_kwargs,
                 )
         return tokenizer.decode(output[0], skip_special_tokens=True)
@@ -198,12 +211,22 @@ class GPT2Adapter(ModelAdapter):
         return []
 
 
-def get_gpt2_adapter(model_id: str = "gpt2-xl", n_layers: int = 48) -> GPT2Adapter:
-    key = (model_id, n_layers)
+def get_gpt2_adapter(
+    model_id: str = "gpt2-xl",
+    n_layers: int = 48,
+    trust_remote_code: bool = False,
+    generation_use_cache: bool = True,
+) -> GPT2Adapter:
+    key = (model_id, n_layers, trust_remote_code, generation_use_cache)
     with _ADAPTER_LOCK:
         adapter = _ADAPTERS.get(key)
         if adapter is None:
-            adapter = GPT2Adapter(model_id=model_id, n_layers=n_layers)
+            adapter = GPT2Adapter(
+                model_id=model_id,
+                n_layers=n_layers,
+                trust_remote_code=trust_remote_code,
+                generation_use_cache=generation_use_cache,
+            )
             _ADAPTERS[key] = adapter
         return adapter
 

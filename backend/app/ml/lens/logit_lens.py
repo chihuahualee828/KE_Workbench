@@ -24,7 +24,12 @@ def run_logit_lens(
     runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
     tokenizer = runtime_bundle["tokenizer"]
     loaded_model = runtime_bundle["model"]
-    adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+    adapter = get_gpt2_adapter(
+        model_id=model["hf_id"],
+        n_layers=model["n_layers"],
+        trust_remote_code=bool(model.get("trust_remote_code", False)),
+        generation_use_cache=bool(model.get("generation_use_cache", True)),
+    )
     patch_service.sync_active_patches_to_model(loaded_model, model_id)
     inputs = adapter.move_to_model_device(tokenizer(prompt, return_tensors="pt"))
     target_id = _target_token_id(tokenizer, target_token) if target_token else None
