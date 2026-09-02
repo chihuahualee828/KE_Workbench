@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, SecretStr
 from starlette.background import BackgroundTask
@@ -38,11 +38,17 @@ class LocalModelRequest(BaseModel):
     rome_hparams: str | None = None
     memit_hparams: str | None = None
     kn_hparams: str | None = None
+    import_job_id: str | None = None
 
 
 class ModelExportRequest(BaseModel):
     model_id: str
     output_path: str
+
+
+class LocalFolderImportRequest(BaseModel):
+    source_name: str
+    total_bytes: int
 
 
 @router.get("/models")
@@ -71,18 +77,73 @@ def clear_hf_token() -> dict:
 @router.post("/models/local")
 def add_local_model(request: LocalModelRequest) -> dict:
     try:
-        return model_registry.add_local_model(request.model_dump())
+        model = request.model_dump()
+        if request.import_job_id:
+            return model_cache_service.register_staged_local_model(request.import_job_id, model)
+        model.pop("import_job_id", None)
+        return model_registry.add_local_model(model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/models/local/import")
+def import_local_model(files: list[UploadFile] = File(...)) -> dict:
+    try:
+        return model_cache_service.stage_local_model(
+            [(file.filename or "uploaded-model-file", file.file) for file in files]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/models/local/import/jobs")
+def start_local_model_import(request: LocalFolderImportRequest) -> dict:
+    try:
+        return model_cache_service.start_folder_import_job(request.source_name, request.total_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/models/local/import/jobs/{job_id}/chunks")
+def upload_local_model_import_chunk(
+    job_id: str,
+    relative_path: str = Form(...),
+    offset: int = Form(...),
+    chunk: UploadFile = File(...),
+) -> dict:
+    try:
+        return model_cache_service.append_folder_import_chunk(job_id, relative_path, offset, chunk.file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/models/local/import/jobs/{job_id}/complete")
+def complete_local_model_import(job_id: str) -> dict:
+    try:
+        return model_cache_service.complete_folder_import_upload(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.delete("/models/local")
 def delete_local_model(request: ModelCacheRequest) -> dict:
     try:
-        model_registry.delete_local_model(request.model_id)
-        return {"status": "deleted", "model_id": request.model_id}
+        runtime_status = model_runtime_service.runtime_status(request.model_id)
+        if runtime_status["loaded"] or runtime_status["runtime_state"] in {"queued", "loading"}:
+            raise RuntimeError("Unload the model before removing its local cache.")
+        return model_cache_service.delete_local_model(request.model_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/models/cache")

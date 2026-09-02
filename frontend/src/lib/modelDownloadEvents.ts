@@ -25,6 +25,9 @@ export function applyDownloadJobToCache(
   cache: ModelCacheStatus[],
   job: ModelDownloadJob
 ): ModelCacheStatus[] {
+  // A local import has no registered model/cache row until the user confirms
+  // the inferred settings by clicking Register.
+  if (job.job_type === "local_import") return cache;
   if (!cache.some((status) => status.model_id === job.model_id)) {
     return [
       ...cache,

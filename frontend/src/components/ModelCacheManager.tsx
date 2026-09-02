@@ -1,7 +1,7 @@
 "use client";
 
-import { Download, Loader2, PlusCircle, RefreshCw, Trash2, Upload, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Download, FolderUp, Loader2, PlusCircle, RefreshCw, Trash2, Upload, XCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
@@ -9,7 +9,22 @@ import { announceModelRuntimeLoad, announceModelRuntimeStatuses, applyRuntimeJob
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 
-const activeDownloadStatuses = ["queued", "downloading", "canceling"];
+const activeDownloadStatuses = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
+const folderImportChunkSize = 8 * 1024 * 1024;
+const supportedConfigModelTypes: Record<string, string> = {
+  gpt2: "gpt2",
+  gptj: "gptj",
+  baichuan: "baichuan",
+  chatglm: "chatglm",
+  internlm: "internlm",
+  llama: "llama",
+  mistral: "mistral",
+  qwen: "qwen",
+  qwen2: "qwen",
+  qwen2_moe: "qwen",
+  qwen3: "qwen",
+  qwen3_moe: "qwen"
+};
 
 export function ModelCacheManager({
   models,
@@ -26,24 +41,26 @@ export function ModelCacheManager({
   const [runtimeJobs, setRuntimeJobs] = useState<Record<string, ModelRuntimeJob>>({});
   const [error, setError] = useState("");
   const [runtimeConnected, setRuntimeConnected] = useState(isModelRuntimeConnected);
+  const [importing, setImporting] = useState(false);
+  const [selectedFolderFiles, setSelectedFolderFiles] = useState<File[]>([]);
+  const [selectedFolderError, setSelectedFolderError] = useState("");
+  const [checkingFolder, setCheckingFolder] = useState(false);
+  const localImportInputRef = useRef<HTMLInputElement>(null);
   const [localId, setLocalId] = usePersistentState("kew:modelManager:localId", "");
   const [localName, setLocalName] = usePersistentState("kew:modelManager:localName", "");
   const [localPath, setLocalPath] = usePersistentState("kew:modelManager:localPath", "");
   const [localModelType, setLocalModelType] = usePersistentState("kew:modelManager:localModelType", "gpt2");
   const [localLayers, setLocalLayers] = usePersistentState("kew:modelManager:localLayers", "0");
-  const [localRome, setLocalRome] = usePersistentState("kew:modelManager:localRome", false);
-  const [localMemit, setLocalMemit] = usePersistentState("kew:modelManager:localMemit", false);
-  const [localKn, setLocalKn] = usePersistentState("kew:modelManager:localKn", false);
-  const [localTrace, setLocalTrace] = usePersistentState("kew:modelManager:localTrace", false);
-  const [localLens, setLocalLens] = usePersistentState("kew:modelManager:localLens", false);
-  const [romeHparams, setRomeHparams] = usePersistentState("kew:modelManager:romeHparams", "");
-  const [memitHparams, setMemitHparams] = usePersistentState("kew:modelManager:memitHparams", "");
-  const [knHparams, setKnHparams] = usePersistentState("kew:modelManager:knHparams", "");
 
   useEffect(() => {
-    if (localModelType === "gpt2") return;
-    setLocalTrace(false);
-  }, [localModelType, setLocalTrace]);
+    configureLocalFolderInput(localImportInputRef.current);
+  }, []);
+
+  function openLocalFolderPicker() {
+    const input = localImportInputRef.current;
+    configureLocalFolderInput(input);
+    input?.click();
+  }
 
   async function refresh() {
     if (!runtimeConnected) return;
@@ -141,9 +158,103 @@ export function ModelCacheManager({
     }
   }
 
+  function updateImportJob(job: ModelDownloadJob) {
+    setJobs((current) => ({ ...current, [job.job_id]: job }));
+    announceModelDownload(job);
+  }
+
+  async function selectLocalModelFolder(files: FileList | null) {
+    const selectedFiles = files ? Array.from(files) : [];
+    if (!selectedFiles.length || importing) return;
+    setError("");
+    setSelectedFolderFiles(selectedFiles);
+    setSelectedFolderError("");
+    setCheckingFolder(true);
+    try {
+      const sourcePath = selectedFolderSourcePath(selectedFiles);
+      const configFile = selectedFolderConfigFile(selectedFiles);
+      if (!configFile) {
+        throw new Error("The selected folder must contain config.json directly under its root.");
+      }
+      const config = JSON.parse(await configFile.text()) as Record<string, unknown>;
+      const rawModelType = typeof config.model_type === "string" ? config.model_type.toLowerCase() : "";
+      const modelType = supportedConfigModelTypes[rawModelType];
+      if (!modelType || config.is_encoder_decoder === true) {
+        throw new Error("This folder is not a currently supported decoder-only causal language model.");
+      }
+      const layerCount = configuredLayerCount(config);
+      if (!layerCount) {
+        throw new Error("config.json must include a positive transformer layer count.");
+      }
+      setLocalId("");
+      setLocalName(sourcePath);
+      setLocalPath(sourcePath);
+      setLocalModelType(modelType);
+      setLocalLayers(String(layerCount));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSelectedFolderError(message);
+      setError(message);
+    } finally {
+      setCheckingFolder(false);
+    }
+  }
+
   async function addLocalModel() {
     if (!runtimeConnected) return;
     setError("");
+    if (selectedFolderFiles.length > 0) {
+      if (selectedFolderError) return;
+      setImporting(true);
+      try {
+        const totalBytes = selectedFolderFiles.reduce((total, file) => total + file.size, 0);
+        let job = await api.createLocalFolderImport({
+          source_name: localPath || selectedFolderSourcePath(selectedFolderFiles),
+          total_bytes: totalBytes
+        });
+        updateImportJob(job);
+        for (const file of selectedFolderFiles) {
+          const relativePath = file.webkitRelativePath || file.name;
+          if (file.size === 0) {
+            job = await api.uploadLocalFolderChunk(job.job_id, relativePath, 0, file.slice(0, 0));
+            updateImportJob(job);
+            continue;
+          }
+          for (let offset = 0; offset < file.size; offset += folderImportChunkSize) {
+            const chunk = file.slice(offset, Math.min(offset + folderImportChunkSize, file.size));
+            job = await api.uploadLocalFolderChunk(job.job_id, relativePath, offset, chunk);
+            updateImportJob(job);
+          }
+        }
+        job = await api.completeLocalFolderImport(job.job_id);
+        updateImportJob(job);
+        if (job.status !== "completed" || !job.preview) {
+          throw new Error(job.message || "Local model folder could not be validated.");
+        }
+        const preview = job.preview;
+        const registered = await api.addLocalModel({
+          id: preview.id,
+          name: preview.name,
+          local_path: preview.local_path,
+          model_type: preview.model_type,
+          n_layers: preview.n_layers,
+          supports_generation: true,
+          import_job_id: job.job_id
+        });
+        updateImportJob(await api.modelDownloadJob(job.job_id));
+        setLocalId(registered.id);
+        setLocalName(registered.name);
+        setLocalPath("");
+        setSelectedFolderFiles([]);
+        await onModelsChanged?.();
+        await refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setImporting(false);
+      }
+      return;
+    }
     try {
       await api.addLocalModel({
         id: localId,
@@ -151,15 +262,7 @@ export function ModelCacheManager({
         local_path: localPath,
         model_type: localModelType || "auto",
         n_layers: Number(localLayers) || 0,
-        supports_generation: true,
-        supports_logit_lens: localLens,
-        supports_causal_trace: localTrace,
-        supports_rome: localRome,
-        supports_memit: localMemit,
-        supports_kn: localKn,
-        rome_hparams: romeHparams || null,
-        memit_hparams: memitHparams || null,
-        kn_hparams: knHparams || null
+        supports_generation: true
       });
       await onModelsChanged?.();
       await refresh();
@@ -303,12 +406,13 @@ export function ModelCacheManager({
                   const cached = Boolean(status?.cached);
                   const loaded = Boolean(runtimeStatus?.loaded);
                   const local = model.source === "local" || status?.is_local;
+                  const managedLocal = Boolean(model.managed_local || status?.managed_local);
                   return (
                     <tr key={model.id} className="border-b border-line/70 align-top">
                   <td className="py-2 pr-4">
                     <div className="font-medium">{model.name}</div>
                     <div className="font-mono text-xs text-ink/50">{model.hf_id}</div>
-                    {local ? <div className="mt-1 text-xs text-cyan">Local registration</div> : null}
+                    {local ? <div className="mt-1 text-xs text-cyan">{managedLocal ? "Managed local import" : "Local registration"}</div> : null}
                   </td>
                   <td className="py-2 pr-4">{formatCacheState(status)}</td>
                   <td className="py-2 pr-4">
@@ -333,7 +437,7 @@ export function ModelCacheManager({
                         <XCircle size={15} />
                         Unload
                       </button>
-                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => local ? removeLocalModel(model.id) : deleteCache(model.id)} disabled={!runtimeConnected || active || loaded || loading || (!local && !(status?.cached || status?.cache_state === "partial"))} title={!runtimeConnected ? "API is offline" : local ? "Remove local model registration" : loaded || loading ? "Unload the model before deleting its cache" : "Delete cached model files"}>
+                      <button className="ghost-button min-h-9 px-2 py-1" onClick={() => local ? removeLocalModel(model.id) : deleteCache(model.id)} disabled={!runtimeConnected || active || loaded || loading || (!local && !(status?.cached || status?.cache_state === "partial"))} title={!runtimeConnected ? "API is offline" : local ? managedLocal ? "Delete imported local model and its cached files" : "Remove local model registration" : loaded || loading ? "Unload the model before deleting its cache" : "Delete cached model files"}>
                         <Trash2 size={15} />
                       </button>
                     </div>
@@ -350,10 +454,42 @@ export function ModelCacheManager({
               <PlusCircle size={16} />
               <h3 className="text-sm font-semibold">Register Local Model</h3>
             </div>
+            <p className="max-w-3xl text-sm leading-6 text-ink/70">
+              Register an existing local path below, or choose a model folder. Choosing a folder reads its root <code>config.json</code> locally and fills the source path; the folder files are not sent to the backend until you click Register.
+            </p>
+            <p className="text-xs text-ink/60">
+              Compatible folder imports are stored after registration in the backend data directory under <code>data/models/imported_models</code>.
+            </p>
+            <input
+              ref={localImportInputRef}
+              className="sr-only"
+              type="file"
+              multiple
+              onChange={(event) => {
+                void selectLocalModelFolder(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <div className="flex flex-wrap gap-2">
+              <button className="ghost-button w-fit" onClick={openLocalFolderPicker} disabled={!runtimeConnected || importing || checkingFolder} title={runtimeConnected ? "Choose a local model folder; files stay local until Register" : "API is offline"} type="button">
+                {checkingFolder ? <Loader2 className="animate-spin" size={16} /> : <FolderUp size={16} />}
+                Choose Model Folder
+              </button>
+            </div>
+            {selectedFolderFiles.length > 0 && !selectedFolderError ? <div className="rounded-md border border-cyan/40 bg-cyan/10 p-3 text-sm text-cyan">Folder selected. Clicking Register starts an upload job; its live progress, validation, and registration appear in Jobs.</div> : null}
+            {selectedFolderFiles.length > 0 ? <p className="text-xs text-ink/60">For privacy, browsers expose the selected folder’s relative source name rather than its absolute filesystem path.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
-              <TextInput label="Model ID" value={localId} onChange={setLocalId} placeholder="local-gpt2-xl" />
+              <TextInput label="Model ID" value={localId} onChange={(value) => {
+                setLocalId(value);
+                setSelectedFolderFiles([]);
+                setSelectedFolderError("");
+              }} placeholder={selectedFolderFiles.length ? "Assigned on Register" : "local-gpt2-xl"} />
               <TextInput label="Display Name" value={localName} onChange={setLocalName} placeholder="Local GPT-2 XL" />
-              <TextInput label="Local Path" value={localPath} onChange={setLocalPath} placeholder="/home/nick/models/my-model" />
+              <TextInput label="Local Path" value={localPath} onChange={(value) => {
+                setLocalPath(value);
+                setSelectedFolderFiles([]);
+                setSelectedFolderError("");
+              }} placeholder="/home/nick/models/my-model" />
               <label className="grid gap-2">
                 <span className="label">Model Type</span>
                 <select className="control" value={localModelType} onChange={(event) => setLocalModelType(event.target.value)}>
@@ -361,21 +497,17 @@ export function ModelCacheManager({
                   <option value="auto">AutoModel causal LM</option>
                   <option value="pythia">Pythia / GPT-NeoX</option>
                   <option value="llama">Llama-style causal LM</option>
+                  <option value="gptj">GPT-J architecture</option>
+                  <option value="baichuan">Baichuan causal LM</option>
+                  <option value="chatglm">ChatGLM causal LM</option>
+                  <option value="internlm">InternLM causal LM</option>
+                  <option value="mistral">Mistral-style causal LM</option>
+                  <option value="qwen">Qwen causal LM</option>
                 </select>
               </label>
               <TextInput label="Layers" value={localLayers} onChange={setLocalLayers} placeholder="48" />
-              <TextInput label="ROME HParams" value={romeHparams} onChange={setRomeHparams} placeholder="hparams/ROME/gpt2-xl.yaml" />
-              <TextInput label="MEMIT HParams" value={memitHparams} onChange={setMemitHparams} placeholder="hparams/MEMIT/gpt2-xl.yaml" />
-              <TextInput label="KN HParams" value={knHparams} onChange={setKnHparams} placeholder="hparams/KN/gpt2-xl.yaml" />
             </div>
-            <div className="flex flex-wrap gap-4 text-sm">
-              <Check label="Logit Lens" checked={localLens} onChange={setLocalLens} />
-              <Check label="Causal Trace" checked={localTrace} onChange={setLocalTrace} disabled={localModelType !== "gpt2"} />
-              <Check label="ROME" checked={localRome} onChange={setLocalRome} />
-              <Check label="MEMIT" checked={localMemit} onChange={setLocalMemit} />
-              <Check label="KN" checked={localKn} onChange={setLocalKn} />
-            </div>
-            <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || !localId.trim() || !localPath.trim()} title={runtimeConnected ? "Register local model path" : "API is offline"}>
+            <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || importing || checkingFolder || Boolean(selectedFolderError) || (selectedFolderFiles.length === 0 && (!localId.trim() || !localPath.trim()))} title={runtimeConnected ? selectedFolderFiles.length ? "Upload and register the selected model folder" : "Register local model" : "API is offline"} type="button">
               <PlusCircle size={16} />
               Register
             </button>
@@ -396,13 +528,40 @@ function TextInput({ label, value, onChange, placeholder }: { label: string; val
   );
 }
 
-function Check({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
-  return (
-    <label className={`inline-flex items-center gap-2 ${disabled ? "text-ink/40" : ""}`}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-      {label}
-    </label>
-  );
+function selectedFolderSourcePath(files: File[]) {
+  const relativePath = files[0]?.webkitRelativePath;
+  if (relativePath) return relativePath.split("/")[0] || files[0].name;
+  return files[0]?.name ?? "Selected model folder";
+}
+
+function selectedFolderConfigFile(files: File[]) {
+  return files.find((file) => {
+    const path = file.webkitRelativePath || file.name;
+    const parts = path.split("/").filter(Boolean);
+    return parts.length === 2 && parts[1] === "config.json";
+  });
+}
+
+function configuredLayerCount(config: Record<string, unknown>) {
+  for (const key of ["n_layer", "num_hidden_layers", "num_layers", "n_layers"]) {
+    const value = config[key];
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function configureLocalFolderInput(input: HTMLInputElement | null) {
+  if (!input) return;
+  // Chromium uses webkitdirectory; setting the property immediately before
+  // opening the picker avoids falling back to a regular file chooser.
+  const directoryInput = input as HTMLInputElement & {
+    webkitdirectory?: boolean;
+    directory?: boolean;
+  };
+  input.setAttribute("webkitdirectory", "");
+  input.setAttribute("directory", "");
+  directoryInput.webkitdirectory = true;
+  directoryInput.directory = true;
 }
 
 function GpuRuntimeSummary({ runtime }: { runtime: ModelRuntimeStatus[] }) {

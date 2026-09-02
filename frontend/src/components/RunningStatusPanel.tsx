@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
 import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
 
-const activeDownloadStates = ["queued", "downloading", "canceling"];
+const activeDownloadStates = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
 const activeRuntimeStates = ["queued", "loading"];
 
 export function RunningStatusPanel() {
@@ -118,16 +118,16 @@ export function RunningStatusPanel() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Download size={15} />
-              <h3 className="text-sm font-semibold">Model Downloads</h3>
+              <h3 className="text-sm font-semibold">Model Transfers</h3>
             </div>
-            <button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={!hasFinishedDownloads || clearingDownloads} onClick={() => setConfirmingClearDownloads(true)} title="Clear completed, failed, and canceled download history" type="button">
+            <button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={!hasFinishedDownloads || clearingDownloads} onClick={() => setConfirmingClearDownloads(true)} title="Clear completed, failed, and canceled transfer history" type="button">
               <Trash2 size={14} />
               Clear history
             </button>
           </div>
           {confirmingClearDownloads ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm">
-              <span>Delete completed, failed, and canceled download records?</span>
+              <span>Delete completed, failed, and canceled transfer records?</span>
               <div className="flex gap-2">
                 <button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={clearingDownloads} onClick={() => setConfirmingClearDownloads(false)} type="button">Cancel</button>
                 <button className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={clearingDownloads} onClick={clearDownloadHistory} type="button">
@@ -147,15 +147,15 @@ export function RunningStatusPanel() {
                   <button className="min-w-0 text-left" onClick={() => setDetails(job)} type="button">
                     <div className="flex items-center gap-2">
                       <DownloadStatusIcon status={job.status} />
-                      <span className="truncate text-sm font-medium">{job.model_id}</span>
+                      <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
                     </div>
-                    <div className="mt-1 truncate font-mono text-xs text-ink/60">{formatDownloadSize(status)}</div>
-                    {active ? <Progress downloadedBytes={status?.size_bytes ?? 0} totalBytes={status?.hub_size_bytes} active complete={false} /> : null}
+                    <div className="mt-1 truncate font-mono text-xs text-ink/60">{formatTransferSize(job, status)}</div>
+                    {active ? <Progress {...transferProgress(job, status)} active complete={false} /> : null}
                   </button>
                   <div className="flex items-center gap-2">
                     <DownloadStatusBadge status={job.status} />
                     {active ? (
-                      <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={() => cancelDownload(job.job_id)} disabled={canceling || busyJob === job.job_id} title="Cancel download and delete partial cache" type="button">
+                      <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={() => cancelDownload(job.job_id)} disabled={canceling || busyJob === job.job_id} title={job.job_type === "local_import" ? "Cancel local model import" : "Cancel download and delete partial cache"} type="button">
                         {canceling || busyJob === job.job_id ? <Loader2 className="animate-spin" size={14} /> : <XCircle size={14} />}
                         {canceling || busyJob === job.job_id ? "Canceling" : "Cancel"}
                       </button>
@@ -164,7 +164,7 @@ export function RunningStatusPanel() {
                 </div>
               );
             })}
-            {downloadJobs.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No model download history.</div> : null}
+            {downloadJobs.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No model transfer history.</div> : null}
           </div>
         </section>
 
@@ -221,13 +221,27 @@ function Progress({ downloadedBytes, totalBytes, active, complete }: { downloade
   );
 }
 
-function formatDownloadSize(status?: ModelCacheStatus | null) {
-  if (!status) return "n/a";
-  if (status.hub_size_bytes && status.hub_size_bytes > 0) {
-    const percentage = Math.min(100, Math.round((status.size_bytes / status.hub_size_bytes) * 100));
-    return `${formatBytes(status.size_bytes)} / ${formatBytes(status.hub_size_bytes)} (${percentage}%)`;
+function jobTitle(job: ModelDownloadJob) {
+  return job.source_name ?? job.model_id;
+}
+
+function transferProgress(job: ModelDownloadJob, status?: ModelCacheStatus | null) {
+  if (job.job_type === "local_import") {
+    return {
+      downloadedBytes: job.progress_current_bytes ?? 0,
+      totalBytes: job.progress_total_bytes
+    };
   }
-  return formatBytes(status.size_bytes);
+  return { downloadedBytes: status?.size_bytes ?? 0, totalBytes: status?.hub_size_bytes };
+}
+
+function formatTransferSize(job: ModelDownloadJob, status?: ModelCacheStatus | null) {
+  const { downloadedBytes, totalBytes } = transferProgress(job, status);
+  if (totalBytes && totalBytes > 0) {
+    const percentage = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
+    return `${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)} (${percentage}%)`;
+  }
+  return formatBytes(downloadedBytes);
 }
 
 function formatBytes(bytes: number) {
@@ -267,7 +281,7 @@ function DownloadDetailsDialog({ job, status, onClose }: { job: ModelDownloadJob
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-base font-semibold">
               <DownloadStatusIcon status={job.status} />
-              <span className="truncate">{job.model_id}</span>
+              <span className="truncate">{jobTitle(job)}</span>
             </div>
             <div className="mt-1 font-mono text-xs text-ink/60">{job.job_id}</div>
           </div>
@@ -275,9 +289,9 @@ function DownloadDetailsDialog({ job, status, onClose }: { job: ModelDownloadJob
         </div>
         <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
           <DownloadDetail label="Status" value={formatState(job.status)} />
-          <DownloadDetail label="Downloaded" value={formatDownloadSize(status)} />
-          <DownloadDetail label="Repository" value={job.hf_id} />
-          <DownloadDetail label="Cache state" value={status ? formatState(status.cache_state) : "Unknown"} />
+          <DownloadDetail label={job.job_type === "local_import" ? "Progress" : "Downloaded"} value={formatTransferSize(job, status)} />
+          <DownloadDetail label={job.job_type === "local_import" ? "Transfer" : "Repository"} value={job.job_type === "local_import" ? "Local model import" : job.hf_id} />
+          <DownloadDetail label="Cache state" value={job.job_type === "local_import" ? "Stored in backend data after registration" : status ? formatState(status.cache_state) : "Unknown"} />
           <DownloadDetail label="Started" value={formatTimestamp(job.created_at)} />
           <DownloadDetail label="Updated" value={formatTimestamp(job.updated_at)} />
         </dl>

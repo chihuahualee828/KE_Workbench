@@ -4,6 +4,9 @@ export type SupportedModel = {
   hf_id: string;
   local_path?: string;
   source?: "hub" | "local";
+  managed_local?: boolean;
+  base_model_id?: string;
+  architecture_model_type?: string;
   model_type?: string;
   n_layers: number;
   supports_generation: boolean;
@@ -88,17 +91,46 @@ export type ModelCacheStatus = {
   incomplete_file_count: number;
   active_job?: ModelDownloadJob | null;
   is_local?: boolean;
+  managed_local?: boolean;
 };
 
 export type ModelDownloadJob = {
   job_id: string;
   model_id: string;
   hf_id: string;
-  status: "queued" | "downloading" | "canceling" | "canceled" | "completed" | "failed";
+  job_type?: "download" | "local_import";
+  source_name?: string;
+  source_kind?: "folder";
+  status: "queued" | "downloading" | "uploading" | "validating" | "registering" | "canceling" | "canceled" | "completed" | "failed";
   message: string;
   created_at: string;
   updated_at: string;
   cache?: ModelCacheStatus;
+  progress_current_bytes?: number;
+  progress_total_bytes?: number;
+  preview?: LocalModelImportPreview;
+  registered_model_id?: string;
+};
+
+export type LocalModelImportPreview = {
+  id: string;
+  name: string;
+  local_path: string;
+  base_model_id?: string;
+  architecture_model_type?: string;
+  model_type: string;
+  n_layers: number;
+  supports_generation: boolean;
+  supports_logit_lens: boolean;
+  supports_causal_trace: boolean;
+  supports_rome: boolean;
+  supports_memit: boolean;
+  supports_kn: boolean;
+  trust_remote_code?: boolean;
+  generation_use_cache?: boolean;
+  rome_hparams?: string | null;
+  memit_hparams?: string | null;
+  kn_hparams?: string | null;
 };
 
 export type ModelRuntimeStatus = {

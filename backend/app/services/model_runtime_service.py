@@ -40,7 +40,12 @@ class ModelRuntimeService:
 
     def runtime_status(self, model_id: str) -> dict[str, Any]:
         model = model_registry.get(model_id)
-        adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+        adapter = get_gpt2_adapter(
+            model_id=model["hf_id"],
+            n_layers=model["n_layers"],
+            trust_remote_code=bool(model.get("trust_remote_code", False)),
+            generation_use_cache=bool(model.get("generation_use_cache", True)),
+        )
         active_job = self._active_job_for_model(model_id)
         return {
             "model_id": model_id,
@@ -161,7 +166,12 @@ class ModelRuntimeService:
 
     def loaded_runtime_bundle(self, model_id: str) -> dict[str, Any] | None:
         model = model_registry.get(model_id)
-        adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+        adapter = get_gpt2_adapter(
+            model_id=model["hf_id"],
+            n_layers=model["n_layers"],
+            trust_remote_code=bool(model.get("trust_remote_code", False)),
+            generation_use_cache=bool(model.get("generation_use_cache", True)),
+        )
         loaded_model = adapter.loaded_model()
         if loaded_model is None:
             return None
@@ -189,7 +199,12 @@ class ModelRuntimeService:
     def sync_loaded_model_to_active_patches(self, model_id: str) -> None:
         with adapter_runtime_lock():
             model = model_registry.get(model_id)
-            adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+            adapter = get_gpt2_adapter(
+                model_id=model["hf_id"],
+                n_layers=model["n_layers"],
+                trust_remote_code=bool(model.get("trust_remote_code", False)),
+                generation_use_cache=bool(model.get("generation_use_cache", True)),
+            )
             loaded_model = adapter.loaded_model()
             if loaded_model is None:
                 return
@@ -275,7 +290,12 @@ class ModelRuntimeService:
 
         try:
             model = model_registry.get(model_id)
-            adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+            adapter = get_gpt2_adapter(
+                model_id=model["hf_id"],
+                n_layers=model["n_layers"],
+                trust_remote_code=bool(model.get("trust_remote_code", False)),
+                generation_use_cache=bool(model.get("generation_use_cache", True)),
+            )
             local_files_only = model_cache_service.cache_status(model_id)["cached"]
             adapter.load_tokenizer(local_files_only=local_files_only)
             with adapter_runtime_lock():
@@ -342,7 +362,12 @@ class ModelRuntimeService:
     def _loaded_model_ids(self) -> list[str]:
         loaded_model_ids: list[str] = []
         for model in model_registry.list_models():
-            adapter = get_gpt2_adapter(model_id=model["hf_id"], n_layers=model["n_layers"])
+            adapter = get_gpt2_adapter(
+                model_id=model["hf_id"],
+                n_layers=model["n_layers"],
+                trust_remote_code=bool(model.get("trust_remote_code", False)),
+                generation_use_cache=bool(model.get("generation_use_cache", True)),
+            )
             if adapter.is_model_loaded():
                 loaded_model_ids.append(model["id"])
         return loaded_model_ids

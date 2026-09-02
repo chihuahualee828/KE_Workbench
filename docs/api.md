@@ -16,6 +16,36 @@ Base URL: `http://localhost:8000`
 
 Returns the explicit supported-model registry.
 
+`POST /api/models/local/import`
+
+Legacy one-request multipart folder import. New browser clients should use the job endpoints below so upload progress is visible.
+
+`POST /api/models/local/import/jobs`
+
+Creates a local-folder import job before transferring model data. Supply `source_name` and the aggregate `total_bytes`. The returned job starts in `uploading` state and appears in Jobs.
+
+`POST /api/models/local/import/jobs/{job_id}/chunks`
+
+Multipart upload endpoint for one chunk. Send `relative_path`, byte `offset`, and `chunk`. The backend appends the chunk only at the expected offset and updates the persisted job progress.
+
+`POST /api/models/local/import/jobs/{job_id}/complete`
+
+Completes the upload once all declared bytes have arrived. The backend reads the selected folder's `config.json`, rejects unsupported or incomplete model exports, and returns a validated registration preview.
+
+The built-in folder-picker UI keeps files in the browser until Register is clicked. Register then creates this import job, uploads the folder with progress, validates it, and completes the registration.
+
+`POST /api/models/local`
+
+Registers either an existing local path using the manual form fields, or a staged import by adding `import_job_id`. Staged import architecture and capabilities remain based on the inspected configuration. Imported IDs use the inferred model family plus its upload-order suffix, such as `gpt2-xl_local1`.
+
+`DELETE /api/models/local`
+
+```json
+{ "model_id": "gpt2-xl_local1" }
+```
+
+Unregisters a local model. For browser-imported models, it also deletes the managed local cache files once the model has been unloaded.
+
 ## Model Cache
 
 `GET /api/models/cache`
