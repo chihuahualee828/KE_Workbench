@@ -297,8 +297,8 @@ function PatchTable({
         <thead>
           <tr className="border-b border-line text-left">
             {lineageGraph ? (
-              <th className="sticky top-0 z-10 w-14 bg-white py-2 text-center" title="Sequential edit lineage">
-                <GitBranch className="mx-auto text-ink/60" size={16} />
+              <th className="sticky top-0 z-10 w-14 bg-white py-2 text-left" title="Sequential edit lineage">
+                <GitBranch className="ml-0.5 text-ink/60" size={16} />
               </th>
             ) : null}
             <th className="sticky top-0 z-10 w-[130px] bg-white py-2 pr-3">Patch</th>
@@ -308,7 +308,9 @@ function PatchTable({
             <th className="sticky top-0 z-10 hidden w-[64px] bg-white py-2 pr-3 lg:table-cell">Layers</th>
             <th className="sticky top-0 z-10 w-[48px] bg-white py-2 pr-3">Edits</th>
             <th className="sticky top-0 z-10 hidden w-[142px] bg-white py-2 pr-3 lg:table-cell">Created</th>
-            <th className="sticky top-0 z-10 w-[124px] bg-white py-2 text-right">Actions</th>
+            <th className="sticky top-0 z-10 w-[124px] bg-white py-2">
+              <div className="ml-auto w-[7.25rem] text-left">Actions</div>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -366,7 +368,7 @@ function PatchTable({
                 <td className="py-3 pr-3">{patch.edits.length}</td>
                 <td className="hidden py-3 pr-3 font-mono text-xs whitespace-nowrap lg:table-cell">{formatPatchDate(patch.created_at)}</td>
                 <td className="py-3 text-right">
-                  <div className="flex justify-end gap-1">
+                  <div className="ml-auto flex w-[7.25rem] justify-end gap-1">
                     <button
                       aria-label={`Export patch ${patch.patch_id}`}
                       className="ghost-button grid size-9 place-items-center p-0"
