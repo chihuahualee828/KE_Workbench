@@ -354,7 +354,10 @@ export function ModelCacheManager({
   }, []);
 
   useEffect(() => {
-    const activeJobs = Object.values(jobs).filter((job) => activeDownloadStatuses.includes(job.status));
+    const activeJobs = Object.values(jobs).filter(
+      (job) => activeDownloadStatuses.includes(job.status)
+        && !(job.job_type === "local_import" && job.status === "uploading")
+    );
     const activeCache = cache.some((status) => activeDownloadStatuses.includes(status.cache_state));
     if (activeJobs.length === 0 && !activeCache) return;
     const timer = window.setInterval(async () => {

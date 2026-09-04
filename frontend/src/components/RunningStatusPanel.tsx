@@ -27,6 +27,9 @@ export function RunningStatusPanel() {
     () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
     [downloadJobs]
   );
+  const requiresTransferPolling = activeDownloads.some(
+    (job) => job.job_type !== "local_import" || job.status !== "uploading"
+  );
   const activeRuntime = useMemo(
     () => runtime.filter((item) => item.active_job || activeRuntimeStates.includes(item.runtime_state)),
     [runtime]
@@ -35,7 +38,7 @@ export function RunningStatusPanel() {
     () => experiments.filter((item) => item.status === "running"),
     [experiments]
   );
-  const hasActiveWork = activeDownloads.length > 0 || activeRuntime.length > 0 || runningExperiments.length > 0;
+  const hasActiveWork = requiresTransferPolling || activeRuntime.length > 0 || runningExperiments.length > 0;
   const hasFinishedDownloads = downloadJobs.some((job) => !activeDownloadStates.includes(job.status));
 
   async function refresh() {
@@ -90,7 +93,9 @@ export function RunningStatusPanel() {
   useEffect(() => {
     return listenForModelDownloads((job) => {
       setDownloadJobs((current) => upsertModelDownloadJob(current, job));
-      void refresh();
+      if (job.job_type !== "local_import" || job.status !== "uploading") {
+        void refresh();
+      }
     });
   }, []);
 

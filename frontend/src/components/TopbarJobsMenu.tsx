@@ -31,6 +31,9 @@ export function TopbarJobsMenu() {
     () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
     [downloadJobs]
   );
+  const requiresTransferPolling = activeDownloads.some(
+    (job) => job.job_type !== "local_import" || job.status !== "uploading"
+  );
   const downloadHistory = useMemo(
     () => downloadJobs.filter((job) => !activeDownloadStates.includes(job.status)),
     [downloadJobs]
@@ -45,7 +48,7 @@ export function TopbarJobsMenu() {
     [experiments]
   );
   const activeCount = activeDownloads.length + activeRuntime.length + runningExperiments.length;
-  const hasActiveWork = activeCount > 0;
+  const hasActiveWork = requiresTransferPolling || activeRuntime.length > 0 || runningExperiments.length > 0;
 
   async function refresh() {
     setError("");
@@ -108,7 +111,9 @@ export function TopbarJobsMenu() {
         setHasNewDownload(false);
         newDownloadTimer.current = null;
       }, 4000);
-      void refresh();
+      if (job.job_type !== "local_import" || job.status !== "uploading") {
+        void refresh();
+      }
     });
     return () => {
       stopListening();
