@@ -12,6 +12,16 @@ def run_logit_lens(
     target_token: str | None = None,
     top_k: int = 10,
 ) -> dict:
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "logit_lens",
+            {
+                "model_id": model_id,
+                "prompt": prompt,
+                "target_token": target_token,
+                "top_k": top_k,
+            },
+        )
     model = model_registry.get(model_id)
     if not model.get("supports_logit_lens"):
         raise ValueError(f"{model_id} is not configured for logit lens.")

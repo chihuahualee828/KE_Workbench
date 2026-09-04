@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import contextlib
+import multiprocessing
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +27,12 @@ ACTIVE_RUNTIME_STATUSES = {"queued", "loading"}
 
 
 class ModelNotLoadedError(RuntimeError):
+    pass
+
+
+class ModelWorkerError(RuntimeError):
+    """A model worker command failed before producing an application result."""
+
     pass
 
 
@@ -119,18 +127,11 @@ class ModelRuntimeService:
                 for loaded_model_id in loaded_model_ids
             }
             gc.collect()
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-                print("Model runtime unloaded and GPU memory cleared.")
-            except ImportError:
-                pass
+            cleanup = _release_cuda_allocator()
+            print("Model runtime unloaded and GPU memory cleared.")
             status = self.runtime_status(model_id)
             status["memory"] = _runtime_memory()
+            status["cuda_cleanup"] = cleanup
             status["discarded_patches_by_model"] = discarded_patches_by_model
         self._publish_runtime_update()
         return status
@@ -139,15 +140,7 @@ class ModelRuntimeService:
         with adapter_runtime_lock():
             unload_all_adapters()
             gc.collect()
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-            except ImportError:
-                pass
+            _release_cuda_allocator()
         self._publish_runtime_update()
 
     def runtime_status_events(self):
@@ -373,9 +366,6 @@ class ModelRuntimeService:
         return loaded_model_ids
 
 
-model_runtime_service = ModelRuntimeService()
-
-
 def _runtime_memory() -> dict[str, Any]:
     try:
         import torch
@@ -404,6 +394,39 @@ def _runtime_memory() -> dict[str, Any]:
         "free_bytes": int(free_bytes),
         "total_bytes": int(total_bytes),
     }
+
+
+def _cuda_allocator_memory() -> dict[str, int] | None:
+    try:
+        import torch
+    except ImportError:
+        return None
+    if not torch.cuda.is_available():
+        return None
+    device = torch.cuda.current_device()
+    return {
+        "allocated_bytes": int(torch.cuda.memory_allocated(device)),
+        "reserved_bytes": int(torch.cuda.memory_reserved(device)),
+    }
+
+
+def _release_cuda_allocator() -> dict[str, Any] | None:
+    """Run a full PyTorch allocator cleanup and report this process's memory change."""
+    before = _cuda_allocator_memory()
+    if before is None:
+        return None
+    try:
+        import torch
+
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
+    except RuntimeError as exc:
+        print(f"CUDA allocator cleanup failed: {exc}")
+        return {"before": before, "after": _cuda_allocator_memory(), "error": str(exc)}
+    return {"before": before, "after": _cuda_allocator_memory()}
 
 
 def _nvidia_smi_memory(device: int) -> dict[str, Any] | None:
@@ -437,3 +460,400 @@ def _nvidia_smi_memory(device: int) -> dict[str, Any] | None:
         "used_bytes": used_mib * 1024 * 1024,
         "total_bytes": total_mib * 1024 * 1024,
     }
+
+
+class HardUnloadModelRuntimeService:
+    """Controller for one disposable process that owns all CUDA model state.
+
+    The FastAPI process deliberately never loads model weights. Stopping this
+    worker therefore releases every CUDA allocation made by a loaded model,
+    including allocations held by third-party editing code.
+    """
+
+    uses_hard_worker = True
+    _WORKER_READY_TIMEOUT_SECONDS = 20.0
+    _WORKER_STOP_TIMEOUT_SECONDS = 10.0
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._worker_lock = threading.RLock()
+        self._runtime_version = 0
+        self._process: Any | None = None
+        self._connection: Any | None = None
+        self._loaded_model_id: str | None = None
+        self._loaded_device = "not_loaded"
+        self._model_vram_bytes = 0
+
+    def list_runtime_statuses(self) -> list[dict[str, Any]]:
+        self._reconcile_worker_liveness()
+        return [self.runtime_status(model["id"]) for model in model_registry.list_models()]
+
+    def runtime_status(self, model_id: str) -> dict[str, Any]:
+        model = model_registry.get(model_id)
+        self._reconcile_worker_liveness()
+        active_job = self._active_job_for_model(model_id)
+        with self._lock:
+            loaded = self._loaded_model_id == model_id and self._worker_is_alive_locked()
+            device = self._loaded_device if loaded else "not_loaded"
+            model_vram_bytes = self._model_vram_bytes if loaded else 0
+        return {
+            "model_id": model_id,
+            "hf_id": model["hf_id"],
+            "loaded": loaded,
+            "tokenizer_loaded": loaded,
+            "device": device,
+            "model_vram_bytes": model_vram_bytes,
+            "gpu": _controller_runtime_memory(),
+            "runtime_state": active_job["status"] if active_job else ("loaded" if loaded else "not_loaded"),
+            "active_job": active_job,
+            "hard_unload": True,
+        }
+
+    def start_load(self, model_id: str) -> dict[str, Any]:
+        model = model_registry.get(model_id)
+        status = self.runtime_status(model_id)
+        if status["loaded"]:
+            return self._completed_job(model_id, model["hf_id"], "Model is already loaded")
+        active_job = self._active_job_for_model(model_id)
+        if active_job:
+            return active_job
+
+        job_id = f"model_load_{uuid4().hex[:10]}"
+        job = {
+            "job_id": job_id,
+            "model_id": model_id,
+            "hf_id": model["hf_id"],
+            "status": "queued",
+            "message": "Queued",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        with self._condition:
+            self._jobs[job_id] = job
+            self._runtime_version += 1
+            self._condition.notify_all()
+        threading.Thread(target=self._load_model, args=(job_id,), daemon=True).start()
+        return job
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return dict(job) if job else None
+
+    def wait_job(self, job_id: str, timeout: float = 60.0) -> dict[str, Any] | None:
+        timeout = min(max(timeout, 1.0), 120.0)
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                job = self._jobs.get(job_id)
+                if job is None or job["status"] not in ACTIVE_RUNTIME_STATUSES:
+                    return dict(job) if job else None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return dict(job)
+                self._condition.wait(timeout=remaining)
+
+    def unload(self, model_id: str) -> dict[str, Any]:
+        model_registry.get(model_id)
+        with self._worker_lock:
+            discarded = self._stop_worker_locked("Model runtime unloaded by user.")
+        status = self.runtime_status(model_id)
+        status["memory"] = _controller_runtime_memory()
+        status["hard_unloaded"] = True
+        status["discarded_patches_by_model"] = discarded
+        self._publish_runtime_update()
+        print("Model worker stopped; CUDA model memory was released with its process.")
+        return status
+
+    def unload_all(self) -> None:
+        with self._worker_lock:
+            self._stop_worker_locked("Application is shutting down.")
+        self._publish_runtime_update()
+
+    def shutdown(self) -> None:
+        self.unload_all()
+
+    def runtime_status_events(self):
+        observed_version = -1
+        while True:
+            with self._condition:
+                if observed_version == self._runtime_version:
+                    self._condition.wait(timeout=5.0)
+                changed = observed_version != self._runtime_version
+                observed_version = self._runtime_version
+            self._reconcile_worker_liveness()
+            if changed:
+                yield {"type": "runtime", "statuses": self.list_runtime_statuses()}
+            else:
+                yield {"type": "keepalive"}
+
+    def loaded_runtime_bundle(self, model_id: str) -> dict[str, Any] | None:
+        status = self.runtime_status(model_id)
+        if not status["loaded"]:
+            return None
+        return {
+            "model": None,
+            "tokenizer": None,
+            "device": status["device"],
+            "worker_owned": True,
+        }
+
+    def require_loaded_runtime_bundle(self, model_id: str) -> dict[str, Any]:
+        bundle = self.loaded_runtime_bundle(model_id)
+        if bundle is None:
+            raise ModelNotLoadedError(
+                f"Load {model_id} into the model runtime before using this operation."
+            )
+        return bundle
+
+    def execute(self, action: str, payload: dict[str, Any], timeout: float = 3600.0) -> dict[str, Any]:
+        model_id = payload.get("model_id")
+        if not isinstance(model_id, str):
+            raise ValueError("Model worker commands require model_id.")
+        self.require_loaded_runtime_bundle(model_id)
+        with self._worker_lock:
+            self.require_loaded_runtime_bundle(model_id)
+            return self._call_worker_locked(action, payload, timeout=timeout)
+
+    def sync_loaded_model_to_active_patches(self, model_id: str) -> None:
+        if self.loaded_runtime_bundle(model_id) is None:
+            return
+        self.execute("sync_patches", {"model_id": model_id}, timeout=120.0)
+
+    def export_active_model(self, model_id: str, output_path: str) -> dict[str, Any]:
+        return self.execute(
+            "export_model",
+            {"model_id": model_id, "output_path": output_path},
+            timeout=3600.0,
+        )
+
+    def export_active_model_archive(self, model_id: str) -> tuple[Path, Path]:
+        result = self.execute("export_model_archive", {"model_id": model_id}, timeout=3600.0)
+        return Path(result["archive_path"]), Path(result["temporary_root"])
+
+    @contextlib.contextmanager
+    def exclusive_runtime_access(self):
+        with self._worker_lock:
+            yield
+
+    def _load_model(self, job_id: str) -> None:
+        with self._condition:
+            job = self._jobs[job_id]
+            job.update(
+                {
+                    "status": "loading",
+                    "message": "Starting isolated model worker and loading weights onto GPU if available",
+                    "updated_at": _now(),
+                }
+            )
+            self._runtime_version += 1
+            self._condition.notify_all()
+            model_id = job["model_id"]
+
+        try:
+            with self._worker_lock:
+                self._stop_worker_locked("Replacing loaded model.")
+                self._start_worker_locked()
+                status = self._call_worker_locked("load", {"model_id": model_id}, timeout=3600.0)
+                with self._lock:
+                    self._loaded_model_id = model_id
+                    self._loaded_device = str(status.get("device") or "unknown device")
+                    self._model_vram_bytes = int(status.get("model_vram_bytes") or 0)
+            message = f"Model is loaded on {self._loaded_device}"
+        except Exception as exc:
+            with self._worker_lock:
+                self._stop_worker_locked("Model load failed.")
+            self._finish_job(job_id, "failed", str(exc))
+            return
+
+        self._finish_job(job_id, "completed", message, device=self._loaded_device)
+
+    def _finish_job(self, job_id: str, status: str, message: str, **details: Any) -> None:
+        with self._condition:
+            self._jobs[job_id].update(
+                {
+                    "status": status,
+                    "message": message,
+                    "updated_at": _now(),
+                    **details,
+                }
+            )
+            self._runtime_version += 1
+            self._condition.notify_all()
+
+    def _start_worker_locked(self) -> None:
+        from app.services.model_worker import model_worker_entry
+
+        context = multiprocessing.get_context("spawn")
+        parent_connection, child_connection = context.Pipe(duplex=True)
+        process = context.Process(
+            target=model_worker_entry,
+            args=(child_connection,),
+            name="kew-model-worker",
+        )
+        process.start()
+        child_connection.close()
+        self._process = process
+        self._connection = parent_connection
+        if not parent_connection.poll(self._WORKER_READY_TIMEOUT_SECONDS):
+            self._terminate_worker_locked()
+            raise ModelWorkerError("Timed out while starting the isolated model worker.")
+        try:
+            message = parent_connection.recv()
+        except EOFError as exc:
+            self._terminate_worker_locked()
+            raise ModelWorkerError("The isolated model worker exited during startup.") from exc
+        if message.get("type") != "ready":
+            self._terminate_worker_locked()
+            raise ModelWorkerError("The isolated model worker did not initialize correctly.")
+
+    def _call_worker_locked(self, action: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        connection = self._connection
+        if connection is None or not self._worker_is_alive_locked():
+            raise ModelWorkerError("The isolated model worker is not running.")
+        try:
+            connection.send({"action": action, "payload": payload})
+        except (EOFError, OSError) as exc:
+            raise ModelWorkerError("The isolated model worker exited unexpectedly.") from exc
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModelWorkerError(f"Timed out while running model worker action {action!r}.")
+            if not connection.poll(min(0.25, remaining)):
+                if not self._worker_is_alive_locked():
+                    raise ModelWorkerError("The isolated model worker exited unexpectedly.")
+                continue
+            try:
+                message = connection.recv()
+            except EOFError as exc:
+                raise ModelWorkerError("The isolated model worker exited unexpectedly.") from exc
+            if message.get("type") == "log":
+                print(str(message.get("text", "")), end="")
+                continue
+            if message.get("type") != "result":
+                continue
+            if message.get("ok"):
+                return dict(message.get("result") or {})
+            error = str(message.get("message") or "Model worker action failed.")
+            if message.get("error_type") == "value_error":
+                raise ValueError(error)
+            raise ModelWorkerError(error)
+
+    def _stop_worker_locked(self, reason: str) -> dict[str, list[str]]:
+        with self._lock:
+            loaded_model_id = self._loaded_model_id
+        if self._process is None:
+            return {}
+        try:
+            if self._worker_is_alive_locked() and self._connection is not None:
+                try:
+                    self._call_worker_locked("shutdown", {}, timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+                except (ModelWorkerError, EOFError, OSError):
+                    pass
+            self._terminate_worker_locked()
+        finally:
+            with self._lock:
+                self._loaded_model_id = None
+                self._loaded_device = "not_loaded"
+                self._model_vram_bytes = 0
+        if not loaded_model_id:
+            return {}
+        from app.services.patch_service import patch_service
+
+        return {loaded_model_id: patch_service.deactivate_runtime_patches_for_model(loaded_model_id)}
+
+    def _terminate_worker_locked(self) -> None:
+        process = self._process
+        connection = self._connection
+        self._process = None
+        self._connection = None
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        if process is None:
+            return
+        process.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+
+    def _reconcile_worker_liveness(self) -> None:
+        lost_model_id: str | None = None
+        if not self._worker_lock.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                if self._process is None or self._worker_is_alive_locked():
+                    return
+                lost_model_id = self._loaded_model_id
+            self._terminate_worker_locked()
+            with self._lock:
+                self._loaded_model_id = None
+                self._loaded_device = "not_loaded"
+                self._model_vram_bytes = 0
+            if lost_model_id:
+                from app.services.patch_service import patch_service
+
+                patch_service.deactivate_runtime_patches_for_model(lost_model_id)
+            self._publish_runtime_update()
+        finally:
+            self._worker_lock.release()
+
+    def _worker_is_alive_locked(self) -> bool:
+        return self._process is not None and self._process.is_alive()
+
+    def _publish_runtime_update(self) -> None:
+        with self._condition:
+            self._runtime_version += 1
+            self._condition.notify_all()
+
+    def _active_job_for_model(self, model_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            jobs = [
+                dict(job)
+                for job in self._jobs.values()
+                if job["model_id"] == model_id and job["status"] in ACTIVE_RUNTIME_STATUSES
+            ]
+        return max(jobs, key=lambda item: item["updated_at"]) if jobs else None
+
+    def _completed_job(self, model_id: str, hf_id: str, message: str) -> dict[str, Any]:
+        return {
+            "job_id": f"model_load_{uuid4().hex[:10]}",
+            "model_id": model_id,
+            "hf_id": hf_id,
+            "status": "completed",
+            "message": message,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+
+
+def _controller_runtime_memory() -> dict[str, Any]:
+    """Read GPU totals without initializing PyTorch/CUDA in the API process."""
+    smi_memory = _nvidia_smi_memory(0)
+    if smi_memory is None:
+        return {"cuda_available": False}
+    used_bytes = int(smi_memory["used_bytes"])
+    total_bytes = int(smi_memory["total_bytes"])
+    return {
+        "cuda_available": True,
+        "device": "0",
+        "device_name": smi_memory["device_name"],
+        "memory_source": "nvidia-smi",
+        "used_bytes": used_bytes,
+        "allocated_bytes": 0,
+        "reserved_bytes": 0,
+        "free_bytes": max(0, total_bytes - used_bytes),
+        "total_bytes": total_bytes,
+    }
+
+
+model_runtime_service = HardUnloadModelRuntimeService()

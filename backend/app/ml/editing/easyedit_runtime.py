@@ -707,6 +707,18 @@ def require_mom2_statistics(
     if not mom2_adjustment:
         return {"model_id": model_id, "method": method.lower(), "mom2_adjustment": False, "ready": True}
 
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "require_mom2",
+            {
+                "model_id": model_id,
+                "method": method,
+                "layers": layers,
+                "mom2_adjustment": mom2_adjustment,
+            },
+            timeout=120.0,
+        )
+
     hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
     _override_mom2_adjustment(hparams, True)
     runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
@@ -735,6 +747,12 @@ def require_mom2_statistics(
 
 def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None = None) -> dict[str, Any]:
     """Compute the missing EasyEdit MOM2 covariance caches for selected layers."""
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "prepare_mom2",
+            {"model_id": model_id, "method": method, "layers": layers},
+            timeout=7200.0,
+        )
     hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
     _override_mom2_adjustment(hparams, True)
 

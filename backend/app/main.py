@@ -15,6 +15,7 @@ from app.api import (
 from app.config import ensure_data_dirs
 from app.services.experiment_service import experiment_service
 from app.services.patch_service import patch_service
+from app.services.model_runtime_service import model_runtime_service
 
 app = FastAPI(title="Knowledge Editing Workbench", version="0.1.0")
 
@@ -32,6 +33,11 @@ def startup() -> None:
     ensure_data_dirs()
     experiment_service.reconcile_interrupted_jobs()
     patch_service.clear_active_patches()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    model_runtime_service.shutdown()
 
 
 @app.get("/api/health")

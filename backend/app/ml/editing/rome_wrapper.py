@@ -20,6 +20,27 @@ def run_rome_edit(
     sequential_edit: bool,
     mom2_adjustment: bool,
 ) -> dict:
+    from app.services.model_runtime_service import model_runtime_service
+
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "rome_edit",
+            {
+                "model_id": model_id,
+                "subject": subject,
+                "relation_prompt": relation_prompt,
+                "new_object": new_object,
+                "ground_truth": ground_truth,
+                "target_layer": target_layer,
+                "evaluation_prompts": evaluation_prompts,
+                "rephrase_prompts": rephrase_prompts,
+                "locality_inputs": locality_inputs,
+                "portability_inputs": portability_inputs,
+                "sequential_edit": sequential_edit,
+                "mom2_adjustment": mom2_adjustment,
+            },
+            timeout=7200.0,
+        )
     edit = edit_to_patch_entry(subject, relation_prompt, new_object)
     if ground_truth is not None:
         edit["ground_truth"] = ground_truth

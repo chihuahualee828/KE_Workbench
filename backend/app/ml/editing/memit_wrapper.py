@@ -14,6 +14,23 @@ def run_memit_edit(
     sequential_edit: bool,
     mom2_adjustment: bool,
 ) -> dict:
+    from app.services.model_runtime_service import model_runtime_service
+
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "memit_edit",
+            {
+                "model_id": model_id,
+                "edits": edits,
+                "layers": layers,
+                "evaluation_prompts": evaluation_prompts,
+                "locality_inputs": locality_inputs,
+                "portability_inputs": portability_inputs,
+                "sequential_edit": sequential_edit,
+                "mom2_adjustment": mom2_adjustment,
+            },
+            timeout=7200.0,
+        )
     normalized_edits = [
         edit.model_dump() if hasattr(edit, "model_dump") else dict(edit)
         for edit in edits[:100]
