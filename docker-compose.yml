@@ -1,5 +1,8 @@
 services:
   backend:
+    gpus:
+      - driver: nvidia
+        count: all
     build:
       context: ./backend
       args:
@@ -12,14 +15,11 @@ services:
       EASYEDIT_ROOT: /opt/EasyEdit
       EDITING_RUNTIME: easyedit
       HF_TOKEN: ${HF_TOKEN:-}
-      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
       - ./data:/app/data
-    depends_on:
-      - redis
 
   frontend:
     build:
@@ -34,8 +34,3 @@ services:
       - /app/node_modules
     depends_on:
       - backend
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
