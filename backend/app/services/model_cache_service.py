@@ -463,7 +463,12 @@ class ModelCacheService:
                 registration = {
                     **preview,
                     "id": model_id,
-                    "name": str(model.get("name") or preview["name"]),
+                    "name": str(model.get("name") or preview.get("display_base_name") or preview["name"]),
+                    "import_metadata": {
+                        "import_id": import_job_id,
+                        "uploaded_at": job.get("created_at"),
+                        "source_folder": job.get("source_name"),
+                    },
                     # The inspected architecture remains the authority for an
                     # upload. Analysis/editing capabilities are not manual
                     # registration switches.
@@ -613,10 +618,11 @@ class ModelCacheService:
                 "tokenizer.model, vocab.txt, or GPT-2 vocab.json plus merges.txt."
             )
 
-        model_id, local_index = model_registry.allocate_imported_model_id(metadata["base_model_id"])
+        model_id = model_registry.allocate_imported_model_id()
         preview = {
             "id": model_id,
-            "name": f"{metadata['display_base_name']}_local{local_index}",
+            "name": metadata["display_base_name"],
+            "display_base_name": metadata["display_base_name"],
             "local_path": str(model_root),
             "base_model_id": metadata["base_model_id"],
             "architecture_model_type": metadata["architecture_model_type"],
@@ -1122,11 +1128,11 @@ def _inspect_model_cache(path: Path) -> dict[str, Any]:
 
 
 def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -> dict[str, Any]:
-    path = Path(model["local_path"])
+    path = Path(str(model.get("local_path") or ""))
     inspection = _inspect_local_model_path(path)
     if inspection["complete"]:
         cache_state = "cached"
-    elif path.exists():
+    elif inspection["exists"]:
         cache_state = "partial"
     else:
         cache_state = "not_cached"
@@ -1138,7 +1144,7 @@ def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -
         "cache_path": str(path),
         "size_bytes": inspection["size_bytes"],
         "hub_size_bytes": None,
-        "snapshot_count": 1 if path.exists() else 0,
+        "snapshot_count": 1 if inspection["exists"] else 0,
         "has_model_weights": inspection["has_model_weights"],
         "has_config": inspection["has_config"],
         "incomplete_file_count": 0,
@@ -1149,21 +1155,35 @@ def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -
 
 
 def _inspect_local_model_path(path: Path) -> dict[str, Any]:
-    size_bytes = _directory_size(path) if path.exists() else 0
-    if not path.exists():
+    try:
+        path_exists = path.exists()
+    except (OSError, ValueError):
+        path_exists = False
+    if not path_exists:
         return {
-            "size_bytes": size_bytes,
+            "exists": False,
+            "size_bytes": 0,
             "has_config": False,
             "has_model_weights": False,
             "complete": False,
         }
-    snapshot = _snapshot_is_complete(path)
-    return {
-        "size_bytes": size_bytes,
-        "has_config": snapshot["has_config"],
-        "has_model_weights": snapshot["has_model_weights"],
-        "complete": snapshot["complete"],
-    }
+    try:
+        snapshot = _snapshot_is_complete(path)
+        return {
+            "exists": True,
+            "size_bytes": _directory_size(path),
+            "has_config": snapshot["has_config"],
+            "has_model_weights": snapshot["has_model_weights"],
+            "complete": snapshot["complete"],
+        }
+    except (OSError, ValueError):
+        return {
+            "exists": True,
+            "size_bytes": 0,
+            "has_config": False,
+            "has_model_weights": False,
+            "complete": False,
+        }
 
 
 def _snapshot_is_complete(snapshot: Path) -> dict[str, bool]:

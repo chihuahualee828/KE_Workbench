@@ -1,7 +1,7 @@
 "use client";
 
 import { Download, FolderUp, Loader2, PlusCircle, RefreshCw, Trash2, Upload, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
@@ -46,8 +46,8 @@ export function ModelCacheManager({
   const [selectedFolderFiles, setSelectedFolderFiles] = useState<File[]>([]);
   const [selectedFolderError, setSelectedFolderError] = useState("");
   const [checkingFolder, setCheckingFolder] = useState(false);
+  const [selectedLocalModel, setSelectedLocalModel] = useState<SupportedModel | null>(null);
   const localImportInputRef = useRef<HTMLInputElement>(null);
-  const [localId, setLocalId] = usePersistentState("kew:modelManager:localId", "");
   const [localName, setLocalName] = usePersistentState("kew:modelManager:localName", "");
   const [localPath, setLocalPath] = usePersistentState("kew:modelManager:localPath", "");
   const [localModelType, setLocalModelType] = usePersistentState("kew:modelManager:localModelType", "gpt2");
@@ -192,8 +192,7 @@ export function ModelCacheManager({
       if (!layerCount) {
         throw new Error("config.json must include a positive transformer layer count.");
       }
-      setLocalId("");
-      setLocalName(sourcePath);
+      setLocalName(displayNameFromFolderConfig(config, modelType, layerCount, sourcePath));
       setLocalPath(sourcePath);
       setLocalModelType(modelType);
       setLocalLayers(String(layerCount));
@@ -240,7 +239,7 @@ export function ModelCacheManager({
         const preview = job.preview;
         const registered = await api.addLocalModel({
           id: preview.id,
-          name: preview.name,
+          name: localName.trim() || preview.display_base_name || preview.name,
           local_path: preview.local_path,
           model_type: preview.model_type,
           n_layers: preview.n_layers,
@@ -248,7 +247,6 @@ export function ModelCacheManager({
           import_job_id: job.job_id
         });
         updateImportJob(await api.modelDownloadJob(job.job_id));
-        setLocalId(registered.id);
         setLocalName(registered.name);
         setLocalPath("");
         setSelectedFolderFiles([]);
@@ -263,8 +261,7 @@ export function ModelCacheManager({
     }
     try {
       await api.addLocalModel({
-        id: localId,
-        name: localName || localId,
+        name: localName.trim(),
         local_path: localPath,
         model_type: localModelType || "auto",
         n_layers: Number(localLayers) || 0,
@@ -357,7 +354,10 @@ export function ModelCacheManager({
   }, []);
 
   useEffect(() => {
-    const activeJobs = Object.values(jobs).filter((job) => activeDownloadStatuses.includes(job.status));
+    const activeJobs = Object.values(jobs).filter(
+      (job) => activeDownloadStatuses.includes(job.status)
+        && !(job.job_type === "local_import" && job.status === "uploading")
+    );
     const activeCache = cache.some((status) => activeDownloadStatuses.includes(status.cache_state));
     if (activeJobs.length === 0 && !activeCache) return;
     const timer = window.setInterval(async () => {
@@ -376,6 +376,9 @@ export function ModelCacheManager({
     return () => window.clearInterval(timer);
   }, [jobs, cache]);
 
+  const localModels = models.filter((model) => model.source === "local");
+  const firstLocalModelId = localModels[0]?.id;
+
   return (
     <section className="panel">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -393,7 +396,15 @@ export function ModelCacheManager({
         <>
           <GpuRuntimeSummary runtime={runtime} />
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[680px] border-collapse text-sm">
+            <table className="w-full min-w-[1050px] table-fixed border-collapse text-sm">
+              <colgroup>
+                <col className="w-[13rem]" />
+                <col className="w-[6.25rem]" />
+                <col className="w-[7rem]" />
+                <col className="w-[4.125rem]" />
+                <col />
+                <col className="w-[15.25rem]" />
+              </colgroup>
               <thead>
                 <tr className="border-b border-line text-left">
                   <th className="py-2 pr-4">Model</th>
@@ -401,7 +412,7 @@ export function ModelCacheManager({
                   <th className="py-2 pr-4">Runtime</th>
                   <th className="py-2 pr-4">Size</th>
                   <th className="py-2 pr-4">Path</th>
-                  <th className="py-2 pr-4">Actions</th>
+                  <th className="whitespace-nowrap py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -420,12 +431,31 @@ export function ModelCacheManager({
                   const loaded = Boolean(runtimeStatus?.loaded);
                   const local = model.source === "local" || status?.is_local;
                   const managedLocal = Boolean(model.managed_local || status?.managed_local);
+                  const modelReference = local
+                    ? model.base_model_id || model.architecture_model_type || model.model_type || "Local model"
+                    : model.hf_id;
                   return (
-                    <tr key={model.id} className="border-b border-line/70 align-top">
+                    <Fragment key={model.id}>
+                    {model.id === firstLocalModelId ? (
+                      <tr>
+                        <td colSpan={6} className="border-y-2 border-line bg-panel/60 px-2 py-2 text-xs font-semibold uppercase tracking-wide text-ink/60">
+                          Local models ({localModels.length})
+                        </td>
+                      </tr>
+                    ) : null}
+                    <tr className="border-b border-line/70 align-top">
                   <td className="py-2 pr-4">
-                    <div className="font-medium">{model.name}</div>
-                    <div className="font-mono text-xs text-ink/50">{model.hf_id}</div>
-                    {local ? <div className="mt-1 text-xs text-cyan">{managedLocal ? "Managed local import" : "Local registration"}</div> : null}
+                    {local ? (
+                      <button className="text-left transition hover:text-cyan" onClick={() => setSelectedLocalModel(model)} title="Show local model details" type="button">
+                        <div className="font-medium">{model.name}</div>
+                        <div className="font-mono text-xs text-ink/50">{modelReference}</div>
+                      </button>
+                    ) : (
+                      <>
+                        <div className="font-medium">{model.name}</div>
+                        <div className="font-mono text-xs text-ink/50">{modelReference}</div>
+                      </>
+                    )}
                   </td>
                   <td className="py-2 pr-4">{formatCacheState(status)}</td>
                   <td className="py-2 pr-4">
@@ -437,9 +467,9 @@ export function ModelCacheManager({
                     ) : unloading ? "Unloading" : loading ? "Loading" : runtimeError || "Not loaded"}
                   </td>
                   <td className="py-2 pr-4">{formatCacheSize(status)}</td>
-                  <td className="max-w-80 truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
-                  <td className="py-2 pr-4">
-                    <div className="flex gap-2">
+                  <td className="truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
+                  <td className="whitespace-nowrap py-2">
+                    <div className="flex justify-end gap-2">
                       <button aria-label={activeDownloadJob?.status === "canceling" ? "Canceling model download" : active ? "Model download in progress" : "Download model"} className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={!runtimeConnected || Boolean(active) || cached || local} title={!runtimeConnected ? "API is offline" : active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
                         {active ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
                       </button>
@@ -457,6 +487,7 @@ export function ModelCacheManager({
                     {downloadError ? <div className="mt-2 max-w-80 text-xs text-rust" role="alert">{downloadError}</div> : null}
                   </td>
                     </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -492,12 +523,7 @@ export function ModelCacheManager({
             {selectedFolderFiles.length > 0 && !selectedFolderError ? <div className="rounded-md border border-cyan/40 bg-cyan/10 p-3 text-sm text-cyan">Folder selected. Clicking Register starts an upload job; its live progress, validation, and registration appear in Jobs.</div> : null}
             {selectedFolderFiles.length > 0 ? <p className="text-xs text-ink/60">For privacy, browsers expose the selected folder’s relative source name rather than its absolute filesystem path.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
-              <TextInput label="Model ID" value={localId} onChange={(value) => {
-                setLocalId(value);
-                setSelectedFolderFiles([]);
-                setSelectedFolderError("");
-              }} placeholder={selectedFolderFiles.length ? "Assigned on Register" : "local-gpt2-xl"} />
-              <TextInput label="Display Name" value={localName} onChange={setLocalName} placeholder="Local GPT-2 XL" />
+              <TextInput label="Display Name" value={localName} onChange={setLocalName} placeholder="GPT-2 XL" />
               <TextInput label="Local Path" value={localPath} onChange={(value) => {
                 setLocalPath(value);
                 setSelectedFolderFiles([]);
@@ -520,12 +546,13 @@ export function ModelCacheManager({
               </label>
               <TextInput label="Layers" value={localLayers} onChange={setLocalLayers} placeholder="48" />
             </div>
-            <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || importing || checkingFolder || Boolean(selectedFolderError) || (selectedFolderFiles.length === 0 && (!localId.trim() || !localPath.trim()))} title={runtimeConnected ? selectedFolderFiles.length ? "Upload and register the selected model folder" : "Register local model" : "API is offline"} type="button">
+            <button className="tool-button w-fit" onClick={addLocalModel} disabled={!runtimeConnected || importing || checkingFolder || Boolean(selectedFolderError) || (selectedFolderFiles.length === 0 && (!localName.trim() || !localPath.trim()))} title={runtimeConnected ? selectedFolderFiles.length ? "Upload and register the selected model folder" : "Register local model" : "API is offline"} type="button">
               <PlusCircle size={16} />
               Register
             </button>
           </div>
           {!runtimeConnected || error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{runtimeConnected ? error : "Failed to fetch"}</div> : null}
+          {selectedLocalModel ? <LocalModelDetailsDialog model={selectedLocalModel} onClose={() => setSelectedLocalModel(null)} /> : null}
         </>
       )}
     </section>
@@ -538,6 +565,35 @@ function TextInput({ label, value, onChange, placeholder }: { label: string; val
       <span className="label">{label}</span>
       <input className="control" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     </label>
+  );
+}
+
+function LocalModelDetailsDialog({ model, onClose }: { model: SupportedModel; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" role="dialog" aria-modal="true" aria-label="Local model details">
+      <div className="max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-line bg-white p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold">{model.name}</h3>
+            <p className="mt-1 text-sm text-ink/60">Upload details are kept outside the cache table.</p>
+          </div>
+          <button className="ghost-button min-h-9 px-2 py-1" onClick={onClose} title="Close local model details" type="button">
+            <XCircle size={16} />
+            Close
+          </button>
+        </div>
+        <dl className="mt-5 grid gap-x-4 gap-y-3 rounded-md border border-line bg-panel p-4 text-sm sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <dt className="text-ink/60">Upload ID</dt>
+          <dd className="break-all font-mono text-xs">{model.import_metadata?.import_id ?? "Not recorded"}</dd>
+          <dt className="text-ink/60">Uploaded</dt>
+          <dd>{formatLocalModelDate(model.import_metadata?.uploaded_at)}</dd>
+          <dt className="text-ink/60">Source folder</dt>
+          <dd className="break-all font-mono text-xs">{model.import_metadata?.source_folder ?? "Not recorded"}</dd>
+          <dt className="text-ink/60">Stored at</dt>
+          <dd className="break-all font-mono text-xs">{model.local_path ?? "Not recorded"}</dd>
+        </dl>
+      </div>
+    </div>
   );
 }
 
@@ -555,12 +611,37 @@ function selectedFolderConfigFile(files: File[]) {
   });
 }
 
+function displayNameFromFolderConfig(
+  config: Record<string, unknown>,
+  modelType: string,
+  layerCount: number,
+  fallback: string
+) {
+  const sourceName = typeof config._name_or_path === "string" ? config._name_or_path.toLowerCase() : "";
+  if (sourceName.includes("gpt2-xl") || (modelType === "gpt2" && layerCount === 48)) return "GPT-2 XL";
+  if (sourceName.includes("gpt-j") || modelType === "gptj") return "GPT-J 6B";
+  if (modelType === "llama") return "Llama";
+  if (modelType === "mistral") return "Mistral";
+  if (modelType === "qwen") return "Qwen";
+  if (modelType === "baichuan") return "Baichuan";
+  if (modelType === "chatglm") return "ChatGLM";
+  if (modelType === "internlm") return "InternLM";
+  if (modelType === "gpt2") return "GPT-2";
+  return fallback;
+}
+
 function configuredLayerCount(config: Record<string, unknown>) {
   for (const key of ["n_layer", "num_hidden_layers", "num_layers", "n_layers"]) {
     const value = config[key];
     if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
   }
   return null;
+}
+
+function formatLocalModelDate(value?: string) {
+  if (!value) return "Not recorded";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function configureLocalFolderInput(input: HTMLInputElement | null) {

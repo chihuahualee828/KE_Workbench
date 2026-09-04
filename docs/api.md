@@ -36,12 +36,12 @@ The built-in folder-picker UI keeps files in the browser until Register is click
 
 `POST /api/models/local`
 
-Registers either an existing local path using the manual form fields, or a staged import by adding `import_job_id`. Staged import architecture and capabilities remain based on the inspected configuration. Imported IDs use the inferred model family plus its upload-order suffix, such as `gpt2-xl_local1`.
+Registers either an existing local path using the manual form fields, or a staged import by adding `import_job_id`. The backend creates an opaque internal ID such as `local-a1b2c3d4e5f6` when no ID is supplied. Staged import architecture and capabilities remain based on the inspected configuration; the default display name is the plain inferred model name.
 
 `DELETE /api/models/local`
 
 ```json
-{ "model_id": "gpt2-xl_local1" }
+{ "model_id": "local-a1b2c3d4e5f6" }
 ```
 
 Unregisters a local model. For browser-imported models, it also deletes the managed local cache files once the model has been unloaded.

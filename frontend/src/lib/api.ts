@@ -78,7 +78,7 @@ export const api = {
       method: "DELETE"
     }),
   addLocalModel: (body: {
-    id: string;
+    id?: string;
     name: string;
     local_path: string;
     model_type: string;

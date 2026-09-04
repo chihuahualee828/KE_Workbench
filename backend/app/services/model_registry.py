@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -241,10 +244,9 @@ class ModelRegistry:
         raise ValueError(f"Unsupported model: {model_id}")
 
     def list_local_models(self) -> list[dict]:
-        path = _local_models_path()
-        if not path.exists():
-            return []
-        models = json.loads(path.read_text(encoding="utf-8"))
+        models = _read_local_models()
+        if _migrate_managed_local_models(models):
+            _write_local_models(models)
         for model in models:
             local_path = model.get("local_path")
             if not local_path:
@@ -255,16 +257,23 @@ class ModelRegistry:
         return models
 
     def add_local_model(self, model: dict[str, Any], *, managed_local: bool = False) -> dict[str, Any]:
-        model_id = model["id"].strip()
+        local_path = _resolve_local_model_path(model.get("local_path"))
+        try:
+            path_exists = local_path.exists()
+            has_config = (local_path / "config.json").is_file()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Local model path cannot be accessed: {local_path}") from exc
+        if not path_exists:
+            raise ValueError(f"Local model path does not exist: {local_path}")
+        if not has_config:
+            raise ValueError(f"Local model path must contain config.json: {local_path}")
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            model_id = self.allocate_imported_model_id()
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", model_id):
             raise ValueError("Model ID may contain only letters, numbers, dot, underscore, colon, and hyphen.")
         if any(item["id"] == model_id for item in SUPPORTED_MODELS):
             raise ValueError(f"{model_id} is a built-in model ID.")
-        local_path = Path(model["local_path"]).expanduser().resolve()
-        if not local_path.exists():
-            raise ValueError(f"Local model path does not exist: {local_path}")
-        if not (local_path / "config.json").exists():
-            raise ValueError(f"Local model path must contain config.json: {local_path}")
         model_type = (model.get("model_type") or "auto").strip().lower()
         configured_layers = _architecture_layer_count(local_path) or int(model.get("n_layers") or 0)
         gpt2_only_features = [
@@ -310,6 +319,11 @@ class ModelRegistry:
             "supports_kn": bool(model.get("supports_kn", False)),
             "trust_remote_code": bool(model.get("trust_remote_code", False)),
             "generation_use_cache": bool(model.get("generation_use_cache", True)),
+            **(
+                {"import_metadata": dict(model["import_metadata"])}
+                if isinstance(model.get("import_metadata"), dict)
+                else {}
+            ),
             "easyedit": {
                 key: value
                 for key, value in {
@@ -406,23 +420,18 @@ class ModelRegistry:
             "generation_use_cache": profile.get("generation_use_cache", True) if profile else True,
         }
 
-    def allocate_imported_model_id(self, base_model_id: str) -> tuple[str, int]:
-        """Return the next never-reused local index for this model family."""
-        safe_base_id = _safe_local_base_id(base_model_id)
-        counters = _read_local_model_upload_counters()
-        existing_indices = [
-            _local_model_index(item.get("id"), safe_base_id)
-            for item in self.list_local_models()
-        ]
-        used_indices = [
-            int(counters.get(safe_base_id, 0)),
-            *(index or 0 for index in existing_indices),
-        ]
-        current_index = max(used_indices)
-        next_index = current_index + 1
-        counters[safe_base_id] = next_index
-        _write_local_model_upload_counters(counters)
-        return f"{safe_base_id}_local{next_index}", next_index
+    def allocate_imported_model_id(self) -> str:
+        """Create an opaque, collision-free-enough key for a local registration.
+
+        This is a registry/cache-directory key rather than a display name.  It
+        deliberately has no model-family or upload-order information so users
+        do not need to interpret it.
+        """
+        existing_ids = {str(model.get("id")) for model in self.list_models()}
+        while True:
+            model_id = f"local-{uuid.uuid4().hex[:12]}"
+            if model_id not in existing_ids:
+                return model_id
 
     def add_imported_local_model(
         self,
@@ -430,7 +439,6 @@ class ModelRegistry:
         model_id: str,
         local_path: Path,
         metadata: dict[str, Any],
-        local_index: int,
     ) -> dict[str, Any]:
         """Persist a model whose files were copied into the managed local cache."""
         resolved_path = local_path.resolve()
@@ -441,7 +449,7 @@ class ModelRegistry:
 
         stored = {
             "id": model_id,
-            "name": f"{metadata['display_base_name']}_local{local_index}",
+            "name": metadata["display_base_name"],
             "hf_id": str(resolved_path),
             "local_path": str(resolved_path),
             "source": "local",
@@ -489,40 +497,119 @@ def _local_models_path() -> Path:
 
 
 def _write_local_models(models: list[dict[str, Any]]) -> None:
-    _local_models_path().write_text(json.dumps(models, indent=2), encoding="utf-8")
-
-
-def _local_model_upload_counters_path() -> Path:
-    return _local_models_path().with_name("local_model_upload_counters.json")
-
-
-def _read_local_model_upload_counters() -> dict[str, int]:
-    path = _local_model_upload_counters_path()
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        key: value
-        for key, value in payload.items()
-        if isinstance(key, str) and isinstance(value, int) and value >= 0
-    }
-
-
-def _write_local_model_upload_counters(counters: dict[str, int]) -> None:
-    _local_model_upload_counters_path().write_text(
-        json.dumps(counters, indent=2), encoding="utf-8"
+    path = _local_models_path()
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
     )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(models, file, indent=2)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        Path(temporary_path).unlink(missing_ok=True)
+        raise
+
+
+def _read_local_models() -> list[dict[str, Any]]:
+    path = _local_models_path()
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_bytes()
+        sanitized = raw.rstrip(b"\0")
+        models = json.loads(sanitized.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(models, list):
+        return []
+    if sanitized != raw:
+        # Recover registry files written with trailing NUL padding by older
+        # direct-write paths before another request attempts to parse them.
+        _write_local_models(models)
+    return [model for model in models if isinstance(model, dict)]
+
+
+def _migrate_managed_local_models(models: list[dict[str, Any]]) -> bool:
+    """Backfill import details and replace the former generated display names."""
+    import_jobs = _registered_local_import_jobs()
+    changed = False
+    for model in models:
+        if not model.get("managed_local"):
+            continue
+        model_id = model.get("id")
+        if not isinstance(model_id, str):
+            continue
+        if not isinstance(model.get("import_metadata"), dict):
+            job = import_jobs.get(model_id)
+            if job:
+                model["import_metadata"] = {
+                    "import_id": job.get("job_id"),
+                    "uploaded_at": job.get("created_at"),
+                    "source_folder": job.get("source_name"),
+                }
+                changed = True
+
+        base_model_id = model.get("base_model_id")
+        local_index = _local_model_index(model_id, base_model_id) if isinstance(base_model_id, str) else None
+        profile = next(
+            (item for item in SUPPORTED_MODELS if item["id"] == base_model_id), None
+        )
+        if profile and local_index and model.get("name") == f"{profile['name']}_local{local_index}":
+            model["name"] = profile["name"]
+            changed = True
+    return changed
+
+
+def _registered_local_import_jobs() -> dict[str, dict[str, Any]]:
+    jobs_dir = settings.data_dir / "model_cache_jobs"
+    if not jobs_dir.exists():
+        return {}
+    jobs: dict[str, dict[str, Any]] = {}
+    for path in jobs_dir.glob("model_import_*.json"):
+        try:
+            job = json.loads(path.read_bytes().rstrip(b"\0").decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        registered_model_id = job.get("registered_model_id") if isinstance(job, dict) else None
+        if isinstance(registered_model_id, str):
+            jobs[registered_model_id] = job
+    return jobs
+
+
+def _resolve_local_model_path(value: Any) -> Path:
+    """Turn user-entered paths into paths the backend host can access.
+
+    When the backend runs in WSL, Windows drive paths are available under
+    ``/mnt/<drive>/...``. Persisting that host path also lets the runtime load
+    the model without having to reinterpret the user's original input later.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Local model path is required.")
+    raw_path = value.strip()
+    if "\0" in raw_path:
+        raise ValueError("Local model path is invalid.")
+
+    windows_drive_path = re.fullmatch(r"([A-Za-z]):[\\/](.*)", raw_path)
+    if windows_drive_path and os.name != "nt":
+        drive, remainder = windows_drive_path.groups()
+        parts = [part for part in re.split(r"[\\/]+", remainder) if part]
+        candidate = Path("/mnt") / drive.lower() / Path(*parts)
+    else:
+        candidate = Path(raw_path).expanduser()
+
+    try:
+        return candidate.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Local model path is invalid.") from exc
 
 
 def _architecture_layer_count(model_path: Path) -> int | None:
     try:
         config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, json.JSONDecodeError):
         return None
     return _architecture_layer_count_from_config(config)
 

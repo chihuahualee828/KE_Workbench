@@ -24,7 +24,7 @@ class HfTokenRequest(BaseModel):
 
 
 class LocalModelRequest(BaseModel):
-    id: str
+    id: str | None = None
     name: str
     local_path: str
     model_type: str = "gpt2"
