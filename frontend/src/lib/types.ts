@@ -7,6 +7,11 @@ export type SupportedModel = {
   managed_local?: boolean;
   base_model_id?: string;
   architecture_model_type?: string;
+  import_metadata?: {
+    import_id?: string;
+    uploaded_at?: string;
+    source_folder?: string;
+  };
   model_type?: string;
   n_layers: number;
   supports_generation: boolean;
@@ -115,6 +120,7 @@ export type ModelDownloadJob = {
 export type LocalModelImportPreview = {
   id: string;
   name: string;
+  display_base_name?: string;
   local_path: string;
   base_model_id?: string;
   architecture_model_type?: string;

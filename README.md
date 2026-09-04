@@ -98,7 +98,7 @@ Disk cache and backend memory are separate states. A model can be fully download
 
 The original **Register Local Model** form still accepts an existing local path. As an alternative, use **Choose Model Folder** to select a complete Hugging Face model export from the system file picker. Selecting the folder reads its root `config.json` in the browser and fills the browser-visible source-folder path; if that file is missing or incompatible, Register is disabled. The folder files are not sent to the backend until **Register** is clicked. Register then starts the upload/validation job and moves a compatible model into the managed cache.
 
-After Register, managed imports live in the backend data directory at `data/models/imported_models/<model-id>` (normally `backend/data/models/imported_models/<model-id>` when running backend-only development). Import IDs are assigned in upload order within the inferred model family, for example `gpt2-xl_local1`, `gpt2-xl_local2`; their display names follow the same suffix pattern. Removing a managed import deletes both its registration and that copied model directory after it has been unloaded.
+After Register, managed imports live under `data/models/imported_models` (normally `backend/data/models/imported_models` when running backend-only development). The display name defaults to the inferred base model name (for example `GPT-2 XL`) and can be changed before registration. Removing a managed import deletes both its registration and copied model files after it has been unloaded.
 
 Backend endpoints:
 
