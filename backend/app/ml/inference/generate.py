@@ -19,6 +19,22 @@ def generate_text(
     patch_id: str | None = None,
     use_active_patches: bool = True,
 ) -> dict[str, str]:
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "generate",
+            {
+                "model_id": model_id,
+                "prompt": prompt,
+                "max_new_tokens": max_new_tokens,
+                "decoding_strategy": decoding_strategy,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "num_beams": num_beams,
+                "patch_id": patch_id,
+                "use_active_patches": use_active_patches,
+            },
+        )
     model = model_registry.get(model_id)
     adapter = get_gpt2_adapter(
         model_id=model["hf_id"],

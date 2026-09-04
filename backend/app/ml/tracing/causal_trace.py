@@ -17,6 +17,19 @@ def run_causal_trace(
     corruption: dict,
     require_configured: bool = False,
 ) -> dict:
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "causal_trace",
+            {
+                "model_id": model_id,
+                "prompt": prompt,
+                "subject": subject,
+                "target": target,
+                "component": component,
+                "corruption": corruption,
+                "require_configured": require_configured,
+            },
+        )
     model_info = model_registry.get(model_id)
     if require_configured and not model_info.get("supports_causal_trace"):
         raise ValueError(f"{model_id} is not configured for causal tracing.")

@@ -6,6 +6,7 @@ const eventName = "kew:model-runtime-load-started";
 const statusEventName = "kew:model-runtime-status-changed";
 const connectionEventName = "kew:model-runtime-connection-changed";
 const activeModelEventName = "kew:active-runtime-model-changed";
+const unloadEventName = "kew:model-runtime-unload-changed";
 const activeStatuses = ["queued", "loading"];
 const modelSelectionKeys = [
   "kew:generation:modelId",
@@ -82,6 +83,24 @@ export function listenForModelRuntimeConnection(callback: (connected: boolean) =
   }
   window.addEventListener(connectionEventName, handle);
   return () => window.removeEventListener(connectionEventName, handle);
+}
+
+export function announceModelRuntimeUnloading(modelId: string, unloading: boolean) {
+  window.dispatchEvent(
+    new CustomEvent<{ modelId: string; unloading: boolean }>(unloadEventName, {
+      detail: { modelId, unloading }
+    })
+  );
+}
+
+export function listenForModelRuntimeUnloading(
+  callback: (event: { modelId: string; unloading: boolean }) => void
+) {
+  function handle(event: Event) {
+    callback((event as CustomEvent<{ modelId: string; unloading: boolean }>).detail);
+  }
+  window.addEventListener(unloadEventName, handle);
+  return () => window.removeEventListener(unloadEventName, handle);
 }
 
 export function listenForModelRuntimeStream(

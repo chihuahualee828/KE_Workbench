@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
-import { announceModelRuntimeLoad, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
+import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 
 const activeDownloadStatuses = ["queued", "downloading", "canceling"];
@@ -29,6 +29,7 @@ export function ModelSelector({
   const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
   const [job, setJob] = useState<ModelDownloadJob | null>(null);
   const [runtimeJob, setRuntimeJob] = useState<ModelRuntimeJob | null>(null);
+  const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [runtimeConnected, setRuntimeConnected] = useState(isModelRuntimeConnected);
 
@@ -47,6 +48,7 @@ export function ModelSelector({
     [runtime, value]
   );
   const selectedRuntimeActive = runtimeJob?.model_id === value && ["queued", "loading"].includes(runtimeJob.status);
+  const selectedRuntimeUnloading = unloadingModelId === value;
 
   useEffect(() => {
     if (models.length && !models.some((model) => model.id === value)) {
@@ -110,8 +112,10 @@ export function ModelSelector({
   }
 
   async function unloadRuntime() {
-    if (!runtimeConnected) return;
+    if (!runtimeConnected || unloadingModelId) return;
     setError("");
+    setUnloadingModelId(value);
+    announceModelRuntimeUnloading(value, true);
     try {
       await api.unloadModelRuntime({ model_id: value });
       setRuntimeJob(null);
@@ -121,6 +125,9 @@ export function ModelSelector({
       await onRuntimeUnloaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUnloadingModelId(null);
+      announceModelRuntimeUnloading(value, false);
     }
   }
 
@@ -158,6 +165,12 @@ export function ModelSelector({
       setRuntime((current) => applyRuntimeStatusToRuntime(current, status));
     });
   }, [value]);
+
+  useEffect(() => {
+    return listenForModelRuntimeUnloading(({ modelId, unloading }) => {
+      setUnloadingModelId(unloading ? modelId : null);
+    });
+  }, []);
 
   useEffect(() => {
     return listenForModelRuntimeConnection((connected) => {
@@ -230,15 +243,15 @@ export function ModelSelector({
                   <span>{`Loaded in backend memory (${selectedRuntime.device ?? "cpu"})`}</span>
                   <span className="ml-2 font-mono text-xs text-ink/60">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} VRAM</span>
                 </span>
-              ) : selectedRuntimeActive ? "Loading weights" : runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
+              ) : selectedRuntimeUnloading ? "Unloading model" : selectedRuntimeActive ? "Loading weights" : runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
             </span>
-            {selectedRuntime?.loaded ? (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={unloadRuntime} disabled={!runtimeConnected || selectedRuntimeActive} title={!runtimeConnected ? "API is offline" : "Unload model from backend memory"}>
-                <XCircle size={15} />
-                Unload
+            {selectedRuntime?.loaded || selectedRuntimeUnloading ? (
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={unloadRuntime} disabled={!runtimeConnected || selectedRuntimeActive || Boolean(unloadingModelId)} title={!runtimeConnected ? "API is offline" : selectedRuntimeUnloading ? "Waiting for the model worker to exit" : "Unload model from backend memory"}>
+                {selectedRuntimeUnloading ? <Loader2 className="animate-spin" size={15} /> : <XCircle size={15} />}
+                {selectedRuntimeUnloading ? "Unloading" : "Unload"}
               </button>
             ) : (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={loadRuntime} disabled={!runtimeConnected || !selectedCache?.cached || selectedRuntimeActive} title={!runtimeConnected ? "API is offline" : selectedCache?.cached ? "Load model weights into backend memory" : "Download model before loading"}>
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={loadRuntime} disabled={!runtimeConnected || !selectedCache?.cached || selectedRuntimeActive || Boolean(unloadingModelId)} title={!runtimeConnected ? "API is offline" : unloadingModelId ? "Wait for the current model unload to finish" : selectedCache?.cached ? "Load model weights into backend memory" : "Download model before loading"}>
                 {selectedRuntimeActive ? <Loader2 className="animate-spin" size={15} /> : <Upload size={15} />}
                 {selectedRuntimeActive ? "Loading" : "Load"}
               </button>
