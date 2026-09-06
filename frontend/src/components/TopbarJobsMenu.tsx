@@ -7,7 +7,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
 import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
+import { listenForExperimentStarts } from "@/lib/experimentEvents";
 import { applyDownloadJobToCache, listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
+import { applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses } from "@/lib/modelRuntimeEvents";
 import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
 
 const activeDownloadStates = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
@@ -15,7 +17,7 @@ const activeRuntimeStates = ["queued", "loading"];
 
 export function TopbarJobsMenu() {
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const newDownloadTimer = useRef<number | null>(null);
+  const newWorkTimer = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [cache, setCache] = useState<ModelCacheStatus[]>([]);
   const [downloadJobs, setDownloadJobs] = useState<ModelDownloadJob[]>([]);
@@ -23,7 +25,7 @@ export function TopbarJobsMenu() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [busyJob, setBusyJob] = useState("");
   const [error, setError] = useState("");
-  const [hasNewDownload, setHasNewDownload] = useState(false);
+  const [hasNewWork, setHasNewWork] = useState(false);
   const [downloadDetails, setDownloadDetails] = useState<ModelDownloadJob | null>(null);
   const [confirmingClearDownloads, setConfirmingClearDownloads] = useState(false);
   const [clearingDownloads, setClearingDownloads] = useState(false);
@@ -96,6 +98,17 @@ export function TopbarJobsMenu() {
     }
   }
 
+  function markNewWork() {
+    setHasNewWork(true);
+    if (newWorkTimer.current !== null) {
+      window.clearTimeout(newWorkTimer.current);
+    }
+    newWorkTimer.current = window.setTimeout(() => {
+      setHasNewWork(false);
+      newWorkTimer.current = null;
+    }, 4000);
+  }
+
   useEffect(() => {
     refresh();
   }, []);
@@ -104,23 +117,38 @@ export function TopbarJobsMenu() {
     const stopListening = listenForModelDownloads((job) => {
       setCache((current) => applyDownloadJobToCache(current, job));
       setDownloadJobs((current) => upsertModelDownloadJob(current, job));
-      setHasNewDownload(true);
-      if (newDownloadTimer.current !== null) {
-        window.clearTimeout(newDownloadTimer.current);
-      }
-      newDownloadTimer.current = window.setTimeout(() => {
-        setHasNewDownload(false);
-        newDownloadTimer.current = null;
-      }, 4000);
+      markNewWork();
       if (job.job_type !== "local_import" || job.status !== "uploading") {
         void refresh();
       }
     });
     return () => {
       stopListening();
-      if (newDownloadTimer.current !== null) {
-        window.clearTimeout(newDownloadTimer.current);
+      if (newWorkTimer.current !== null) {
+        window.clearTimeout(newWorkTimer.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    const stopListeningForExperiments = listenForExperimentStarts(() => {
+      markNewWork();
+      void refresh();
+    });
+    const stopListeningForRuntimeLoads = listenForModelRuntimeLoads((job) => {
+      setRuntime((current) => applyRuntimeJobToRuntime(current, job));
+      if (activeRuntimeStates.includes(job.status)) {
+        markNewWork();
+      }
+      void refresh();
+    });
+    const stopListeningForRuntimeStatuses = listenForModelRuntimeStatuses((status) => {
+      setRuntime((current) => applyRuntimeStatusToRuntime(current, status));
+    });
+    return () => {
+      stopListeningForExperiments();
+      stopListeningForRuntimeLoads();
+      stopListeningForRuntimeStatuses();
     };
   }, []);
 
@@ -161,14 +189,14 @@ export function TopbarJobsMenu() {
         aria-expanded={open}
         aria-controls="topbar-jobs"
         onClick={() => {
-          if (!open) setHasNewDownload(false);
+          if (!open) setHasNewWork(false);
           setOpen((value) => !value);
         }}
         type="button"
       >
         <span className="inline-flex items-center gap-2"><Activity size={16} />Jobs</span>
         {activeCount > 0 ? (
-          <span className={`ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan px-1.5 py-0.5 text-xs font-semibold text-white ${hasNewDownload ? "animate-pulse ring-2 ring-cyan/30" : ""}`}>
+          <span className={`ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan px-1.5 py-0.5 text-xs font-semibold text-white ${hasNewWork ? "animate-pulse ring-2 ring-cyan/30" : ""}`}>
             {activeCount}
           </span>
         ) : null}

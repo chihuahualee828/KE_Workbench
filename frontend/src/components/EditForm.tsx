@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -202,6 +203,7 @@ function KnForm({
 }
 
 async function watchEditJob(initial: EditJob, onUpdate: (job: EditJob) => void) {
+  announceExperimentStarted(initial.experiment_id);
   let current = initial;
   onUpdate(current);
   while (current.status === "running") {
