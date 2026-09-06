@@ -226,6 +226,8 @@ export const api = {
     target: string;
     component: string;
     corruption: { type: string; noise_level: number };
+    samples?: number;
+    seed?: number;
   }) =>
     request<{ job_id: string; experiment_id: string; status: string; result: { heatmap: TraceCell[]; tokens: string[]; clean_probability: number; corrupted_probability: number; subject_token_indices?: number[]; recommended_layer: number } }>("/api/causal-trace", {
       method: "POST",

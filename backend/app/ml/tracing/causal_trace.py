@@ -15,6 +15,8 @@ def run_causal_trace(
     target: str,
     component: str,
     corruption: dict,
+    samples: int = 10,
+    seed: int = 1,
     require_configured: bool = False,
 ) -> dict:
     if getattr(model_runtime_service, "uses_hard_worker", False):
@@ -27,6 +29,8 @@ def run_causal_trace(
                 "target": target,
                 "component": component,
                 "corruption": corruption,
+                "samples": samples,
+                "seed": seed,
                 "require_configured": require_configured,
             },
         )
@@ -41,11 +45,14 @@ def run_causal_trace(
         raise ValueError("Real causal tracing is currently implemented for GPT-2 family models only.")
     if component not in {"residual", "mlp"}:
         raise ValueError("Real causal tracing currently supports residual/MLP block output restoration.")
+    if samples < 1:
+        raise ValueError("Causal tracing needs at least one corrupted sample.")
 
     try:
+        import numpy
         import torch
     except ImportError as exc:
-        raise RuntimeError("Install backend[ml] to run real causal tracing.") from exc
+        raise RuntimeError("Install backend[ml] and NumPy to run real causal tracing.") from exc
 
     runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
     tokenizer = runtime_bundle["tokenizer"]
@@ -63,29 +70,27 @@ def run_causal_trace(
     input_ids_cpu = encoded["input_ids"]
     input_ids = adapter.move_to_model_device({"input_ids": input_ids_cpu})["input_ids"]
     tokens = [tokenizer.decode([token_id]) for token_id in input_ids_cpu[0].tolist()]
-    subject_token_indices = _find_token_subsequence(
-        input_ids_cpu[0].tolist(),
-        tokenizer.encode(subject, add_special_tokens=False),
-    )
+    subject_token_indices = _find_subject_token_indices(tokenizer, input_ids_cpu[0].tolist(), subject)
     target_id = _target_id(tokenizer, target)
 
     embedding_layer = model.transformer.wte
-    clean_embeds = embedding_layer(input_ids)
-    corrupted_embeds = clean_embeds.detach().clone()
-    if subject_token_indices:
-        noise_level = float(corruption.get("noise_level", 3.0))
-        std = clean_embeds.std().detach().clamp_min(1e-6)
-        for token_index in subject_token_indices:
-            corrupted_embeds[:, token_index, :] += torch.randn_like(
-                corrupted_embeds[:, token_index, :]
-            ) * std * noise_level
+    with torch.no_grad():
+        clean_embeds = embedding_layer(input_ids)
+    corrupted_embeds = clean_embeds.detach().expand(samples + 1, -1, -1).clone()
+    noise_level = float(corruption.get("noise_level", 3.0))
+    std = clean_embeds.std().detach().clamp_min(1e-6)
+    random_state = numpy.random.RandomState(seed)
+    subject_noise = torch.from_numpy(
+        random_state.randn(samples, len(subject_token_indices), clean_embeds.shape[-1])
+    ).to(device=corrupted_embeds.device, dtype=corrupted_embeds.dtype)
+    corrupted_embeds[1:, subject_token_indices, :] += subject_noise * std * noise_level
 
     with torch.no_grad():
         clean_outputs = model(inputs_embeds=clean_embeds, output_hidden_states=True, use_cache=False)
         corrupted_outputs = model(inputs_embeds=corrupted_embeds, use_cache=False)
 
     clean_probability = _next_token_probability(clean_outputs.logits, target_id)
-    corrupted_probability = _next_token_probability(corrupted_outputs.logits, target_id)
+    corrupted_probability = _mean_next_token_probability(corrupted_outputs.logits[1:], target_id)
 
     heatmap = []
     for layer in range(model_info["n_layers"]):
@@ -93,16 +98,14 @@ def run_causal_trace(
         clean_layer_state = clean_outputs.hidden_states[layer + 1].detach()
 
         for token_index, token in enumerate(tokens):
-            handle = block.register_forward_hook(
-                _restore_token_hook(clean_layer_state, token_index)
-            )
+            handle = block.register_forward_hook(_restore_token_hook(clean_layer_state, token_index))
             try:
                 with torch.no_grad():
                     restored_outputs = model(inputs_embeds=corrupted_embeds, use_cache=False)
             finally:
                 handle.remove()
 
-            restored_probability = _next_token_probability(restored_outputs.logits, target_id)
+            restored_probability = _mean_next_token_probability(restored_outputs.logits[1:], target_id)
             heatmap.append(
                 {
                     "layer": layer,
@@ -118,6 +121,8 @@ def run_causal_trace(
         "corrupted_probability": corrupted_probability,
         "component": component,
         "corruption": describe_corruption(corruption),
+        "samples": samples,
+        "seed": seed,
         "target": target,
         "tokens": tokens,
         "subject_token_indices": subject_token_indices,
@@ -127,9 +132,7 @@ def run_causal_trace(
     }
 
 
-def _select_recommended_layer(
-    heatmap: list[dict], subject_token_indices: list[int]
-) -> int:
+def _select_recommended_layer(heatmap: list[dict], subject_token_indices: list[int]) -> int:
     """Choose the layer with the strongest mean positive subject-token effect."""
     if not heatmap:
         raise ValueError("Causal trace produced no layer scores.")
@@ -159,22 +162,35 @@ def _restore_token_hook(clean_layer_state, token_index: int):
     def hook(_module, _inputs, output):
         if isinstance(output, tuple):
             hidden = output[0].clone()
-            hidden[:, token_index, :] = clean_layer_state[:, token_index, :]
+            hidden[1:, token_index, :] = clean_layer_state[0, token_index, :]
             return (hidden, *output[1:])
         hidden = output.clone()
-        hidden[:, token_index, :] = clean_layer_state[:, token_index, :]
+        hidden[1:, token_index, :] = clean_layer_state[0, token_index, :]
         return hidden
 
     return hook
 
 
-def _find_token_subsequence(tokens: list[int], subject_tokens: list[int]) -> list[int]:
-    if not subject_tokens:
-        return []
-    for start in range(0, len(tokens) - len(subject_tokens) + 1):
-        if tokens[start : start + len(subject_tokens)] == subject_tokens:
-            return list(range(start, start + len(subject_tokens)))
-    return []
+def _find_subject_token_indices(tokenizer, token_ids: list[int], subject: str) -> list[int]:
+    """Match subject text to decoded tokens as ROME's causal-trace experiment does."""
+    if not subject:
+        raise ValueError("Subject is required for causal tracing.")
+    token_text = [tokenizer.decode([token_id]) for token_id in token_ids]
+    prompt_text = "".join(token_text)
+    subject_start = prompt_text.find(subject)
+    if subject_start < 0:
+        raise ValueError(f"Subject {subject!r} does not occur in the prompt after tokenization.")
+    subject_end = subject_start + len(subject)
+    cursor = 0
+    start_index: int | None = None
+    for index, token in enumerate(token_text):
+        next_cursor = cursor + len(token)
+        if start_index is None and next_cursor > subject_start:
+            start_index = index
+        if start_index is not None and next_cursor >= subject_end:
+            return list(range(start_index, index + 1))
+        cursor = next_cursor
+    raise ValueError(f"Subject {subject!r} could not be mapped to prompt tokens.")
 
 
 def _target_id(tokenizer, target: str) -> int:
@@ -195,3 +211,12 @@ def _next_token_probability(logits, target_id: int) -> float:
         raise RuntimeError("Install backend[ml] to run real causal tracing.") from exc
     probabilities = torch.softmax(logits[:, -1, :], dim=-1)
     return round(float(probabilities[0, target_id].item()), 8)
+
+
+def _mean_next_token_probability(logits, target_id: int) -> float:
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("Install backend[ml] to run real causal tracing.") from exc
+    probabilities = torch.softmax(logits[:, -1, :], dim=-1)
+    return round(float(probabilities[:, target_id].mean().item()), 8)
