@@ -46,7 +46,7 @@ export default function HomePage() {
       <section className="section">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-semibold tracking-tight">Try a prompt</h2><p className="mt-1 text-xs text-ink/55">Get a baseline before you explore or edit.</p></div><Link className="inline-flex items-center gap-2 text-xs font-medium text-cyan hover:underline" href="/playground">Open playground<ArrowRight size={14} /></Link></div>
         {status === "ready" && !loadedModels.length ? <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan/15 bg-cyan/5 px-4 py-3"><p className="text-xs leading-5 text-ink/70">Start by downloading a model and loading it into memory using the controls below.</p><Link href="#models" className="inline-flex items-center gap-2 text-xs font-medium text-cyan">Browse models<ArrowRight size={13} /></Link></div> : null}
-        <GenerationPanel models={models} patches={patches} runtime={runtime} onPatchesChanged={refresh} sessionScope="workbench" />
+        <GenerationPanel models={models} runtime={runtime} onPatchesChanged={refresh} sessionScope="workbench" />
       </section>
 
       <section className="section" id="patches"><PatchHistory patches={patches} runtime={runtime} onPatchesChanged={refresh} /></section>
