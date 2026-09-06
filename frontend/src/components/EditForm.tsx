@@ -562,9 +562,15 @@ function MemitForm({
     setResult(null);
     setJob(null);
     try {
+      if (!edits.trim()) {
+        throw new Error("Batch Edits JSON is empty. Add at least one MEMIT fact.");
+      }
       const parsedEdits = parseMemitEditDrafts(edits);
-      if (!parsedEdits?.length) {
-        throw new Error("Add at least one MEMIT fact before editing.");
+      if (!parsedEdits) {
+        throw new Error("Batch Edits JSON is invalid. Use a JSON array of MEMIT fact objects.");
+      }
+      if (!parsedEdits.length) {
+        throw new Error("Batch Edits JSON must include at least one MEMIT fact.");
       }
       const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
       if (invalidEdit >= 0) {
