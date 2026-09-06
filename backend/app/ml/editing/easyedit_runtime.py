@@ -707,42 +707,17 @@ def require_mom2_statistics(
     if not mom2_adjustment:
         return {"model_id": model_id, "method": method.lower(), "mom2_adjustment": False, "ready": True}
 
-    if getattr(model_runtime_service, "uses_hard_worker", False):
-        return model_runtime_service.execute(
-            "require_mom2",
-            {
-                "model_id": model_id,
-                "method": method,
-                "layers": layers,
-                "mom2_adjustment": mom2_adjustment,
-            },
-            timeout=120.0,
-        )
-
-    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
-    _override_mom2_adjustment(hparams, True)
-    runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
-    statistics = []
-    for layer in effective_layers:
-        path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
-        statistics.append({"layer": layer, "path": str(path), "ready": path.exists()})
-    missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
-    if missing_layers:
-        rendered_layers = ", ".join(str(layer) for layer in missing_layers)
+    # The stats path is derived solely from the configured hparams and requested
+    # layers. Check it in the API process before dispatching an edit to the
+    # model worker, so missing statistics cannot start an EasyEdit operation.
+    status = get_mom2_statistics_status(model_id, method, layers)
+    if not status["ready"]:
+        rendered_layers = ", ".join(str(layer) for layer in status["missing_layers"])
         raise EasyEditRuntimeError(
             f"MOM2 statistics are missing for {model_id} layer(s) {rendered_layers}. "
             "Prepare them from Settings before applying this edit."
         )
-    return {
-        "model_id": model_id,
-        "method": method.lower(),
-        "mom2_adjustment": True,
-        "layers": effective_layers,
-        "stats_dir": str(getattr(hparams, "stats_dir")),
-        "ready": True,
-        "missing_layers": [],
-        "statistics": statistics,
-    }
+    return status
 
 
 def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None = None) -> dict[str, Any]:
