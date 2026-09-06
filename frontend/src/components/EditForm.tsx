@@ -336,14 +336,10 @@ function RomeForm({
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (mom2Adjustment && /MOM2 statistics are missing/i.test(message)) {
-        try {
-          const status = await api.mom2StatisticsStatus({ model_id: modelId, method: "rome", layers: [targetLayerNumber] });
-          setMissingMom2Layers(status.missing_layers);
-          return;
-        } catch {
-          // Preserve the original error when the status lookup is unavailable.
-        }
+      const missingLayers = missingMom2LayersFromMessage(message);
+      if (missingLayers) {
+        setMissingMom2Layers(missingLayers);
+        return;
       }
       setError(message);
     } finally {
@@ -593,14 +589,10 @@ function MemitForm({
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (/MOM2 statistics are missing/i.test(message)) {
-        try {
-          const status = await api.mom2StatisticsStatus({ model_id: modelId, method: "memit", layers: selectedLayers });
-          setMissingMom2Layers(status.missing_layers);
-          return;
-        } catch {
-          // Preserve the original error when the status lookup is unavailable.
-        }
+      const missingLayers = missingMom2LayersFromMessage(message);
+      if (missingLayers) {
+        setMissingMom2Layers(missingLayers);
+        return;
       }
       setError(message);
     } finally {
@@ -818,6 +810,16 @@ function MissingMom2StatisticsDialog({ layers, onClose }: { layers: number[]; on
       </section>
     </div>
   );
+}
+
+function missingMom2LayersFromMessage(message: string): number[] | null {
+  const match = message.match(/MOM2 statistics are missing for .*? layer\(s\)\s+([\d,\s]+)(?:\.|$)/i);
+  if (!match) return null;
+  const layers = match[1]
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value >= 0);
+  return layers.length ? layers : null;
 }
 
 function ExportActiveModelControl({ modelId, modelLoaded, disabled = false }: { modelId: string; modelLoaded: boolean; disabled?: boolean }) {

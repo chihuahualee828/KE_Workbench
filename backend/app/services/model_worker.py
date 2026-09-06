@@ -104,8 +104,4 @@ def _dispatch(runtime: Any, action: str, payload: dict[str, Any]) -> dict[str, A
         from app.ml.editing.easyedit_runtime import prepare_mom2_statistics
 
         return prepare_mom2_statistics(**payload)
-    if action == "require_mom2":
-        from app.ml.editing.easyedit_runtime import require_mom2_statistics
-
-        return require_mom2_statistics(**payload)
     raise ValueError(f"Unsupported model worker action: {action}")

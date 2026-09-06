@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -604,17 +605,20 @@ def _resolve_hparams_path(model: dict[str, Any], hparams_key: str) -> Path:
         Path.cwd().parent / relative,
     ]
 
-    try:
-        import easyeditor
-
-        package_root = Path(easyeditor.__file__).resolve().parent.parent
-        candidates.append(package_root / relative)
-    except ImportError:
-        pass
-
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    try:
+        import easyeditor
+    except ImportError:
+        pass
+    else:
+        package_root = Path(easyeditor.__file__).resolve().parent.parent
+        package_candidate = package_root / relative
+        if package_candidate.exists():
+            return package_candidate
+        candidates.append(package_candidate)
 
     checked = ", ".join(str(candidate) for candidate in candidates)
     raise EasyEditRuntimeError(
@@ -677,8 +681,7 @@ def get_mom2_statistics_status(
     layers: list[int] | None = None,
 ) -> dict[str, Any]:
     """Report the MOM2 cache files EasyEdit will use for this runtime model."""
-    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
-    _override_mom2_adjustment(hparams, True)
+    hparams, effective_layers = _load_mom2_cache_profile(model_id, method, layers)
 
     statistics = []
     for layer in effective_layers:
@@ -707,42 +710,17 @@ def require_mom2_statistics(
     if not mom2_adjustment:
         return {"model_id": model_id, "method": method.lower(), "mom2_adjustment": False, "ready": True}
 
-    if getattr(model_runtime_service, "uses_hard_worker", False):
-        return model_runtime_service.execute(
-            "require_mom2",
-            {
-                "model_id": model_id,
-                "method": method,
-                "layers": layers,
-                "mom2_adjustment": mom2_adjustment,
-            },
-            timeout=120.0,
-        )
-
-    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
-    _override_mom2_adjustment(hparams, True)
-    runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
-    statistics = []
-    for layer in effective_layers:
-        path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
-        statistics.append({"layer": layer, "path": str(path), "ready": path.exists()})
-    missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
-    if missing_layers:
-        rendered_layers = ", ".join(str(layer) for layer in missing_layers)
+    # The stats path is derived solely from the configured hparams and requested
+    # layers. Check it in the API process before dispatching an edit to the
+    # model worker, so missing statistics cannot start an EasyEdit operation.
+    status = get_mom2_statistics_status(model_id, method, layers)
+    if not status["ready"]:
+        rendered_layers = ", ".join(str(layer) for layer in status["missing_layers"])
         raise EasyEditRuntimeError(
             f"MOM2 statistics are missing for {model_id} layer(s) {rendered_layers}. "
             "Prepare them from Settings before applying this edit."
         )
-    return {
-        "model_id": model_id,
-        "method": method.lower(),
-        "mom2_adjustment": True,
-        "layers": effective_layers,
-        "stats_dir": str(getattr(hparams, "stats_dir")),
-        "ready": True,
-        "missing_layers": [],
-        "statistics": statistics,
-    }
+    return status
 
 
 def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None = None) -> dict[str, Any]:
@@ -792,7 +770,7 @@ def import_mom2_statistics(
     files: list[tuple[str, Any]],
 ) -> dict[str, Any]:
     """Validate and atomically install precomputed MOM2 cache files."""
-    hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
+    hparams, effective_layers = _load_mom2_cache_profile(model_id, method, layers)
     expected_dataset = str(getattr(hparams, "mom2_dataset"))
     if dataset.strip() != expected_dataset:
         raise EasyEditRuntimeError(
@@ -835,7 +813,7 @@ def import_mom2_statistics(
 
 def list_mom2_statistics(model_id: str, method: str) -> dict[str, Any]:
     """List all cached second-moment files that match a model/method hparams profile."""
-    hparams, _ = _load_edit_hparams(model_id, method, None)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     statistics = []
@@ -865,7 +843,7 @@ def list_mom2_statistics(model_id: str, method: str) -> dict[str, Any]:
 def delete_mom2_statistics(model_id: str, method: str, layers: list[int]) -> dict[str, Any]:
     if not layers:
         raise EasyEditRuntimeError("Select one or more second-moment statistics files to delete.")
-    hparams, _ = _load_edit_hparams(model_id, method, None)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     invalid_layers = [layer for layer in layers if not isinstance(layer, int) or layer < 0 or layer >= layer_count]
@@ -881,6 +859,68 @@ def delete_mom2_statistics(model_id: str, method: str, layers: list[int]) -> dic
     result = list_mom2_statistics(model_id, method)
     result["deleted_layers"] = deleted_layers
     return result
+
+
+def _load_mom2_cache_profile(
+    model_id: str,
+    method: str,
+    layers: list[int] | None,
+) -> tuple[SimpleNamespace, list[int]]:
+    """Read the hparams fields that determine a MOM2 cache filename.
+
+    Cache inspection, import, and preflight validation do not instantiate an
+    EasyEdit editor. Parsing the YAML directly keeps those operations fast and
+    avoids importing EasyEdit's full optional dependency graph in the API
+    process.
+    """
+    method_key = method.lower()
+    spec = METHODS.get(method_key)
+    if spec is None:
+        raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
+
+    model = model_registry.get(model_id)
+    if not model.get(spec["support_key"], False):
+        raise EasyEditUnsupportedError(f"{model_id} is not configured for {method_key.upper()}.")
+
+    hparams_path = _resolve_hparams_path(model, spec["hparams_key"])
+    try:
+        payload = yaml.safe_load(hparams_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise EasyEditRuntimeError(f"Invalid EasyEdit hparams YAML: {hparams_path}") from exc
+    if not isinstance(payload, dict):
+        raise EasyEditRuntimeError(f"EasyEdit hparams must be a mapping: {hparams_path}")
+
+    required = ("rewrite_module_tmp", "mom2_dataset", "mom2_dtype")
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        raise EasyEditRuntimeError(
+            f"EasyEdit hparams is missing MOM2 field(s) {', '.join(missing)}: {hparams_path}"
+        )
+
+    configured_layers = payload.get("layers", payload.get("layer"))
+    if layers:
+        effective_layers = [int(layer) for layer in layers]
+    elif isinstance(configured_layers, list):
+        effective_layers = [int(layer) for layer in configured_layers]
+    elif configured_layers is not None:
+        effective_layers = [int(configured_layers)]
+    else:
+        effective_layers = []
+    if not effective_layers:
+        raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers for {model_id}.")
+
+    return (
+        SimpleNamespace(
+            model_name=model.get("local_path") or model["hf_id"],
+            stats_dir=str(_mom2_stats_dir()),
+            rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
+            mom2_dataset=str(payload["mom2_dataset"]),
+            mom2_dtype=str(payload["mom2_dtype"]),
+            mom2_n_samples=payload.get("mom2_n_samples"),
+            layers=effective_layers,
+        ),
+        effective_layers,
+    )
 
 
 def _load_edit_hparams(model_id: str, method: str, layers: list[int] | None) -> tuple[Any, list[int]]:
@@ -912,11 +952,15 @@ def _override_mom2_adjustment(hparams: Any, enabled: bool | None) -> None:
 def _configure_stats_dir(hparams: Any) -> None:
     if not hasattr(hparams, "stats_dir"):
         return
+    setattr(hparams, "stats_dir", str(_mom2_stats_dir()))
+
+
+def _mom2_stats_dir() -> Path:
     backend_root = Path(__file__).resolve().parents[3]
     data_dir = settings.data_dir
     if not data_dir.is_absolute():
         data_dir = (backend_root / data_dir).resolve()
-    setattr(hparams, "stats_dir", str(data_dir / "stats"))
+    return data_dir / "stats"
 
 
 def _mom2_statistics_path(hparams: Any, model: Any | None, layer: int) -> Path:
