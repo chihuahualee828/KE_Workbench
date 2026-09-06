@@ -469,7 +469,7 @@ export function ModelCacheManager({
                   <td className="py-2 pr-4">{formatCacheSize(status)}</td>
                   <td className="truncate py-2 pr-4 font-mono text-xs" title={status?.cache_path}>{status?.cache_path ?? "n/a"}</td>
                   <td className="whitespace-nowrap py-2">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-start gap-2">
                       <button aria-label={activeDownloadJob?.status === "canceling" ? "Canceling model download" : active ? "Model download in progress" : "Download model"} className="ghost-button min-h-9 px-2 py-1" onClick={() => download(model.id)} disabled={!runtimeConnected || Boolean(active) || cached || local} title={!runtimeConnected ? "API is offline" : active ? "Open Jobs to monitor or cancel this download" : local ? "Local models do not need downloading" : cached ? "Model is already cached" : "Download model"}>
                         {active ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
                       </button>

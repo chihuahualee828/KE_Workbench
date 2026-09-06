@@ -10,10 +10,14 @@ import type { Experiment, ExperimentDetails } from "@/lib/types";
 export function ExperimentHistory({
   experiments,
   compact = false,
+  limit,
+  showControls = true,
   onChanged
 }: {
   experiments: Experiment[];
   compact?: boolean;
+  limit?: number;
+  showControls?: boolean;
   onChanged: () => void | Promise<void>;
 }) {
   const [details, setDetails] = useState<ExperimentDetails | null>(null);
@@ -25,6 +29,7 @@ export function ExperimentHistory({
     () => [...experiments].sort((left, right) => right.created_at.localeCompare(left.created_at)),
     [experiments]
   );
+  const displayedExperiments = limit === undefined ? sortedExperiments : sortedExperiments.slice(0, limit);
   const hasRunningExperiment = experiments.some((experiment) => experiment.status === "running");
 
   async function openDetails(experiment: Experiment) {
@@ -67,21 +72,23 @@ export function ExperimentHistory({
 
   return (
     <section className="grid gap-2">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="label">Experiments</h3>
-        <button
-          className="ghost-button min-h-8 px-2 py-1 text-xs"
-          disabled={experiments.length === 0 || hasRunningExperiment || clearing}
-          onClick={() => setConfirmingClear(true)}
-          title={hasRunningExperiment ? "Wait for running experiments to finish before clearing history" : "Clear completed and failed experiment history"}
-          type="button"
-        >
-          <Trash2 size={14} />
-          Clear history
-        </button>
-      </div>
+      {showControls ? (
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="label">Experiments</h3>
+          <button
+            className="ghost-button min-h-8 px-2 py-1 text-xs"
+            disabled={experiments.length === 0 || hasRunningExperiment || clearing}
+            onClick={() => setConfirmingClear(true)}
+            title={hasRunningExperiment ? "Wait for running experiments to finish before clearing history" : "Clear completed and failed experiment history"}
+            type="button"
+          >
+            <Trash2 size={14} />
+            Clear history
+          </button>
+        </div>
+      ) : null}
 
-      {confirmingClear ? (
+      {showControls && confirmingClear ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm">
           <span>Delete all completed and failed experiment records?</span>
           <div className="flex gap-2">
@@ -95,7 +102,7 @@ export function ExperimentHistory({
       ) : null}
 
       <div className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
-        {sortedExperiments.map((experiment) => (
+        {displayedExperiments.map((experiment) => (
           <ExperimentHistoryCard
             deleting={deletingExperimentId === experiment.id}
             experiment={experiment}
@@ -105,7 +112,7 @@ export function ExperimentHistory({
             onOpen={() => void openDetails(experiment)}
           />
         ))}
-        {sortedExperiments.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No experiments recorded yet.</div> : null}
+        {displayedExperiments.length === 0 ? <div className="px-3 py-3 text-sm text-ink/60">No experiments recorded yet.</div> : null}
       </div>
 
       {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-2 text-xs text-rust">{error}</div> : null}

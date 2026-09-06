@@ -4,49 +4,64 @@
 
 :root {
   color-scheme: light;
-  background: #f7f8f5;
-  color: #172026;
+  background: #f6f7fb;
+  color: #202939;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
 }
 
-* {
-  box-sizing: border-box;
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, textarea, select { font: inherit; }
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+button, a, summary { touch-action: manipulation; }
+:focus-visible { outline: 3px solid #9b96f1; outline-offset: 3px; }
+::selection { background: #e3e0ff; }
+input, select, textarea { min-width: 0; max-width: 100%; }
+pre { overflow-wrap: anywhere; }
+summary { cursor: pointer; }
+[id] { scroll-margin-top: 90px; }
+
+@layer components {
+  .control {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none transition placeholder:text-ink/35 hover:border-ink/25 focus:border-cyan focus:ring-4 focus:ring-cyan/10 disabled:cursor-not-allowed disabled:bg-panel disabled:text-ink/50;
+  }
+  .tool-button {
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-transparent bg-cyan px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-moss active:translate-y-px disabled:cursor-not-allowed disabled:bg-line disabled:text-ink/40 disabled:shadow-none;
+  }
+  .ghost-button {
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-medium text-ink/75 shadow-sm transition hover:border-cyan/30 hover:bg-cyan/5 hover:text-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-ink/35 disabled:shadow-none;
+  }
+  .section { @apply px-4 pb-6 sm:px-6 xl:px-9; }
+  .panel { @apply min-w-0 rounded-xl border border-line bg-white p-5 shadow-[0_2px_8px_-4px_rgba(25,35,60,0.12)]; }
+  .label { @apply text-[11px] font-semibold uppercase tracking-[0.07em] text-ink/55; }
+  .eyebrow { @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan; }
+  .page-header { @apply flex flex-col items-start justify-between gap-5 px-4 pb-7 pt-8 sm:px-6 md:flex-row md:items-center xl:px-9 xl:pt-10; }
+  .panel-heading { @apply mb-5 flex items-center justify-between gap-3; }
+  .icon-tile { @apply inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan/10 text-cyan; }
+  .status-badge { @apply inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium; }
+  .inline-error { @apply rounded-lg border border-rust/20 bg-rust/5 p-3 text-sm leading-5 text-rust; }
+  .empty-state { @apply flex min-h-64 flex-col items-center justify-center gap-3 px-6 py-10 text-center; }
+  .app-body { @apply min-w-0 lg:ml-[224px]; }
+  .app-main { @apply mx-auto min-h-[calc(100vh-120px)] max-w-[1600px] outline-none; }
+  .app-sidebar { @apply fixed inset-y-0 left-0 z-40 hidden w-[224px] flex-col bg-[#161d2e] text-white lg:flex; }
+  .brand-link { @apply flex items-center gap-3 border-b border-white/[0.07] px-5 py-6; }
+  .brand-mark { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#736ee7] text-white; }
+  .sidebar-navigation { @apply flex-1 overflow-y-auto px-3 pb-6 pt-2; }
+  .nav-group-label { @apply mb-2 mt-6 px-3 text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-500; }
+  .nav-link { @apply mb-1 flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-slate-400 transition hover:bg-white/5 hover:text-white; }
+  .nav-link-active { @apply bg-[#736ee7]/20 text-[#c8c5ff] ring-1 ring-inset ring-[#736ee7]/15 hover:bg-[#736ee7]/20 hover:text-[#c8c5ff]; }
+  .sidebar-footer { @apply border-t border-white/[0.07] p-6; }
+  .app-topbar { @apply sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-line bg-white/95 px-4 backdrop-blur-md sm:px-6 xl:px-9; }
+  .mobile-navigation { @apply sticky top-16 z-20 flex gap-1 overflow-x-auto border-b border-line bg-white px-3 py-2 lg:hidden; }
+  .mobile-nav-link { @apply flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-medium text-ink/60; }
+  .mobile-nav-link-active { @apply bg-cyan/10 text-cyan; }
+  .app-footer { @apply mx-4 flex flex-wrap justify-between gap-2 border-t border-line py-5 text-[11px] text-ink/40 sm:mx-6 xl:mx-9; }
+  .skip-link { @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-3 focus:text-sm focus:text-cyan focus:shadow-lg; }
+  .trace-canvas { background-color: #fafbfe; background-image: radial-gradient(#dce0ec 0.8px, transparent 0.8px); background-size: 16px 16px; }
 }
 
-body {
-  margin: 0;
-  background:
-    linear-gradient(180deg, rgba(247, 248, 245, 0.96), rgba(247, 248, 245, 1)),
-    radial-gradient(circle at 20% 0%, rgba(28, 119, 132, 0.08), transparent 28%),
-    radial-gradient(circle at 80% 10%, rgba(168, 86, 50, 0.08), transparent 24%);
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-.control {
-  @apply rounded-md border border-line bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan focus:ring-2 focus:ring-cyan/15;
-}
-
-.tool-button {
-  @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ink bg-ink px-3 py-2 text-sm font-medium text-white transition hover:bg-moss disabled:cursor-not-allowed disabled:border-line disabled:bg-line disabled:text-ink/50;
-}
-
-.ghost-button {
-  @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink transition hover:border-cyan hover:text-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-line/60 disabled:text-ink/35 disabled:hover:border-line disabled:hover:text-ink/35;
-}
-
-.section {
-  @apply border-b border-line px-4 py-5 md:px-8;
-}
-
-.panel {
-  @apply rounded-lg border border-line bg-white p-4 shadow-sm;
-}
-
-.label {
-  @apply text-xs font-semibold uppercase tracking-normal text-ink/60;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }

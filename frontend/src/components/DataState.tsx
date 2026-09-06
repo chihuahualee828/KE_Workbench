@@ -81,10 +81,10 @@ export function useWorkbenchData() {
 }
 
 export function ApiStatus({ status }: { status: "loading" | "ready" | "offline" }) {
-  const text = status === "ready" ? "API connected" : status === "loading" ? "Connecting" : "API offline";
+  const text = status === "ready" ? "Backend connected" : status === "loading" ? "Connecting…" : "Backend offline";
   return (
-    <div className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm">
-      <span className={`h-2 w-2 rounded-full ${status === "ready" ? "bg-cyan" : status === "loading" ? "bg-rust" : "bg-ink/30"}`} />
+    <div role="status" className={`status-badge ${status === "ready" ? "border-emerald-200/70 bg-emerald-50 text-emerald-700" : status === "loading" ? "border-line bg-white text-ink/50" : "border-rust/20 bg-rust/5 text-rust"}`} title={status === "offline" ? "The backend is unavailable. Check that the backend service is running." : undefined}>
+      <span className={`h-1.5 w-1.5 rounded-full ${status === "ready" ? "bg-emerald-500" : status === "loading" ? "animate-pulse bg-ink/30" : "bg-rust"}`} />
       {text}
     </div>
   );

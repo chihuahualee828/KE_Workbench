@@ -214,7 +214,8 @@ export function ModelSelector({
     <div className="grid gap-2">
       <label className="grid gap-2">
         <span className="label">Model</span>
-        <select className="control" value={value} onChange={(event) => onChange(event.target.value)}>
+        <select className="control" value={value} disabled={!models.length} onChange={(event) => onChange(event.target.value)}>
+          {!models.length ? <option value={value}>No models available</option> : null}
           {models.map((model) => (
             <option key={model.id} value={model.id}>
               {model.name}
@@ -222,6 +223,7 @@ export function ModelSelector({
           ))}
         </select>
       </label>
+      {selectedModel ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink/50"><span className="min-w-0 break-all font-mono">{selectedModel.hf_id}</span><span aria-hidden="true">·</span><span>{selectedModel.n_layers} layers</span></div> : null}
       {showCacheControls ? (
         <div className="grid gap-2">
           <div className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-sm">
@@ -230,7 +232,7 @@ export function ModelSelector({
               {selectedCache?.cached ? `Cached (${formatBytes(selectedCache.size_bytes)})` : `${formatCacheState(selectedCache)} (${formatExpectedSize(selectedCache)})`}
             </span>
             {!selectedCache?.cached && !selectedLocal ? (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={startDownload} disabled={!runtimeConnected || selectedJobActive} title={!runtimeConnected ? "API is offline" : selectedJobActive ? "Open Jobs to monitor or cancel this download" : "Download model into Hugging Face cache"}>
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={startDownload} disabled={!runtimeConnected || !selectedModel || selectedJobActive} title={!runtimeConnected ? "API is offline" : selectedJobActive ? "Open Jobs to monitor or cancel this download" : "Download model into Hugging Face cache"}>
                 {selectedJobActive ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
                 {job?.status === "canceling" ? "Canceling" : selectedJobActive ? "Downloading" : "Download"}
               </button>
@@ -240,8 +242,8 @@ export function ModelSelector({
             <span>
               {selectedRuntime?.loaded ? (
                 <span>
-                  <span>{`Loaded in backend memory (${selectedRuntime.device ?? "cpu"})`}</span>
-                  <span className="ml-2 font-mono text-xs text-ink/60">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} VRAM</span>
+                  <span>{`Loaded · ${selectedRuntime.device ?? "cpu"}`}</span>
+                  <span className="mt-1 block font-mono text-[10px] text-ink/50">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} VRAM</span>
                 </span>
               ) : selectedRuntimeUnloading ? "Unloading model" : selectedRuntimeActive ? "Loading weights" : runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
             </span>
@@ -267,7 +269,7 @@ export function ModelSelector({
               {runtimeJob.status}: {runtimeJob.message}
             </div>
           ) : null}
-          {!runtimeConnected || error ? <div className="rounded-md border border-rust/40 bg-rust/10 px-3 py-2 text-xs text-rust">{runtimeConnected ? error : "Failed to fetch"}</div> : null}
+          {!runtimeConnected || error ? <div role="alert" className="inline-error text-xs">{!runtimeConnected || error === "Failed to fetch" ? "Backend unavailable. Check that the backend service is running." : error}</div> : null}
         </div>
       ) : null}
     </div>

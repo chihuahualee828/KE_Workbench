@@ -1,6 +1,7 @@
 "use client";
 
-import { ApiStatus, useWorkbenchData } from "@/components/DataState";
+import { PageHeader } from "@/components/PageHeader";
+import { useWorkbenchData } from "@/components/DataState";
 import { EditForm } from "@/components/EditForm";
 import { ModelCacheManager } from "@/components/ModelCacheManager";
 
@@ -8,13 +9,7 @@ export default function EditPage() {
   const { models, patches, runtime, status, refresh } = useWorkbenchData();
   return (
     <div>
-      <section className="section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Edit Patches</h1>
-          <p className="mt-2 text-sm text-ink/70">Create reversible ROME, Knowledge Neurons, and MEMIT patch records, then review saved patch history.</p>
-        </div>
-        <ApiStatus status={status} />
-      </section>
+      <PageHeader eyebrow="Experiment" title="Knowledge edits" description="Create and manage reversible knowledge edits with ROME, Knowledge Neurons, or MEMIT." status={status} />
       <section className="section">
         <EditForm models={models} patches={patches} runtime={runtime} onPatchesChanged={refresh} />
       </section>
