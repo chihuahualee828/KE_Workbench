@@ -4,17 +4,16 @@ import { Check, Copy, Loader2, MessageSquare, Play, SlidersHorizontal, Sparkles 
 import { useState } from "react";
 
 import { api } from "@/lib/api";
-import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import type { ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { PromptEditor } from "./PromptEditor";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
-export function GenerationPanel({ models, patches = [], runtime = [], onPatchesChanged, sessionScope = "generation" }: { models: SupportedModel[]; patches?: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void>; sessionScope?: string }) {
+export function GenerationPanel({ models, runtime = [], onPatchesChanged, sessionScope = "generation" }: { models: SupportedModel[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void>; sessionScope?: string }) {
   const [modelId, setModelId] = usePersistentState("kew:generation:modelId", models[0]?.id ?? "gpt2-xl");
   const [prompt, setPrompt] = usePersistentState("kew:generation:prompt", "The Space Needle is located in the city of");
-  const [patchId, setPatchId] = usePersistentState("kew:generation:patchId", "");
   const [maxNewTokens, setMaxNewTokens] = usePersistentState("kew:generation:maxNewTokens", 32);
   const [decodingStrategy, setDecodingStrategy] = usePersistentState<"greedy" | "sampling" | "beam">("kew:generation:decodingStrategy", "greedy");
   const [temperature, setTemperature] = usePersistentState("kew:generation:temperature", 0.7);
@@ -45,8 +44,7 @@ export function GenerationPanel({ models, patches = [], runtime = [], onPatchesC
         temperature: clampNumber(temperature, 0.01, 5),
         top_p: clampNumber(topP, 0.01, 1),
         top_k: clampNumber(topK, 0, 500),
-        num_beams: clampNumber(numBeams, 1, 16),
-        patch_id: patchId || null
+        num_beams: clampNumber(numBeams, 1, 16)
       });
       setGenerationOutput(sessionScope, result.text);
     } catch (err) {
@@ -94,17 +92,6 @@ export function GenerationPanel({ models, patches = [], runtime = [], onPatchesC
             <NumberInput label="Beams" value={numBeams} onChange={setNumBeams} min={1} max={16} />
           ) : null}
         </div>
-        <label className="grid gap-2">
-          <span className="label">Patch</span>
-          <select className="control" value={patchId} onChange={(event) => setPatchId(event.target.value)}>
-            <option value="">Current active model state</option>
-            {patches.map((patch) => (
-              <option key={patch.patch_id} value={patch.patch_id}>
-                {patch.active ? "Active" : "Saved"} {patch.method.toUpperCase()} {patch.patch_id}
-              </option>
-            ))}
-          </select>
-        </label>
         {!modelLoaded ? <p className="text-xs leading-5 text-ink/55">Load the selected model to enable generation.</p> : null}
         <button className="tool-button" onClick={run} disabled={busy || !prompt.trim() || !modelLoaded} title={modelLoaded ? "Generate completion (Ctrl or ⌘ + Enter)" : "Load the selected model before generating"}>
           {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={15} fill="currentColor" />}
@@ -118,6 +105,7 @@ export function GenerationPanel({ models, patches = [], runtime = [], onPatchesC
         <div className="flex flex-1 flex-col rounded-lg border border-line bg-panel/70" aria-live="polite">
           {busy ? <div className="empty-state flex-1" role="status"><Loader2 size={25} className="animate-spin text-cyan" /><p className="text-sm font-medium">Your model is thinking</p><p className="max-w-xs text-xs leading-5 text-ink/55">The completion will appear here when inference finishes.</p></div> : output ? <pre className="min-h-56 whitespace-pre-wrap p-5 font-sans text-sm leading-7 text-ink">{output}</pre> : <div className="empty-state flex-1"><span className="icon-tile h-12 w-12 bg-white shadow-sm"><Sparkles size={22} strokeWidth={1.5} /></span><p className="mt-1 text-sm font-medium">A prompt is a good place to start</p><p className="max-w-xs text-xs leading-5 text-ink/55">Choose a model, write a prompt, and generate a completion to explore its knowledge.</p><span className="mt-2 rounded border border-line bg-white px-2 py-1 text-[10px] text-ink/45">Ctrl / ⌘ + Enter to generate</span></div>}
         </div>
+        <p className="mt-4 text-[11px] leading-5 text-ink/45">Generations use the selected model and its currently active patches.</p>
       </section>
     </div>
   );
