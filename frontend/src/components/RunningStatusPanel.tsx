@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
+import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
 import { listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
 import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
 
@@ -144,7 +145,7 @@ export function RunningStatusPanel() {
           ) : null}
           <div className="max-h-[540px] divide-y divide-line overflow-y-auto rounded-md border border-line">
             {downloadJobs.map((job) => {
-              const status = cache.find((item) => item.model_id === job.model_id) ?? job.cache;
+              const status = downloadJobCache(job, cache);
               const canceling = job.status === "canceling";
               const active = activeDownloadStates.includes(job.status);
               return (
@@ -210,7 +211,7 @@ export function RunningStatusPanel() {
         <ExperimentHistory experiments={experiments} onChanged={refresh} />
       </div>
       {error ? <div className="mt-3 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
-      {details ? <DownloadDetailsDialog job={details} status={cache.find((item) => item.model_id === details.model_id) ?? details.cache} onClose={() => setDetails(null)} /> : null}
+      {details ? <DownloadDetailsDialog job={downloadJobs.find((job) => job.job_id === details.job_id) ?? details} status={downloadJobCache(downloadJobs.find((job) => job.job_id === details.job_id) ?? details, cache)} onClose={() => setDetails(null)} /> : null}
     </section>
   );
 }
@@ -228,32 +229,6 @@ function Progress({ downloadedBytes, totalBytes, active, complete }: { downloade
 
 function jobTitle(job: ModelDownloadJob) {
   return job.source_name ?? job.model_id;
-}
-
-function transferProgress(job: ModelDownloadJob, status?: ModelCacheStatus | null) {
-  if (job.job_type === "local_import") {
-    return {
-      downloadedBytes: job.progress_current_bytes ?? 0,
-      totalBytes: job.progress_total_bytes
-    };
-  }
-  return { downloadedBytes: status?.size_bytes ?? 0, totalBytes: status?.hub_size_bytes };
-}
-
-function formatTransferSize(job: ModelDownloadJob, status?: ModelCacheStatus | null) {
-  const { downloadedBytes, totalBytes } = transferProgress(job, status);
-  if (totalBytes && totalBytes > 0) {
-    const percentage = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
-    return `${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)} (${percentage}%)`;
-  }
-  return formatBytes(downloadedBytes);
-}
-
-function formatBytes(bytes: number) {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function formatState(state: string) {
@@ -296,7 +271,7 @@ function DownloadDetailsDialog({ job, status, onClose }: { job: ModelDownloadJob
           <DownloadDetail label="Status" value={formatState(job.status)} />
           <DownloadDetail label={job.job_type === "local_import" ? "Progress" : "Downloaded"} value={formatTransferSize(job, status)} />
           <DownloadDetail label={job.job_type === "local_import" ? "Transfer" : "Repository"} value={job.job_type === "local_import" ? "Local model import" : job.hf_id} />
-          <DownloadDetail label="Cache state" value={job.job_type === "local_import" ? "Stored in backend data after registration" : status ? formatState(status.cache_state) : "Unknown"} />
+          <DownloadDetail label="Recorded cache state" value={job.job_type === "local_import" ? "Stored in backend data after registration" : status ? formatState(status.cache_state) : "Unknown"} />
           <DownloadDetail label="Started" value={formatTimestamp(job.created_at)} />
           <DownloadDetail label="Updated" value={formatTimestamp(job.updated_at)} />
         </dl>

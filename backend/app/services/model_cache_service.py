@@ -195,6 +195,7 @@ class ModelCacheService:
             "created_at": _now(),
             "updated_at": _now(),
         }
+        job.update(_download_progress_snapshot(job, cache_status))
         with self._lock:
             self._jobs[job_id] = job
             _write_job(job)
@@ -675,12 +676,24 @@ class ModelCacheService:
 
         try:
             model = model_registry.get(model_id)
+            total_bytes = self._hub_size_bytes(model_id)
+            with self._lock:
+                self._jobs[job_id]["progress_total_bytes"] = total_bytes
             process = self._start_snapshot_download_process(model["hf_id"])
             with self._lock:
                 self._jobs[job_id]["process_pid"] = process.pid
                 _write_job(self._jobs[job_id])
 
+            last_snapshot = 0.0
             while process.poll() is None:
+                if time.monotonic() - last_snapshot >= 2:
+                    try:
+                        self._capture_download_progress(job_id)
+                    except Exception:
+                        # A transient inspection/storage error must not orphan
+                        # the running downloader. Retry on the next interval.
+                        pass
+                    last_snapshot = time.monotonic()
                 if self._download_cancel_requested(job_id):
                     _terminate_process(process.pid)
                     try:
@@ -692,10 +705,11 @@ class ModelCacheService:
                 time.sleep(0.5)
 
             _, error_output = process.communicate()
+            # Capture the transfer before cancellation deletes its partial files.
+            status = self._capture_download_progress(job_id)
 
             if self._download_cancel_requested(job_id):
                 self._delete_download_cache(model["hf_id"])
-                status = self._cache_status(model_id, include_active_job=False)
                 with self._lock:
                     self._jobs[job_id].update(
                         {
@@ -718,7 +732,6 @@ class ModelCacheService:
                     )
                 )
 
-            status = self._cache_status(model_id, include_active_job=False)
             if not status["cached"]:
                 raise RuntimeError(
                     "Download command finished, but the local Hugging Face cache is incomplete. "
@@ -736,6 +749,11 @@ class ModelCacheService:
                 self._jobs[job_id].pop("process_pid", None)
                 _write_job(self._jobs[job_id])
         except Exception as exc:
+            try:
+                self._capture_download_progress(job_id)
+            except Exception:
+                # Retain the last snapshot if cache inspection also fails.
+                pass
             with self._lock:
                 self._jobs[job_id].update(
                     {
@@ -746,6 +764,21 @@ class ModelCacheService:
                 )
                 self._jobs[job_id].pop("process_pid", None)
                 _write_job(self._jobs[job_id])
+
+    def _capture_download_progress(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = dict(self._jobs[job_id])
+        status = self._cache_status(
+            job["model_id"],
+            include_active_job=False,
+            hub_size_bytes=job.get("progress_total_bytes"),
+        )
+        with self._lock:
+            current = self._jobs[job_id]
+            if current["status"] in ACTIVE_DOWNLOAD_STATUSES:
+                current.update(_download_progress_snapshot(current, status))
+                _write_job(current)
+        return status
 
     def _model_cache_path(self, hf_id: str) -> Path:
         cache_root = _hf_cache_root()
@@ -868,8 +901,9 @@ class ModelCacheService:
             return job
         if job["status"] == "canceling":
             model = model_registry.get(job["model_id"])
-            self._delete_download_cache(model["hf_id"])
             status = self._cache_status(job["model_id"], include_active_job=False)
+            job.update(_download_progress_snapshot(job, status))
+            self._delete_download_cache(model["hf_id"])
             job.update(
                 {
                     "status": "canceled",
@@ -882,6 +916,7 @@ class ModelCacheService:
             _write_job(job)
             return job
         status = self._cache_status(job["model_id"], include_active_job=False)
+        job.update(_download_progress_snapshot(job, status))
         if status["cached"]:
             job.update(
                 {
@@ -908,6 +943,19 @@ class ModelCacheService:
             _write_job(job)
             return job
         return job
+
+
+def _download_progress_snapshot(job: dict[str, Any], status: dict[str, Any]) -> dict[str, Any]:
+    """Freeze progress on this job, independently of subsequent cache changes."""
+    downloaded = status["size_bytes"]
+    total = status.get("hub_size_bytes") or job.get("progress_total_bytes")
+    if total is None and status.get("cached"):
+        total = downloaded
+    return {
+        "cache": {**status, "active_job": None},
+        "progress_current_bytes": downloaded,
+        "progress_total_bytes": total,
+    }
 
 
 def _hf_cache_root() -> Path:
