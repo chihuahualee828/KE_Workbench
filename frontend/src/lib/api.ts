@@ -285,6 +285,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  romeSequentialEdits: (body: {
+    model_id: string;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
+    target_layer: number;
+    evaluation_prompts: string[];
+    mom2_adjustment?: boolean;
+  }) =>
+    request<EditJob>("/api/edit/rome/sequential", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
   memitEdit: (body: {
     model_id: string;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;

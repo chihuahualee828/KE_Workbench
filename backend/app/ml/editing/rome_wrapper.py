@@ -19,6 +19,7 @@ def run_rome_edit(
     portability_inputs: dict | None,
     sequential_edit: bool,
     mom2_adjustment: bool,
+    generate_evaluation: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -38,6 +39,7 @@ def run_rome_edit(
                 "portability_inputs": portability_inputs,
                 "sequential_edit": sequential_edit,
                 "mom2_adjustment": mom2_adjustment,
+                "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
         )
@@ -66,12 +68,81 @@ def run_rome_edit(
         layer_source=layer_source,
         mom2_adjustment=mom2_adjustment,
     )
-    result["generations"] = _generate_evaluation_outputs(
-        model_id=model_id,
-        patch_id=result["patch_id"],
-        prompts=evaluation_prompts,
-    )
+    if generate_evaluation:
+        result["generations"] = _generate_evaluation_outputs(
+            model_id=model_id,
+            patch_id=result["patch_id"],
+            prompts=evaluation_prompts,
+        )
     return result
+
+
+def run_rome_sequential_edits(
+    model_id: str,
+    edits: list[dict],
+    target_layer: int,
+    evaluation_prompts: list[str],
+    mom2_adjustment: bool,
+) -> dict:
+    from app.services.model_runtime_service import model_runtime_service
+
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "rome_sequential_edits",
+            {
+                "model_id": model_id,
+                "edits": edits,
+                "target_layer": target_layer,
+                "evaluation_prompts": evaluation_prompts,
+                "mom2_adjustment": mom2_adjustment,
+            },
+            timeout=7200.0,
+        )
+
+    if not edits:
+        raise ValueError("ROME sequential series needs at least one fact.")
+
+    patch_results: list[dict] = []
+    for index, raw_edit in enumerate(edits, start=1):
+        edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
+        subject = str(edit.get("subject") or "").strip()
+        relation_prompt = str(edit.get("relation_prompt") or "").strip()
+        new_object = str(edit.get("new_object") or "").strip()
+        if not subject or not relation_prompt or not new_object:
+            raise ValueError(
+                f"ROME sequential series fact {index} needs a subject, relation prompt, and new object."
+            )
+        print(f"Applying ROME sequential edit {index}/{len(edits)}.")
+        result = run_rome_edit(
+            model_id=model_id,
+            subject=subject,
+            relation_prompt=relation_prompt,
+            new_object=new_object,
+            ground_truth=str(edit["ground_truth"]).strip() if edit.get("ground_truth") else None,
+            target_layer=target_layer,
+            evaluation_prompts=[],
+            rephrase_prompts=[str(prompt) for prompt in edit.get("rephrase_prompts", [])],
+            locality_inputs=None,
+            portability_inputs=None,
+            sequential_edit=True,
+            mom2_adjustment=mom2_adjustment,
+            generate_evaluation=False,
+        )
+        patch_results.append(result)
+        print(f"Created patch {result['patch_id']} for ROME sequential edit {index}/{len(edits)}.")
+
+    final_patch_id = patch_results[-1]["patch_id"]
+    return {
+        "patch_id": final_patch_id,
+        "patch_ids": [result["patch_id"] for result in patch_results],
+        "patch_count": len(patch_results),
+        "sequential_edit": True,
+        "generations": _generate_evaluation_outputs(
+            model_id=model_id,
+            patch_id=final_patch_id,
+            prompts=evaluation_prompts,
+        ),
+    }
 
 
 def _generate_evaluation_outputs(model_id: str, patch_id: str, prompts: list[str]) -> list[dict]:

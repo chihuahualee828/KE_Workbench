@@ -17,7 +17,7 @@ import { useWorkbenchSession } from "./WorkbenchSession";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
 
-type MemitEditDraft = {
+type FactEditDraft = {
   subject: string;
   relation_prompt: string;
   ground_truth: string;
@@ -25,7 +25,7 @@ type MemitEditDraft = {
   rephrase_prompts?: string[];
 };
 
-type MemitEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
@@ -256,6 +256,9 @@ function RomeForm({
   const [relationPrompt, setRelationPrompt] = usePersistentState("kew:edit:rome:relationPrompt", "{} is located in the city of");
   const [newObject, setNewObject] = usePersistentState("kew:edit:rome:newObject", "Paris");
   const [groundTruth, setGroundTruth] = usePersistentState("kew:edit:rome:groundTruth", "Seattle");
+  const [editMode, setEditMode] = usePersistentState<"single" | "series">("kew:edit:rome:editMode", "single");
+  const [seriesEdits, setSeriesEdits] = usePersistentState("kew:edit:rome:seriesEdits", '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
+  const [seriesEditorMode, setSeriesEditorMode] = usePersistentState<"form" | "json">("kew:edit:rome:seriesEditorMode", "form");
   const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>("kew:edit:rome:targetLayers", EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
   const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:rome:evaluationPrompts", "The landmark called the Space Needle can be found in");
@@ -275,6 +278,8 @@ function RomeForm({
   const targetLayerNumber = parseLayer(targetLayer, maxLayer);
   const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const seriesEditDrafts = useMemo(() => parseFactEditDrafts(seriesEdits), [seriesEdits]);
+  const isSeriesEdit = editMode === "series";
 
   useLoadedModelSelection(romeModels, runtime, setModelId);
 
@@ -322,17 +327,25 @@ function RomeForm({
     setResult(null);
     setJob(null);
     try {
-      const response = await api.romeEdit({
-        model_id: modelId,
-        subject,
-        relation_prompt: relationPrompt,
-        new_object: newObject,
-        ground_truth: groundTruth || null,
-        target_layer: targetLayerNumber,
-        evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
-        sequential_edit: sequentialEdit,
-        mom2_adjustment: mom2Adjustment
-      });
+      const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
+      const response = isSeriesEdit
+        ? await startRomeSequentialSeries(seriesEditDrafts, {
+            modelId,
+            targetLayer: targetLayerNumber,
+            evaluationPrompts: prompts,
+            mom2Adjustment
+          })
+        : await api.romeEdit({
+            model_id: modelId,
+            subject,
+            relation_prompt: relationPrompt,
+            new_object: newObject,
+            ground_truth: groundTruth || null,
+            target_layer: targetLayerNumber,
+            evaluation_prompts: prompts,
+            sequential_edit: sequentialEdit,
+            mom2_adjustment: mom2Adjustment
+          });
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
@@ -350,7 +363,7 @@ function RomeForm({
   }
 
   async function locateLayer() {
-    if (!selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()) return;
+    if (isSeriesEdit || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()) return;
     setLocatingLayer(true);
     setError("");
     setLayerNotice("");
@@ -404,10 +417,30 @@ function RomeForm({
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={romeModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
-        <TextInput label="Subject" value={subject} onChange={setSubject} />
-        <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
-        <TextInput label="New Object" value={newObject} onChange={setNewObject} />
-        <TextInput label="Ground Truth" value={groundTruth} onChange={setGroundTruth} />
+        <div className="grid gap-2">
+          <span className="label">Edit Mode</span>
+          <div className="inline-flex w-fit rounded-md border border-line bg-white p-1">
+            <button aria-pressed={!isSeriesEdit} className={`rounded px-2 py-1 text-xs ${!isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("single")} type="button">Single fact</button>
+            <button aria-pressed={isSeriesEdit} className={`rounded px-2 py-1 text-xs ${isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("series")} type="button">Sequential series</button>
+          </div>
+        </div>
+        {isSeriesEdit ? (
+          <RomeSeriesEditor
+            drafts={seriesEditDrafts}
+            editorMode={seriesEditorMode}
+            value={seriesEdits}
+            onChange={setSeriesEdits}
+            onEditorModeChange={setSeriesEditorMode}
+            onError={setError}
+          />
+        ) : (
+          <>
+            <TextInput label="Subject" value={subject} onChange={setSubject} />
+            <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
+            <TextInput label="New Object" value={newObject} onChange={setNewObject} />
+            <TextInput label="Ground Truth" value={groundTruth} onChange={setGroundTruth} />
+          </>
+        )}
         <label className="grid gap-2">
           <span className="label">Edit Layer</span>
           <div className="grid grid-cols-[minmax(0,1fr)_40px] gap-2">
@@ -429,8 +462,8 @@ function RomeForm({
               type="button"
               className="ghost-button h-10 min-h-10 px-0"
               onClick={locateLayer}
-              disabled={busy || locatingLayer || !modelLoaded || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()}
-              title={locatingLayer ? "Running causal trace" : !modelLoaded ? "Load the selected model before causal tracing" : selectedModel?.supports_causal_trace ? "Run causal tracing on the current fact and fill the selected edit layer" : "Causal tracing is not available for this model"}
+              disabled={busy || locatingLayer || isSeriesEdit || !modelLoaded || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()}
+              title={isSeriesEdit ? "Causal trace a fact in single-fact mode, then use that layer for the series" : locatingLayer ? "Running causal trace" : !modelLoaded ? "Load the selected model before causal tracing" : selectedModel?.supports_causal_trace ? "Run causal tracing on the current fact and fill the selected edit layer" : "Causal tracing is not available for this model"}
             >
               {locatingLayer ? <Loader2 className="animate-spin" size={16} /> : <LocateFixed size={16} />}
             </button>
@@ -439,6 +472,7 @@ function RomeForm({
             <span>Valid layers: 0-{maxLayer}</span>
             <span>EasyEdit default: {easyEditDefaultLayer ?? "Loading..."}</span>
           </div>
+          {isSeriesEdit ? <span className="text-xs text-ink/60">Each fact in this series uses the selected layer.</span> : null}
           {layerNotice ? <span className="text-xs text-cyan">{layerNotice}</span> : null}
         </label>
         <div className="grid gap-2">
@@ -458,8 +492,8 @@ function RomeForm({
           <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
         </div>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>Sequential edit</span>
-          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>{isSeriesEdit ? "Sequential edit" : "Sequential edit"}</span>
+          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
@@ -472,9 +506,9 @@ function RomeForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? "Apply ROME edit at the selected layer" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? "Apply each fact as an ordered ROME edit at the selected layer" : "Apply ROME edit at the selected layer" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
-          {busy ? "Editing" : "Apply ROME"}
+          {busy ? "Editing" : isSeriesEdit ? "Apply ROME Series" : "Apply ROME"}
         </button>
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
@@ -482,6 +516,112 @@ function RomeForm({
       <ResultPanel result={result} job={job} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="rome" onClose={() => setMom2CacheOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function RomeSeriesEditor({
+  drafts,
+  editorMode,
+  value,
+  onChange,
+  onEditorModeChange,
+  onError
+}: {
+  drafts: FactEditDraft[] | null;
+  editorMode: "form" | "json";
+  value: string;
+  onChange: (value: string) => void;
+  onEditorModeChange: (value: "form" | "json") => void;
+  onError: (value: string) => void;
+}) {
+  function updateDraft(index: number, field: FactEditableField, fieldValue: string) {
+    if (!drafts) return;
+    onChange(JSON.stringify(drafts.map((edit, editIndex) => editIndex === index ? { ...edit, [field]: fieldValue } : edit), null, 2));
+  }
+
+  function addDraft() {
+    onChange(JSON.stringify([...(drafts ?? []), emptyFactEditDraft()], null, 2));
+  }
+
+  function removeDraft(index: number) {
+    if (!drafts) return;
+    onChange(JSON.stringify(drafts.filter((_, editIndex) => editIndex !== index), null, 2));
+  }
+
+  async function uploadJson(file: File | null) {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!Array.isArray(parsed)) throw new Error("ROME series JSON must be an array of fact objects.");
+      onChange(JSON.stringify(parsed, null, 2));
+      onEditorModeChange("form");
+      onError("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function showFormEditor() {
+    if (!drafts) {
+      onError("Fix the sequential series JSON before switching to the form editor.");
+      return;
+    }
+    onError("");
+    onEditorModeChange("form");
+  }
+
+  function formatJson() {
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) throw new Error("ROME series JSON must be an array of fact objects.");
+      onChange(JSON.stringify(parsed, null, 2));
+      onError("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="label">Sequential Facts</span>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-md border border-line bg-white p-1">
+            <button aria-pressed={editorMode === "form"} className={`rounded px-2 py-1 text-xs ${editorMode === "form" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={showFormEditor} type="button">Form</button>
+            <button aria-pressed={editorMode === "json"} className={`rounded px-2 py-1 text-xs ${editorMode === "json" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => onEditorModeChange("json")} type="button">JSON</button>
+          </div>
+          <label className="ghost-button grid size-8 shrink-0 cursor-pointer place-items-center p-0" title="Upload ROME sequential facts JSON">
+            <Upload size={14} />
+            <input className="sr-only" type="file" accept="application/json,.json" onChange={(event) => {
+              void uploadJson(event.target.files?.[0] ?? null);
+              event.target.value = "";
+            }} />
+          </label>
+        </div>
+      </div>
+      {editorMode === "form" && drafts ? (
+        <div className="grid max-h-96 gap-3 overflow-y-auto pr-1">
+          {drafts.map((edit, index) => (
+            <section key={index} className="grid gap-3 border border-line bg-panel p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium">Fact {index + 1}</span>
+                <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={drafts.length === 1} onClick={() => removeDraft(index)} title="Remove fact" type="button"><Trash2 size={15} /></button>
+              </div>
+              <FactInput label="Subject" value={edit.subject} onChange={(fieldValue) => updateDraft(index, "subject", fieldValue)} />
+              <FactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(fieldValue) => updateDraft(index, "relation_prompt", fieldValue)} />
+              <FactInput label="New Object" value={edit.new_object} onChange={(fieldValue) => updateDraft(index, "new_object", fieldValue)} />
+              <FactInput label="Ground Truth" value={edit.ground_truth} onChange={(fieldValue) => updateDraft(index, "ground_truth", fieldValue)} />
+            </section>
+          ))}
+          <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={addDraft} type="button"><Plus size={14} />Add fact</button>
+        </div>
+      ) : (
+        <>
+          <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={formatJson} type="button">Format JSON</button></div>
+          <textarea className="control min-h-64 font-mono text-xs" value={value} onChange={(event) => onChange(event.target.value)} />
+        </>
+      )}
     </div>
   );
 }
@@ -524,7 +664,7 @@ function MemitForm({
   const selectedLayers = parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
-  const editDrafts = useMemo(() => parseMemitEditDrafts(edits), [edits]);
+  const editDrafts = useMemo(() => parseFactEditDrafts(edits), [edits]);
 
   useLoadedModelSelection(memitModels, runtime, setModelId);
 
@@ -567,7 +707,7 @@ function MemitForm({
       if (!edits.trim()) {
         throw new Error("Batch Edits JSON is empty. Add at least one MEMIT fact.");
       }
-      const parsedEdits = parseMemitEditDrafts(edits);
+      const parsedEdits = parseFactEditDrafts(edits);
       if (!parsedEdits) {
         throw new Error("Batch Edits JSON is invalid. Use a JSON array of MEMIT fact objects.");
       }
@@ -624,14 +764,14 @@ function MemitForm({
     }
   }
 
-  function updateEditDraft(index: number, field: MemitEditableField, value: string) {
+  function updateEditDraft(index: number, field: FactEditableField, value: string) {
     if (!editDrafts) return;
     setEdits(JSON.stringify(editDrafts.map((edit, editIndex) => editIndex === index ? { ...edit, [field]: value } : edit), null, 2));
   }
 
   function addEditDraft() {
     const nextEdits = editDrafts ?? [];
-    setEdits(JSON.stringify([...nextEdits, emptyMemitEditDraft()], null, 2));
+    setEdits(JSON.stringify([...nextEdits, emptyFactEditDraft()], null, 2));
   }
 
   function removeEditDraft(index: number) {
@@ -719,10 +859,10 @@ function MemitForm({
                       <Trash2 size={15} />
                     </button>
                   </div>
-                  <MemitFactInput label="Subject" value={edit.subject} onChange={(value) => updateEditDraft(index, "subject", value)} />
-                  <MemitFactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(value) => updateEditDraft(index, "relation_prompt", value)} />
-                  <MemitFactInput label="New Object" value={edit.new_object} onChange={(value) => updateEditDraft(index, "new_object", value)} />
-                  <MemitFactInput label="Ground Truth" value={edit.ground_truth} onChange={(value) => updateEditDraft(index, "ground_truth", value)} />
+                  <FactInput label="Subject" value={edit.subject} onChange={(value) => updateEditDraft(index, "subject", value)} />
+                  <FactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(value) => updateEditDraft(index, "relation_prompt", value)} />
+                  <FactInput label="New Object" value={edit.new_object} onChange={(value) => updateEditDraft(index, "new_object", value)} />
+                  <FactInput label="Ground Truth" value={edit.ground_truth} onChange={(value) => updateEditDraft(index, "ground_truth", value)} />
                 </section>
               ))}
               <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={addEditDraft} type="button">
@@ -928,6 +1068,45 @@ function buildEditPrompt(subject: string, relationPrompt: string) {
   return relationPrompt.includes("{}") ? relationPrompt.replace("{}", subject) : `${subject} ${relationPrompt}`.trim();
 }
 
+async function startRomeSequentialSeries(
+  drafts: FactEditDraft[] | null,
+  {
+    modelId,
+    targetLayer,
+    evaluationPrompts,
+    mom2Adjustment
+  }: {
+    modelId: string;
+    targetLayer: number;
+    evaluationPrompts: string[];
+    mom2Adjustment: boolean;
+  }
+) {
+  if (!drafts) {
+    throw new Error("Sequential Facts JSON is invalid. Use a JSON array of ROME fact objects.");
+  }
+  if (!drafts.length) {
+    throw new Error("Sequential Facts JSON must include at least one ROME fact.");
+  }
+  if (drafts.length > 100) {
+    throw new Error("ROME sequential series supports at most 100 facts at once.");
+  }
+  const invalidEdit = drafts.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
+  if (invalidEdit >= 0) {
+    throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
+  }
+  return api.romeSequentialEdits({
+    model_id: modelId,
+    edits: drafts.map((edit) => ({
+      ...edit,
+      ground_truth: edit.ground_truth.trim() || null
+    })),
+    target_layer: targetLayer,
+    evaluation_prompts: evaluationPrompts,
+    mom2_adjustment: mom2Adjustment
+  });
+}
+
 type ModelArchiveWritable = WritableStream<Uint8Array> & {
   abort: () => Promise<void>;
 };
@@ -945,7 +1124,7 @@ function safeFilename(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "edited-model";
 }
 
-function emptyMemitEditDraft(): MemitEditDraft {
+function emptyFactEditDraft(): FactEditDraft {
   return {
     subject: "",
     relation_prompt: "{} is",
@@ -954,12 +1133,12 @@ function emptyMemitEditDraft(): MemitEditDraft {
   };
 }
 
-function parseMemitEditDrafts(value: string): MemitEditDraft[] | null {
+function parseFactEditDrafts(value: string): FactEditDraft[] | null {
   try {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return null;
     return parsed.map((item) => {
-      if (!item || typeof item !== "object") return emptyMemitEditDraft();
+      if (!item || typeof item !== "object") return emptyFactEditDraft();
       const edit = item as Record<string, unknown>;
       return {
         subject: typeof edit.subject === "string" ? edit.subject : "",
@@ -976,7 +1155,7 @@ function parseMemitEditDrafts(value: string): MemitEditDraft[] | null {
   }
 }
 
-function MemitFactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function FactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="grid gap-1">
       <span className="label">{label}</span>
