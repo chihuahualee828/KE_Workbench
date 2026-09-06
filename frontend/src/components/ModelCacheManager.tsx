@@ -584,6 +584,8 @@ function LocalModelDetailsDialog({ model, onClose }: { model: SupportedModel; on
           </button>
         </div>
         <dl className="mt-5 grid gap-x-4 gap-y-3 rounded-md border border-line bg-panel p-4 text-sm sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <dt className="text-ink/60">Model ID</dt>
+          <dd className="break-all font-mono text-xs">{model.id}</dd>
           <dt className="text-ink/60">Upload ID</dt>
           <dd className="break-all font-mono text-xs">{model.import_metadata?.import_id ?? "Not recorded"}</dd>
           <dt className="text-ink/60">Uploaded</dt>

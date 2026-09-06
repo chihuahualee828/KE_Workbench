@@ -49,6 +49,8 @@ export function ModelSelector({
   );
   const selectedRuntimeActive = runtimeJob?.model_id === value && ["queued", "loading"].includes(runtimeJob.status);
   const selectedRuntimeUnloading = unloadingModelId === value;
+  const hubModels = models.filter((model) => model.source !== "local");
+  const importedModels = models.filter((model) => model.source === "local");
 
   useEffect(() => {
     if (models.length && !models.some((model) => model.id === value)) {
@@ -225,14 +227,15 @@ export function ModelSelector({
         <span className="label">Model</span>
         <select className="control" value={value} disabled={!models.length} onChange={(event) => onChange(event.target.value)}>
           {!models.length ? <option value={value}>No models available</option> : null}
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.name}
-            </option>
-          ))}
+          {hubModels.length ? <optgroup label="Hugging Face models">
+            {hubModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+          </optgroup> : null}
+          {importedModels.length ? <optgroup label="Imported models">
+            {importedModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+          </optgroup> : null}
         </select>
       </label>
-      {selectedModel ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink/50"><span className="min-w-0 break-all font-mono">{selectedModel.hf_id}</span><span aria-hidden="true">·</span><span>{selectedModel.n_layers} layers</span></div> : null}
+      {selectedModel ? <div className="min-w-0 truncate font-mono text-[11px] text-ink/50" title={modelReference(selectedModel)}>{modelReference(selectedModel)}</div> : null}
       {showCacheControls ? (
         <div className="grid gap-2">
           <div className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-sm">
@@ -283,6 +286,12 @@ export function ModelSelector({
       ) : null}
     </div>
   );
+}
+
+function modelReference(model: SupportedModel) {
+  if (model.source !== "local") return model.hf_id;
+  const baseModel = model.base_model_id || model.architecture_model_type || model.model_type || "local-model";
+  return `${baseModel} / ${model.id}`;
 }
 
 function formatBytes(bytes: number) {

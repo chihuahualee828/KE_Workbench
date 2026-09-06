@@ -57,7 +57,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
-          <PatchHistory patches={patches} runtime={runtime} onPatchesChanged={onPatchesChanged} />
+          <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
           <div className="min-w-0">
             <ResultPanel result={edit.result} job={edit.job} />
           </div>
