@@ -4,6 +4,7 @@ import { Database, KeyRound, Loader2, RefreshCw, Settings, Upload } from "lucide
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { AppSettings, EditJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -197,6 +198,7 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
     setError("");
     try {
       let current = await api.prepareMom2Statistics({ model_id: modelId, method, layers: selectedLayers });
+      announceExperimentStarted(current.experiment_id);
       setJob(current);
       while (current.status === "running") {
         current = await api.waitEditJob(current.job_id, current.logs.length, 60);
