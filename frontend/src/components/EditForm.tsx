@@ -34,7 +34,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
 
   return (
     <div className="grid gap-4">
-      <div className="inline-flex w-fit rounded-md border border-line bg-white p-1">
+      <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-white p-1.5">
         {[
           ["rome", "ROME"],
           ["kn", "KN"],
@@ -43,7 +43,8 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
         ].map(([id, label]) => (
           <button
             key={id}
-            className={`rounded px-3 py-2 text-sm ${tab === id ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`}
+            aria-pressed={tab === id}
+            className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
             onClick={() => setTab(id as "rome" | "kn" | "memit" | "patches")}
           >
             {label}
@@ -158,7 +159,7 @@ function KnForm({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={knModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <div className="rounded-md border border-line bg-panel p-3 text-sm leading-6 text-ink/70">
@@ -402,7 +403,7 @@ function RomeForm({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={romeModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <TextInput label="Subject" value={subject} onChange={setSubject} />
@@ -683,7 +684,7 @@ function MemitForm({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         <div className="grid gap-2">

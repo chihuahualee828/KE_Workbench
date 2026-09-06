@@ -5,12 +5,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#172026",
-        panel: "#f7f8f5",
-        line: "#d9ded5",
-        moss: "#50694f",
-        rust: "#a85632",
-        cyan: "#1c7784"
+        ink: "#202939",
+        panel: "#f6f7fb",
+        line: "#e3e7ef",
+        moss: "#4338ca",
+        rust: "#b45332",
+        cyan: "#5b57d6"
       }
     }
   },
@@ -18,4 +18,3 @@ const config: Config = {
 };
 
 export default config;
-

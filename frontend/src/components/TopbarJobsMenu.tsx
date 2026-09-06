@@ -157,13 +157,15 @@ export function TopbarJobsMenu() {
     <div className="relative" ref={menuRef}>
       <button
         className="relative rounded-md px-3 py-2 text-sm text-ink/70 transition hover:bg-white hover:text-ink"
+        aria-expanded={open}
+        aria-controls="topbar-jobs"
         onClick={() => {
           if (!open) setHasNewDownload(false);
           setOpen((value) => !value);
         }}
         type="button"
       >
-        Jobs
+        <span className="inline-flex items-center gap-2"><Activity size={16} />Jobs</span>
         {activeCount > 0 ? (
           <span className={`ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan px-1.5 py-0.5 text-xs font-semibold text-white ${hasNewDownload ? "animate-pulse ring-2 ring-cyan/30" : ""}`}>
             {activeCount}
@@ -171,7 +173,7 @@ export function TopbarJobsMenu() {
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-30 mt-2 w-[min(92vw,520px)] rounded-md border border-line bg-white p-3 shadow-lg">
+        <div id="topbar-jobs" className="absolute right-0 top-full z-30 mt-2 w-[min(92vw,520px)] rounded-xl border border-line bg-white p-4 shadow-xl">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Activity size={16} />
