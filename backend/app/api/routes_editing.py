@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, JobResponse, PatchListResponse
+from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -23,7 +23,7 @@ from app.ml.editing.easyedit_runtime import (
 )
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
-from app.ml.editing.rome_wrapper import run_rome_edit
+from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 from app.services.patch_service import patch_service
@@ -58,6 +58,16 @@ def rome_edit(request: RomeEditRequest) -> JobResponse:
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
+    return _job_response(job)
+
+
+@router.post("/edit/rome/sequential", response_model=JobResponse)
+def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    _require_mom2_statistics(request.model_id, "rome", [request.target_layer], request.mom2_adjustment)
+    experiment = experiment_service.create("rome_sequential_edits", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread("ROME sequential series", job["id"], run_rome_sequential_edits, request.model_dump())
     return _job_response(job)
 
 
