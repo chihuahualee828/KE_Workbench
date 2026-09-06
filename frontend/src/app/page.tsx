@@ -49,7 +49,7 @@ export default function HomePage() {
         <GenerationPanel models={models} runtime={runtime} onPatchesChanged={refresh} sessionScope="workbench" />
       </section>
 
-      <section className="section" id="patches"><PatchHistory patches={patches} runtime={runtime} onPatchesChanged={refresh} /></section>
+      <section className="section" id="patches"><PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={refresh} /></section>
       <section className="section"><div className="panel"><div className="panel-heading"><div className="flex items-center gap-2"><History size={17} className="text-ink/45" /><h2 className="text-sm font-semibold">Recent experiments</h2></div><Link href="/jobs" className="text-xs font-medium text-cyan hover:underline">View all activity</Link></div><ExperimentHistory experiments={experiments} limit={6} onChanged={refresh} showControls={false} /></div></section>
       <section className="section" id="models"><ModelCacheManager models={models} apiStatus={status} onModelsChanged={refresh} /></section>
     </div>

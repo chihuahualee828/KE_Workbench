@@ -4,15 +4,17 @@ import { GitBranch, Layers, RotateCcw, Save, Trash2, X, XCircle } from "lucide-r
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { ModelRuntimeStatus, Patch } from "@/lib/types";
+import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 
 export function PatchHistory({
   patches,
+  models = [],
   runtime = [],
   onPatchesChanged
 }: {
   patches: Patch[];
+  models?: SupportedModel[];
   runtime?: ModelRuntimeStatus[];
   onPatchesChanged?: () => void | Promise<void>;
 }) {
@@ -56,6 +58,11 @@ export function PatchHistory({
     });
     return latest;
   }, [activePatches]);
+  const modelLabels = useMemo(
+    () => new Map(models.map((model) => [model.id, patchModelLabel(model, models)])),
+    [models]
+  );
+  const modelLabel = (modelId: string) => modelLabels.get(modelId) ?? modelId;
 
   async function discardPatch(patchId: string) {
     setBusyPatchId(patchId);
@@ -177,6 +184,7 @@ export function PatchHistory({
         </div>
         <PatchTable
           patches={activePatches}
+          modelLabel={modelLabel}
           latestActiveIndexByModel={latestActiveIndexByModel}
           busyPatchId={busyPatchId}
           savingPatchId={savingPatchId}
@@ -202,6 +210,7 @@ export function PatchHistory({
         </div>
         <PatchTable
           patches={savedPatches}
+          modelLabel={modelLabel}
           latestActiveIndexByModel={latestActiveIndexByModel}
           busyPatchId={busyPatchId}
           savingPatchId={savingPatchId}
@@ -225,6 +234,7 @@ export function PatchHistory({
       {selectedPatch ? (
         <PatchDetailsDialog
           patch={selectedPatch}
+          modelLabel={modelLabel(selectedPatch.base_model)}
           modelLoaded={runtime.some((status) => status.model_id === selectedPatch.base_model && status.loaded)}
           loading={loadingPatchId === selectedPatch.patch_id}
           onClose={() => setSelectedPatch(null)}
@@ -253,6 +263,7 @@ export function PatchHistory({
 
 function PatchTable({
   patches,
+  modelLabel,
   latestActiveIndexByModel,
   busyPatchId,
   savingPatchId,
@@ -270,6 +281,7 @@ function PatchTable({
   scrollable = false
 }: {
   patches: Patch[];
+  modelLabel: (modelId: string) => string;
   latestActiveIndexByModel: Record<string, number>;
   busyPatchId: string;
   savingPatchId: string;
@@ -362,7 +374,7 @@ function PatchTable({
                 </td>
                 <td className="py-3 pr-3 whitespace-nowrap">{patch.method.toUpperCase()}</td>
                 <td className="hidden py-3 pr-3 2xl:table-cell">
-                  <span className="block truncate" title={patch.base_model}>{patch.base_model}</span>
+                  <span className="block truncate" title={modelLabel(patch.base_model)}>{modelLabel(patch.base_model)}</span>
                 </td>
                 <td className="hidden py-3 pr-3 lg:table-cell">{patch.modified_layers.join(", ") || "-"}</td>
                 <td className="py-3 pr-3">{patch.edits.length}</td>
@@ -453,6 +465,16 @@ function formatPatchDate(value: string) {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (number: number) => String(number).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function patchModelLabel(model: SupportedModel, models: SupportedModel[]) {
+  if (model.source !== "local") return model.name;
+
+  const defaultName = models.find(
+    (candidate) => candidate.source !== "local" && candidate.id === model.base_model_id
+  )?.name;
+  if (!defaultName || model.name !== defaultName) return model.name;
+  return `${defaultName} (${model.id})`;
 }
 
 type LineageGraphRow = {
@@ -546,12 +568,14 @@ function PatchLineageGraph({ row, laneCount }: { row: LineageGraphRow; laneCount
 
 function PatchDetailsDialog({
   patch,
+  modelLabel,
   modelLoaded,
   loading,
   onClose,
   onLoad
 }: {
   patch: Patch;
+  modelLabel: string;
   modelLoaded: boolean;
   loading: boolean;
   onClose: () => void;
@@ -593,7 +617,7 @@ function PatchDetailsDialog({
 
         <dl className="mt-5 grid gap-x-6 gap-y-4 border-y border-line py-4 text-sm sm:grid-cols-2">
           <DetailItem label="Method" value={patch.method.toUpperCase()} />
-          <DetailItem label="Base Model" value={patch.base_model} />
+          <DetailItem label="Base Model" value={modelLabel} />
           <DetailItem label="Created" value={formatPatchDate(patch.created_at)} />
           <DetailItem label="Modified Layers" value={patch.modified_layers.join(", ") || "Not recorded"} />
           <DetailItem label="Edit Mode" value={patch.sequential_edit ? "Sequential" : "Single edit"} />
