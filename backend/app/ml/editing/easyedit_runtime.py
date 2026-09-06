@@ -128,6 +128,7 @@ def run_easyedit(
     metrics = None
     used_loaded_runtime = False
     weights_restored = False
+    mom2_model_identity = None
 
     with model_runtime_service.exclusive_runtime_access():
         active_patch_ids = patch_service.active_patches_for_model(model_id)
@@ -138,6 +139,8 @@ def run_easyedit(
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(easyedit_model_name), method_key)
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         hparams.model_name = (runtime_bundle["model"], runtime_bundle["tokenizer"])
+        if getattr(hparams, "mom2_adjustment", False):
+            mom2_model_identity = _set_loaded_model_mom2_cache_identity(runtime_bundle["model"], model)
 
         try:
             editor = BaseEditor.from_hparams(hparams)
@@ -224,6 +227,7 @@ def run_easyedit(
                 "used_loaded_runtime": used_loaded_runtime,
             }
         finally:
+            _restore_loaded_model_mom2_cache_identity(mom2_model_identity)
             if used_loaded_runtime and baseline_weights and edited_model is not None and not weights_restored:
                 _restore_weights(edited_model, baseline_weights)
             if used_loaded_runtime:
@@ -635,6 +639,43 @@ def _override_model_name(hparams: Any, model: dict[str, Any]) -> None:
         setattr(hparams, "tokenizer_name", model_name)
 
 
+def _mom2_cache_model_name(model: dict[str, Any]) -> str:
+    """Return the stable model identity used by EasyEdit's MOM2 filenames."""
+    base_model_id = model.get("base_model_id")
+    if model.get("source") == "local" and isinstance(base_model_id, str) and base_model_id:
+        try:
+            base_model = model_registry.get(base_model_id)
+        except ValueError:
+            pass
+        else:
+            if base_model.get("source") == "hub":
+                return str(base_model["hf_id"])
+    return str(model.get("hf_id") or model.get("local_path") or model["id"])
+
+
+def _set_loaded_model_mom2_cache_identity(
+    loaded_model: Any,
+    model: dict[str, Any],
+) -> tuple[Any, str] | None:
+    """Temporarily align EasyEdit's model-config cache key with the base model."""
+    config = getattr(loaded_model, "config", None)
+    if config is None or not hasattr(config, "_name_or_path"):
+        return None
+    previous_name = str(config._name_or_path)
+    cache_name = _mom2_cache_model_name(model)
+    if previous_name == cache_name:
+        return None
+    config._name_or_path = cache_name
+    return config, previous_name
+
+
+def _restore_loaded_model_mom2_cache_identity(identity: tuple[Any, str] | None) -> None:
+    if identity is None:
+        return
+    config, previous_name = identity
+    config._name_or_path = previous_name
+
+
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
         return
@@ -738,26 +779,32 @@ def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None
         runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(hparams.model_name), method.lower())
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
+        mom2_model_identity = _set_loaded_model_mom2_cache_identity(
+            runtime_bundle["model"], model_registry.get(model_id)
+        )
 
-        from easyeditor.models.rome.layer_stats import layer_stats
+        try:
+            from easyeditor.models.rome.layer_stats import layer_stats
 
-        for layer in effective_layers:
-            path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
-            if path.exists():
-                print(f"MOM2 statistics already cached for layer {layer}: {path}")
-                continue
-            print(f"Preparing MOM2 statistics for layer {layer}: {path}")
-            layer_stats(
-                runtime_bundle["model"],
-                runtime_bundle["tokenizer"],
-                str(getattr(hparams, "rewrite_module_tmp")).format(layer),
-                getattr(hparams, "stats_dir"),
-                getattr(hparams, "mom2_dataset"),
-                to_collect=["mom2"],
-                sample_size=getattr(hparams, "mom2_n_samples"),
-                precision=getattr(hparams, "mom2_dtype"),
-                hparams=hparams,
-            )
+            for layer in effective_layers:
+                path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
+                if path.exists():
+                    print(f"MOM2 statistics already cached for layer {layer}: {path}")
+                    continue
+                print(f"Preparing MOM2 statistics for layer {layer}: {path}")
+                layer_stats(
+                    runtime_bundle["model"],
+                    runtime_bundle["tokenizer"],
+                    str(getattr(hparams, "rewrite_module_tmp")).format(layer),
+                    getattr(hparams, "stats_dir"),
+                    getattr(hparams, "mom2_dataset"),
+                    to_collect=["mom2"],
+                    sample_size=getattr(hparams, "mom2_n_samples"),
+                    precision=getattr(hparams, "mom2_dtype"),
+                    hparams=hparams,
+                )
+        finally:
+            _restore_loaded_model_mom2_cache_identity(mom2_model_identity)
 
     return get_mom2_statistics_status(model_id, method, effective_layers)
 
@@ -911,7 +958,7 @@ def _load_mom2_cache_profile(
 
     return (
         SimpleNamespace(
-            model_name=model.get("local_path") or model["hf_id"],
+            model_name=_mom2_cache_model_name(model),
             stats_dir=str(_mom2_stats_dir()),
             rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
             mom2_dataset=str(payload["mom2_dataset"]),

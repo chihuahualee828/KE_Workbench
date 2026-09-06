@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -69,3 +70,28 @@ mom2_dtype: float32
     assert result["dataset"] == "wikipedia"
     assert [entry["layer"] for entry in result["statistics"]] == [1]
     assert result["statistics"][0]["filename"] == cache_path.name
+
+
+def test_imported_model_reuses_base_model_mom2_cache_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    imported_model = {
+        "id": "gpt2-xl_local6",
+        "hf_id": "/models/gpt2-xl_local6",
+        "local_path": "/models/gpt2-xl_local6",
+        "source": "local",
+        "base_model_id": "gpt2-xl",
+    }
+    base_model = {"id": "gpt2-xl", "hf_id": "gpt2-xl", "source": "hub"}
+    monkeypatch.setattr(
+        easyedit_runtime.model_registry,
+        "get",
+        lambda model_id: base_model if model_id == "gpt2-xl" else imported_model,
+    )
+
+    assert easyedit_runtime._mom2_cache_model_name(imported_model) == "gpt2-xl"
+
+    runtime_model = SimpleNamespace(config=SimpleNamespace(_name_or_path="/models/gpt2-xl_local6"))
+    identity = easyedit_runtime._set_loaded_model_mom2_cache_identity(runtime_model, imported_model)
+
+    assert runtime_model.config._name_or_path == "gpt2-xl"
+    easyedit_runtime._restore_loaded_model_mom2_cache_identity(identity)
+    assert runtime_model.config._name_or_path == "/models/gpt2-xl_local6"
