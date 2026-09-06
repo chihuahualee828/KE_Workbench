@@ -224,30 +224,32 @@ function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDeta
       }}
       role="presentation"
     >
-      <section aria-modal="true" className="my-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-md border border-line bg-white p-5 shadow-xl" role="dialog">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-base font-semibold">
-              <ExperimentStatusIcon status={details.status} />
-              <span>{formatExperimentType(details.type)}</span>
+      <section aria-modal="true" className="my-auto w-full max-w-3xl overflow-hidden rounded-md border border-line bg-white shadow-xl" role="dialog">
+        <div className="max-h-[90vh] overflow-y-auto p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-base font-semibold">
+                <ExperimentStatusIcon status={details.status} />
+                <span>{formatExperimentType(details.type)}</span>
+              </div>
+              <div className="mt-1 font-mono text-xs text-ink/60">{details.id}</div>
             </div>
-            <div className="mt-1 font-mono text-xs text-ink/60">{details.id}</div>
+            <button aria-label="Close experiment details" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
           </div>
-          <button aria-label="Close experiment details" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
+
+          <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
+            <Detail label="Status" value={details.status} />
+            <Detail label="Model" value={details.model_id} />
+            <Detail label="Created" value={formatTimestamp(details.created_at)} />
+            <Detail label="Updated" value={formatTimestamp(details.updated_at ?? details.created_at)} />
+            {details.job ? <Detail label="Job" value={`${details.job.id} · ${details.job.status}`} /> : null}
+            {details.error_message ? <Detail label="Error" value={details.error_message} /> : null}
+          </dl>
+
+          <JsonBlock label="Request" value={details.input_json ?? {}} />
+          {details.result ? <JsonBlock label="Result" value={details.result} /> : null}
+          {details.job?.logs.length ? <JsonBlock label="Job logs" value={details.job.logs} /> : null}
         </div>
-
-        <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-          <Detail label="Status" value={details.status} />
-          <Detail label="Model" value={details.model_id} />
-          <Detail label="Created" value={formatTimestamp(details.created_at)} />
-          <Detail label="Updated" value={formatTimestamp(details.updated_at ?? details.created_at)} />
-          {details.job ? <Detail label="Job" value={`${details.job.id} · ${details.job.status}`} /> : null}
-          {details.error_message ? <Detail label="Error" value={details.error_message} /> : null}
-        </dl>
-
-        <JsonBlock label="Request" value={details.input_json ?? {}} />
-        {details.result ? <JsonBlock label="Result" value={details.result} /> : null}
-        {details.job?.logs.length ? <JsonBlock label="Job logs" value={details.job.logs} /> : null}
       </section>
     </div>,
     document.body
@@ -267,7 +269,9 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
   return (
     <section className="mt-5">
       <h3 className="label">{label}</h3>
-      <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-ink p-3 text-xs text-white">{JSON.stringify(value, null, 2)}</pre>
+      <div className="mt-2 max-h-72 overflow-hidden rounded-md bg-ink">
+        <pre className="max-h-72 overflow-auto p-3 text-xs text-white">{JSON.stringify(value, null, 2)}</pre>
+      </div>
     </section>
   );
 }
