@@ -54,6 +54,8 @@ class CausalTraceRequest(BaseModel):
     target: str
     component: Literal["residual", "mlp", "attention"] = "mlp"
     corruption: CorruptionConfig = Field(default_factory=CorruptionConfig)
+    samples: int = Field(default=10, ge=1, le=32)
+    seed: int = Field(default=1, ge=0, le=2_147_483_647)
 
 
 class RomeEditRequest(BaseModel):
