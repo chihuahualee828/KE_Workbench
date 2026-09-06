@@ -4,7 +4,7 @@ import { Download, HardDrive, Loader2, Upload, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
+import { announceModelDownload, applyCacheStatusToCache, applyDownloadJobToCache, listenForModelCacheStatuses, listenForModelDownloads } from "@/lib/modelDownloadEvents";
 import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 
@@ -142,6 +142,15 @@ export function ModelSelector({
         setJob(downloadJob);
       }
       setCache((current) => applyDownloadJobToCache(current, downloadJob));
+    });
+  }, [value]);
+
+  useEffect(() => {
+    return listenForModelCacheStatuses((status) => {
+      setCache((current) => applyCacheStatusToCache(current, status));
+      if (status.model_id === value && !status.active_job) {
+        setJob(null);
+      }
     });
   }, [value]);
 

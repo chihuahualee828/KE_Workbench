@@ -4,7 +4,7 @@ import { Download, FolderUp, Loader2, PlusCircle, RefreshCw, Trash2, Upload, XCi
 import { Fragment, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
+import { announceModelCacheStatus, announceModelDownload, applyCacheStatusToCache, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
 import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -122,8 +122,9 @@ export function ModelCacheManager({
     if (!runtimeConnected) return;
     setError("");
     try {
-      await api.deleteModelCache({ model_id: modelId });
-      await refresh();
+      const status = await api.deleteModelCache({ model_id: modelId });
+      setCache((current) => applyCacheStatusToCache(current, status));
+      announceModelCacheStatus(status);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

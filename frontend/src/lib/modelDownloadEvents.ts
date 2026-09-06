@@ -1,6 +1,7 @@
 import type { ModelCacheStatus, ModelDownloadJob } from "./types";
 
 const eventName = "kew:model-download-started";
+const cacheStatusEventName = "kew:model-cache-status-changed";
 
 export function announceModelDownload(job: ModelDownloadJob) {
   window.dispatchEvent(new CustomEvent<ModelDownloadJob>(eventName, { detail: job }));
@@ -12,6 +13,18 @@ export function listenForModelDownloads(callback: (job: ModelDownloadJob) => voi
   }
   window.addEventListener(eventName, handle);
   return () => window.removeEventListener(eventName, handle);
+}
+
+export function announceModelCacheStatus(status: ModelCacheStatus) {
+  window.dispatchEvent(new CustomEvent<ModelCacheStatus>(cacheStatusEventName, { detail: status }));
+}
+
+export function listenForModelCacheStatuses(callback: (status: ModelCacheStatus) => void) {
+  function handle(event: Event) {
+    callback((event as CustomEvent<ModelCacheStatus>).detail);
+  }
+  window.addEventListener(cacheStatusEventName, handle);
+  return () => window.removeEventListener(cacheStatusEventName, handle);
 }
 
 export function upsertModelDownloadJob(
@@ -56,4 +69,14 @@ export function applyDownloadJobToCache(
         }
       : status
   );
+}
+
+export function applyCacheStatusToCache(
+  cache: ModelCacheStatus[],
+  status: ModelCacheStatus
+): ModelCacheStatus[] {
+  if (!cache.some((item) => item.model_id === status.model_id)) {
+    return [...cache, status];
+  }
+  return cache.map((item) => item.model_id === status.model_id ? status : item);
 }

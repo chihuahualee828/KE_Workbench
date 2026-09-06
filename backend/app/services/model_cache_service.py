@@ -24,11 +24,17 @@ MODEL_DOWNLOAD_IGNORE_PATTERNS = [
     "*.ot",
     "*.tflite",
 ]
+LEGACY_PYTORCH_WEIGHT_PATTERNS = [
+    "pytorch_model.bin",
+    "pytorch_model.bin.index.json",
+    "pytorch_model-*.bin",
+]
 
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "downloading", "canceling"}
 ACTIVE_IMPORT_STATUSES = {"uploading", "validating", "registering", "canceling"}
 ACTIVE_MODEL_JOB_STATUSES = ACTIVE_DOWNLOAD_STATUSES | ACTIVE_IMPORT_STATUSES
 HUB_SIZE_CACHE_TTL_SECONDS = 6 * 60 * 60
+HUB_SIZE_CACHE_POLICY_VERSION = 2
 
 SNAPSHOT_DOWNLOAD_SCRIPT = """
 import json
@@ -137,25 +143,23 @@ class ModelCacheService:
         now = time.time()
         with self._lock:
             cached = self._hub_sizes.get(hf_id)
-            if cached and now - float(cached.get("checked_at", 0)) < HUB_SIZE_CACHE_TTL_SECONDS:
+            if (
+                cached
+                and cached.get("policy_version") == HUB_SIZE_CACHE_POLICY_VERSION
+                and now - float(cached.get("checked_at", 0)) < HUB_SIZE_CACHE_TTL_SECONDS
+            ):
                 size_bytes = cached.get("size_bytes")
                 return int(size_bytes) if isinstance(size_bytes, int) else None
 
         try:
-            from huggingface_hub import HfApi
-
-            with self._lock:
-                runtime_token = self._runtime_hf_token
-            info = HfApi().model_info(
-                hf_id,
-                files_metadata=True,
-                timeout=10,
-                token=runtime_token or os.getenv("HF_TOKEN") or None,
+            info = self._hub_model_info(hf_id)
+            ignore_patterns = _download_ignore_patterns(
+                [sibling.rfilename for sibling in info.siblings or []]
             )
             size_bytes = sum(
                 size
                 for sibling in info.siblings or []
-                if not _is_ignored_download_file(sibling.rfilename)
+                if not _is_ignored_download_file(sibling.rfilename, ignore_patterns)
                 for size in [_hub_file_size(sibling)]
                 if size is not None
             )
@@ -163,7 +167,11 @@ class ModelCacheService:
             size_bytes = None
 
         with self._lock:
-            self._hub_sizes[hf_id] = {"size_bytes": size_bytes, "checked_at": now}
+            self._hub_sizes[hf_id] = {
+                "size_bytes": size_bytes,
+                "checked_at": now,
+                "policy_version": HUB_SIZE_CACHE_POLICY_VERSION,
+            }
             _write_hub_size_cache(self._hub_sizes)
         return size_bytes
 
@@ -679,7 +687,8 @@ class ModelCacheService:
             total_bytes = self._hub_size_bytes(model_id)
             with self._lock:
                 self._jobs[job_id]["progress_total_bytes"] = total_bytes
-            process = self._start_snapshot_download_process(model["hf_id"])
+            ignore_patterns = self._download_ignore_patterns_for_model(model["hf_id"])
+            process = self._start_snapshot_download_process(model["hf_id"], ignore_patterns)
             with self._lock:
                 self._jobs[job_id]["process_pid"] = process.pid
                 _write_job(self._jobs[job_id])
@@ -790,10 +799,35 @@ class ModelCacheService:
         print(f"Using HF token from {'runtime' if runtime_token else 'env' if os.getenv('HF_TOKEN') else 'none'}")
         return runtime_token or os.getenv("HF_TOKEN") or None
 
-    def _start_snapshot_download_process(self, hf_id: str) -> subprocess.Popen:
+    def _hub_model_info(self, hf_id: str):
+        from huggingface_hub import HfApi
+
+        with self._lock:
+            runtime_token = self._runtime_hf_token
+        return HfApi().model_info(
+            hf_id,
+            files_metadata=True,
+            timeout=10,
+            token=runtime_token or os.getenv("HF_TOKEN") or None,
+        )
+
+    def _download_ignore_patterns_for_model(self, hf_id: str) -> list[str]:
+        try:
+            info = self._hub_model_info(hf_id)
+        except Exception:
+            # If metadata is temporarily unavailable, retain legacy weights so a
+            # model with no safetensors alternative can still be loaded.
+            return list(MODEL_DOWNLOAD_IGNORE_PATTERNS)
+        return _download_ignore_patterns([sibling.rfilename for sibling in info.siblings or []])
+
+    def _start_snapshot_download_process(
+        self,
+        hf_id: str,
+        ignore_patterns: list[str],
+    ) -> subprocess.Popen:
         env = os.environ.copy()
         env["KEW_HF_REPO_ID"] = hf_id
-        env["KEW_HF_IGNORE_PATTERNS"] = json.dumps(MODEL_DOWNLOAD_IGNORE_PATTERNS)
+        env["KEW_HF_IGNORE_PATTERNS"] = json.dumps(ignore_patterns)
         token = self._hf_token()
         if token:
             env["HF_TOKEN"] = token
@@ -1098,8 +1132,25 @@ def _write_hub_size_cache(cache: dict[str, dict[str, Any]]) -> None:
     local_store.write_json("models/hub_size_cache.json", cache)
 
 
-def _is_ignored_download_file(filename: str) -> bool:
-    return any(fnmatch(filename, pattern) for pattern in MODEL_DOWNLOAD_IGNORE_PATTERNS)
+def _download_ignore_patterns(filenames: list[str]) -> list[str]:
+    patterns = list(MODEL_DOWNLOAD_IGNORE_PATTERNS)
+    if _has_safetensors_model_weights(filenames):
+        patterns.extend(LEGACY_PYTORCH_WEIGHT_PATTERNS)
+    return patterns
+
+
+def _is_ignored_download_file(filename: str, ignore_patterns: list[str]) -> bool:
+    return any(fnmatch(filename, pattern) for pattern in ignore_patterns)
+
+
+def _has_safetensors_model_weights(filenames: list[str]) -> bool:
+    for filename in filenames:
+        name = Path(filename).name
+        if name in {"model.safetensors", "model.safetensors.index.json"}:
+            return True
+        if name.startswith("model-") and name.endswith(".safetensors"):
+            return True
+    return False
 
 
 def _hub_file_size(sibling: Any) -> int | None:
@@ -1160,9 +1211,9 @@ def _directory_size(path: Path) -> int:
 
 
 def _inspect_model_cache(path: Path) -> dict[str, Any]:
-    size_bytes = _directory_size(path) if path.exists() else 0
     snapshots_root = path / "snapshots"
     snapshots = [item for item in snapshots_root.iterdir() if item.is_dir()] if snapshots_root.exists() else []
+    size_bytes = _selected_model_cache_size(path, snapshots)
     incomplete_files = list(path.rglob("*.incomplete")) if path.exists() else []
     complete_snapshots = [_snapshot_is_complete(snapshot) for snapshot in snapshots]
     return {
@@ -1173,6 +1224,55 @@ def _inspect_model_cache(path: Path) -> dict[str, Any]:
         "incomplete_file_count": len(incomplete_files),
         "complete": any(item["complete"] for item in complete_snapshots) and not incomplete_files,
     }
+
+
+def _selected_model_cache_size(path: Path, snapshots: list[Path]) -> int:
+    """Measure only files selected by this app's snapshot download policy.
+
+    Hugging Face snapshots link into a blob directory. We count snapshot targets
+    once, omit legacy PyTorch weights when a safetensors equivalent is present,
+    and retain unreferenced blobs so partial-download progress remains visible.
+    """
+    if not path.exists():
+        return 0
+
+    snapshots_root = path / "snapshots"
+    snapshot_target_ids: set[tuple[int, int]] = set()
+    counted_ids: set[tuple[int, int]] = set()
+    total = 0
+
+    for snapshot in snapshots:
+        files = [item for item in snapshot.rglob("*") if item.is_file()]
+        ignore_patterns = _download_ignore_patterns(
+            [str(item.relative_to(snapshot)) for item in files]
+        )
+        for item in files:
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            snapshot_target_ids.add(identity)
+            if _is_ignored_download_file(str(item.relative_to(snapshot)), ignore_patterns):
+                continue
+            if identity not in counted_ids:
+                counted_ids.add(identity)
+                total += stat.st_size
+
+    for item in path.rglob("*"):
+        if snapshots_root in item.parents or not item.is_file():
+            continue
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        identity = (stat.st_dev, stat.st_ino)
+        if identity in snapshot_target_ids or identity in counted_ids:
+            continue
+        counted_ids.add(identity)
+        total += stat.st_size
+
+    return total
 
 
 def _local_model_cache_status(model: dict[str, Any], include_active_job: bool) -> dict[str, Any]:

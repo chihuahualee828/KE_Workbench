@@ -21,7 +21,12 @@ const waiters = new Map<string, Promise<ModelRuntimeJob>>();
 let runtimeConnected = true;
 
 export function announceModelRuntimeLoad(job: ModelRuntimeJob) {
-  if (job.status === "completed") announceActiveRuntimeModel(job.model_id);
+  // Select the requested model as soon as its load job starts. The worker may
+  // still be transferring weights, but every tool should already target the
+  // same model the user chose to load.
+  if (["queued", "loading", "completed"].includes(job.status)) {
+    announceActiveRuntimeModel(job.model_id);
+  }
   window.dispatchEvent(new CustomEvent<ModelRuntimeJob>(eventName, { detail: job }));
 }
 
