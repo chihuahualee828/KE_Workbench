@@ -1,12 +1,12 @@
 # Knowledge Editing Workbench
 
-An interactive LLM knowledge-editing workbench for exploring how factual associations are represented and modified inside transformer language models. The app supports generation, logit lens inspection, causal tracing, ROME and Knowledge Neurons (KN) single-fact edits, MEMIT batch edits, reversible patch management, and before/after evaluation.
+An interactive LLM knowledge-editing workbench for exploring how factual associations are represented and modified inside transformer language models. The app supports generation, logit lens inspection, causal tracing, ROME, r-ROME, and Knowledge Neurons (KN) single-fact edits, MEMIT batch edits, reversible patch management, and before/after evaluation.
 
-This repository ships a runnable MVP scaffold plus a real EasyEdit integration for ROME, KN, and MEMIT editing. The intended setup installs EasyEdit and uses real model weights for generation, inspection, editing, and evaluation.
+This repository ships a runnable MVP scaffold plus a real EasyEdit integration for ROME, r-ROME, KN, and MEMIT editing. The intended setup installs EasyEdit and uses real model weights for generation, inspection, editing, and evaluation.
 
 ## Features
 
-- FastAPI backend with `/api/models`, `/api/generate`, `/api/logit-lens`, `/api/causal-trace`, `/api/edit/rome`, `/api/edit/kn`, `/api/edit/memit`, `/api/patches`, `/api/evaluate`, and `/api/experiments`.
+- FastAPI backend with `/api/models`, `/api/generate`, `/api/logit-lens`, `/api/causal-trace`, `/api/edit/rome`, `/api/edit/r-rome`, `/api/edit/kn`, `/api/edit/memit`, `/api/patches`, `/api/evaluate`, and `/api/experiments`.
 - Next.js frontend with prompt playground, logit lens chart/table, causal tracing heatmap, edit forms, patch history, and evaluation dashboard.
 - Local filesystem storage under `data/experiments` and `data/patches`.
 - Built-in model catalog derived from EasyEdit ROME, KN, and MEMIT hparams, including GPT-2 XL, GPT-J, Baichuan 2, ChatGLM/GLM, InternLM, Llama, Mistral, and Qwen families.
@@ -62,11 +62,12 @@ pip install -e ".[dev,ml]"
 uvicorn app.main:app --reload
 ```
 
-ROME, KN, and MEMIT use EasyEdit via:
+ROME, r-ROME, KN, and MEMIT use EasyEdit via:
 
 - `backend/app/ml/editing/easyedit_runtime.py`
 - `backend/app/ml/editing/kn_wrapper.py`
 - `backend/app/ml/editing/rome_wrapper.py`
+- `backend/app/ml/editing/r_rome_wrapper.py`
 - `backend/app/ml/editing/memit_wrapper.py`
 
 Install EasyEdit into an existing backend virtualenv with:
@@ -78,7 +79,7 @@ pip install -r "$EASYEDIT_ROOT/requirements.txt"
 pip install -e ".[dev,ml]"
 ```
 
-The EasyEdit routes require method hparams such as `hparams/ROME/gpt2-xl.yaml`, `hparams/KN/gpt2-xl.yaml`, and `hparams/MEMIT/gpt2-xl.yaml`. If EasyEdit or the hparams file is missing, the corresponding edit endpoint returns a 503 setup error instead of a fake patch.
+The EasyEdit routes require method hparams such as `hparams/ROME/gpt2-xl.yaml`, `hparams/R-ROME/gpt2-xl.yaml`, `hparams/KN/gpt2-xl.yaml`, and `hparams/MEMIT/gpt2-xl.yaml`. If EasyEdit or the hparams file is missing, the corresponding edit endpoint returns a 503 setup error instead of a fake patch.
 
 Generation applies a saved EasyEdit patch when the selected patch matches the selected model and safetensors deltas were saved.
 
@@ -138,7 +139,7 @@ Example files live in `examples/`.
 
 ## Known Limitations
 
-- ROME/KN/MEMIT require EasyEdit, compatible hparams, and enough GPU memory. EasyEdit’s README reports roughly 10GB VRAM for ROME on GPT-2 XL and 11GB for MEMIT on GPT-2 XL.
+- ROME/r-ROME/KN/MEMIT require EasyEdit, compatible hparams, and enough GPU memory. EasyEdit’s README reports roughly 10GB VRAM for ROME on GPT-2 XL and 11GB for MEMIT on GPT-2 XL.
 - If EasyEdit does not return original changed weights for a method/model combination, the backend can report metrics but may not be able to persist safetensors deltas.
 - No arbitrary model uploads.
 - No production authentication or multi-user collaboration.

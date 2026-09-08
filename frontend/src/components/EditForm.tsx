@@ -28,7 +28,7 @@ type FactEditDraft = {
 type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
-  const [tab, setTab] = usePersistentState<"rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
+  const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
   const setResult = (result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result }));
   const setJob = (job: EditJob | null) => setEdit((current) => ({ ...current, job }));
@@ -38,6 +38,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-white p-1.5">
         {[
           ["rome", "ROME"],
+          ["r_rome", "r-ROME"],
           ["kn", "KN"],
           ["memit", "MEMIT"],
           ["patches", "Patches"]
@@ -46,13 +47,14 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
             key={id}
             aria-pressed={tab === id}
             className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "kn" | "memit" | "patches")}
+            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit" | "patches")}
           >
             {label}
           </button>
         ))}
       </div>
       {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "r_rome" ? <RomeForm method="r_rome" models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "patches" ? (
@@ -234,6 +236,7 @@ async function waitEditJob(jobId: string, afterLogCount: number, timeoutSeconds:
 }
 
 function RomeForm({
+  method = "rome",
   models,
   runtime,
   result,
@@ -242,6 +245,7 @@ function RomeForm({
   setJob,
   onPatchesChanged
 }: {
+  method?: "rome" | "r_rome";
   models: SupportedModel[];
   runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
@@ -250,20 +254,22 @@ function RomeForm({
   setJob: (job: EditJob | null) => void;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
-  const romeModels = useMemo(() => models.filter((model) => model.supports_rome), [models]);
-  const [modelId, setModelId] = usePersistentState("kew:edit:rome:modelId", romeModels[0]?.id ?? "gpt2-xl");
-  const [subject, setSubject] = usePersistentState("kew:edit:rome:subject", "The Space Needle");
-  const [relationPrompt, setRelationPrompt] = usePersistentState("kew:edit:rome:relationPrompt", "{} is located in the city of");
-  const [newObject, setNewObject] = usePersistentState("kew:edit:rome:newObject", "Paris");
-  const [groundTruth, setGroundTruth] = usePersistentState("kew:edit:rome:groundTruth", "Seattle");
-  const [editMode, setEditMode] = usePersistentState<"single" | "series">("kew:edit:rome:editMode", "single");
-  const [seriesEdits, setSeriesEdits] = usePersistentState("kew:edit:rome:seriesEdits", '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
-  const [seriesEditorMode, setSeriesEditorMode] = usePersistentState<"form" | "json">("kew:edit:rome:seriesEditorMode", "form");
-  const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>("kew:edit:rome:targetLayers", EMPTY_LAYER_VALUES);
+  const isRRome = method === "r_rome";
+  const methodLabel = isRRome ? "R-ROME" : "ROME";
+  const supportsSeries = !isRRome;
+  const romeModels = useMemo(() => models.filter((model) => isRRome ? model.supports_r_rome : model.supports_rome), [isRRome, models]);
+  const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, romeModels[0]?.id ?? "gpt2-xl");
+  const [subject, setSubject] = usePersistentState(`kew:edit:${method}:subject`, "The Space Needle");
+  const [relationPrompt, setRelationPrompt] = usePersistentState(`kew:edit:${method}:relationPrompt`, "{} is located in the city of");
+  const [newObject, setNewObject] = usePersistentState(`kew:edit:${method}:newObject`, "Paris");
+  const [groundTruth, setGroundTruth] = usePersistentState(`kew:edit:${method}:groundTruth`, "Seattle");
+  const [editMode, setEditMode] = usePersistentState<"single" | "series">(`kew:edit:${method}:editMode`, "single");
+  const [seriesEdits, setSeriesEdits] = usePersistentState(`kew:edit:${method}:seriesEdits`, '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
+  const [seriesEditorMode, setSeriesEditorMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:seriesEditorMode`, "form");
+  const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>(`kew:edit:${method}:targetLayers`, EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
-  const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:rome:evaluationPrompts", "The landmark called the Space Needle can be found in");
-  const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:rome:sequentialEdit", false);
-  const [mom2Adjustment, setMom2Adjustment] = usePersistentState("kew:edit:rome:mom2Adjustment", false);
+  const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
+  const [mom2Adjustment, setMom2Adjustment] = usePersistentState(`kew:edit:${method}:mom2Adjustment`, false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
@@ -279,7 +285,7 @@ function RomeForm({
   const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const seriesEditDrafts = useMemo(() => parseFactEditDrafts(seriesEdits), [seriesEdits]);
-  const isSeriesEdit = editMode === "series";
+  const isSeriesEdit = supportsSeries && editMode === "series";
 
   useLoadedModelSelection(romeModels, runtime, setModelId);
 
@@ -294,7 +300,7 @@ function RomeForm({
     let active = true;
     if (!selectedModelId) return;
     setLayerNotice("");
-    api.editDefaultLayers({ model_id: selectedModelId, method: "rome" })
+    api.editDefaultLayers({ model_id: selectedModelId, method })
       .then((result) => {
         const defaultLayer = result.layers[0];
         if (!active || !Number.isInteger(defaultLayer) || defaultLayer < 0 || defaultLayer > maxLayer) return;
@@ -311,7 +317,7 @@ function RomeForm({
     return () => {
       active = false;
     };
-  }, [maxLayer, selectedModelId, setTargetLayers]);
+  }, [maxLayer, method, selectedModelId, setTargetLayers]);
 
   async function run() {
     if (!modelLoaded) {
@@ -335,7 +341,7 @@ function RomeForm({
             evaluationPrompts: prompts,
             mom2Adjustment
           })
-        : await api.romeEdit({
+        : await (isRRome ? api.rRomeEdit : api.romeEdit)({
             model_id: modelId,
             subject,
             relation_prompt: relationPrompt,
@@ -363,7 +369,7 @@ function RomeForm({
   }
 
   async function locateLayer() {
-    if (isSeriesEdit || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()) return;
+    if (isRRome || isSeriesEdit || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()) return;
     setLocatingLayer(true);
     setError("");
     setLayerNotice("");
@@ -417,13 +423,13 @@ function RomeForm({
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={romeModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
-        <div className="grid gap-2">
+        {supportsSeries ? <div className="grid gap-2">
           <span className="label">Edit Mode</span>
           <div className="inline-flex w-fit rounded-md border border-line bg-white p-1">
             <button aria-pressed={!isSeriesEdit} className={`rounded px-2 py-1 text-xs ${!isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("single")} type="button">Single fact</button>
             <button aria-pressed={isSeriesEdit} className={`rounded px-2 py-1 text-xs ${isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("series")} type="button">Sequential series</button>
           </div>
-        </div>
+        </div> : null}
         {isSeriesEdit ? (
           <RomeSeriesEditor
             drafts={seriesEditDrafts}
@@ -462,8 +468,8 @@ function RomeForm({
               type="button"
               className="ghost-button h-10 min-h-10 px-0"
               onClick={locateLayer}
-              disabled={busy || locatingLayer || isSeriesEdit || !modelLoaded || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()}
-              title={isSeriesEdit ? "Causal trace a fact in single-fact mode, then use that layer for the series" : locatingLayer ? "Running causal trace" : !modelLoaded ? "Load the selected model before causal tracing" : selectedModel?.supports_causal_trace ? "Run causal tracing on the current fact and fill the selected edit layer" : "Causal tracing is not available for this model"}
+              disabled={isRRome || busy || locatingLayer || isSeriesEdit || !modelLoaded || !selectedModel?.supports_causal_trace || !subject.trim() || !relationPrompt.trim() || !groundTruth.trim()}
+              title={isRRome ? "R-ROME uses its selected EasyEdit layer; causal-trace auto-location is only available for ROME" : isSeriesEdit ? "Causal trace a fact in single-fact mode, then use that layer for the series" : locatingLayer ? "Running causal trace" : !modelLoaded ? "Load the selected model before causal tracing" : selectedModel?.supports_causal_trace ? "Run causal tracing on the current fact and fill the selected edit layer" : "Causal tracing is not available for this model"}
             >
               {locatingLayer ? <Loader2 className="animate-spin" size={16} /> : <LocateFixed size={16} />}
             </button>
@@ -506,16 +512,16 @@ function RomeForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? "Apply each fact as an ordered ROME edit at the selected layer" : "Apply ROME edit at the selected layer" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? "Apply each fact as an ordered ROME edit at the selected layer" : `Apply ${methodLabel} edit at the selected layer` : "Load the selected model before editing"}>
           <FlaskConical size={16} />
-          {busy ? "Editing" : isSeriesEdit ? "Apply ROME Series" : "Apply ROME"}
+          {busy ? "Editing" : isSeriesEdit ? "Apply ROME Series" : `Apply ${methodLabel}`}
         </button>
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
-      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="rome" onClose={() => setMom2CacheOpen(false)} /> : null}
+      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
   );
 }

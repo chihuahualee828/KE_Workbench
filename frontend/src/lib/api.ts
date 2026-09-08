@@ -87,9 +87,11 @@ export const api = {
     supports_logit_lens?: boolean;
     supports_causal_trace?: boolean;
     supports_rome?: boolean;
+    supports_r_rome?: boolean;
     supports_memit?: boolean;
     supports_kn?: boolean;
     rome_hparams?: string | null;
+    r_rome_hparams?: string | null;
     memit_hparams?: string | null;
     kn_hparams?: string | null;
     import_job_id?: string | null;
@@ -233,22 +235,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  editDefaultLayers: (body: { model_id: string; method: "rome" | "memit" }) =>
+  editDefaultLayers: (body: { model_id: string; method: "rome" | "r_rome" | "memit" }) =>
     request<{ layers: number[]; hparams_path: string }>("/api/edit/default-layers", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  mom2StatisticsStatus: (body: { model_id: string; method: "rome" | "memit"; layers?: number[] | null }) =>
+  mom2StatisticsStatus: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null }) =>
     request<{ model_id: string; method: string; mom2_adjustment: boolean; dataset: string; layers: number[]; ready: boolean; missing_layers: number[]; stats_dir?: string; statistics: Array<{ layer: number; path: string; ready: boolean }> }>("/api/edit/mom2/status", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  prepareMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; layers?: number[] | null }) =>
+  prepareMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null }) =>
     request<EditJob>("/api/edit/mom2/prepare", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  importMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; dataset: string; layers: number[]; files: File[] }) => {
+  importMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; dataset: string; layers: number[]; files: File[] }) => {
     const form = new FormData();
     form.set("model_id", body.model_id);
     form.set("method", body.method);
@@ -257,12 +259,12 @@ export const api = {
     body.files.forEach((file) => form.append("files", file));
     return upload<{ ready: boolean; missing_layers: number[]; dataset: string; imported_layers: number[] }>("/api/edit/mom2/import", form);
   },
-  mom2Cache: (body: { model_id: string; method: "rome" | "memit" }) =>
+  mom2Cache: (body: { model_id: string; method: "rome" | "r_rome" | "memit" }) =>
     request<{ model_id: string; method: string; dataset: string; stats_dir: string; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  deleteMom2Statistics: (body: { model_id: string; method: "rome" | "memit"; layers: number[] }) =>
+  deleteMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers: number[] }) =>
     request<{ model_id: string; method: string; dataset: string; stats_dir: string; deleted_layers: number[]; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
       method: "DELETE",
       body: JSON.stringify(body)
@@ -282,6 +284,24 @@ export const api = {
     mom2_adjustment?: boolean;
   }) =>
     request<EditJob>("/api/edit/rome", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  rRomeEdit: (body: {
+    model_id: string;
+    subject: string;
+    relation_prompt: string;
+    new_object: string;
+    ground_truth?: string | null;
+    target_layer?: number | null;
+    evaluation_prompts: string[];
+    rephrase_prompts?: string[];
+    locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    sequential_edit?: boolean;
+    mom2_adjustment?: boolean;
+  }) =>
+    request<EditJob>("/api/edit/r-rome", {
       method: "POST",
       body: JSON.stringify(body)
     }),

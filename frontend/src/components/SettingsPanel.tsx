@@ -132,7 +132,7 @@ export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; r
 }
 
 function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; runtime: ModelRuntimeStatus[] }) {
-  const [method, setMethod] = usePersistentState<"rome" | "memit">("kew:settings:mom2:method", "memit");
+  const [method, setMethod] = usePersistentState<"rome" | "r_rome" | "memit">("kew:settings:mom2:method", "memit");
   const [modelId, setModelId] = usePersistentState("kew:settings:mom2:modelId", "gpt2-xl");
   const [layers, setLayers] = useState("");
   const [dataset, setDataset] = useState("wikipedia");
@@ -142,7 +142,9 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
   const [error, setError] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
   const [cacheOpen, setCacheOpen] = useState(false);
-  const editableModels = models.filter((model) => method === "rome" ? model.supports_rome : model.supports_memit);
+  const editableModels = models.filter((model) =>
+    method === "rome" ? model.supports_rome : method === "r_rome" ? model.supports_r_rome : model.supports_memit
+  );
   const selectedModel = editableModels.find((model) => model.id === modelId);
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
   const selectedLayers = parseLayers(layers, maxLayer);
@@ -248,8 +250,9 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
       <div className="grid gap-2 md:grid-cols-4">
         <label className="grid gap-1">
           <span className="label">Method</span>
-          <select className="control" value={method} onChange={(event) => setMethod(event.target.value as "rome" | "memit") }>
+          <select className="control" value={method} onChange={(event) => setMethod(event.target.value as "rome" | "r_rome" | "memit") }>
             <option value="rome">ROME</option>
+            <option value="r_rome">r-ROME</option>
             <option value="memit">MEMIT</option>
           </select>
         </label>
