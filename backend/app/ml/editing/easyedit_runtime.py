@@ -246,6 +246,176 @@ def run_easyedit(
             _collect_runtime_memory()
 
 
+def evaluate_easyedit_reliability(
+    model_id: str,
+    method: str,
+    edits: list[dict[str, Any]],
+    include_generations: bool = False,
+) -> dict[str, Any]:
+    """Evaluate EasyEdit rewrite and optional rephrase quality on active weights.
+
+    This deliberately bypasses ``BaseEditor.edit``: it reads the currently loaded
+    model (including its active workbench patches) and performs no weight update.
+    A record with ``rephrase_prompt`` makes ``compute_edit_quality`` return both
+    ``rewrite_acc`` and ``rephrase_acc`` for that fact.
+    """
+    method_key = method.lower()
+    spec = METHODS.get(method_key)
+    if spec is None:
+        raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
+
+    model_info = model_registry.get(model_id)
+    if not model_info.get(spec["support_key"], False):
+        raise EasyEditUnsupportedError(f"{model_id} is not configured for {method_key.upper()}.")
+    if not edits:
+        raise ValueError("Provide at least one edit fact to test reliability.")
+
+    _, hparams_cls = _load_easyedit(spec["hparams_class"])
+    hparams = hparams_cls.from_hparams(str(_resolve_hparams_path(model_info, spec["hparams_key"])))
+    _override_model_name(hparams, model_info)
+    model_name = str(model_info.get("local_path") or model_info["hf_id"])
+
+    with model_runtime_service.exclusive_runtime_access():
+        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+        _configure_loaded_tokenizer(runtime_bundle["tokenizer"], model_name, method_key)
+        _override_easyedit_device(hparams, runtime_bundle.get("device"))
+
+        try:
+            evaluation_module = importlib.import_module("easyeditor.evaluate")
+            compute_edit_quality = evaluation_module.compute_edit_quality
+        except (ImportError, AttributeError) as exc:
+            raise EasyEditRuntimeError(
+                "Installed EasyEdit does not expose its edit-quality evaluator."
+            ) from exc
+
+        cases = []
+        for raw_edit in edits:
+            edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
+            subject = str(edit.get("subject") or "").strip()
+            relation_prompt = str(edit.get("relation_prompt") or "").strip()
+            target_new = str(edit.get("new_object") or "").strip()
+            if not subject or not relation_prompt or not target_new:
+                raise ValueError("Each reliability test fact needs a subject, relation prompt, and new object.")
+            prompt = build_prompt(subject, relation_prompt)
+            record = {
+                "prompt": prompt,
+                "target_new": target_new,
+                "ground_truth": str(edit.get("ground_truth") or ""),
+            }
+            rephrase_prompts = [str(value).strip() for value in edit.get("rephrase_prompts") or [] if str(value).strip()]
+            if rephrase_prompts:
+                # ``compute_edit_quality`` evaluates one edit record at a time.
+                # Its rephrase path likewise expects one prompt aligned to this
+                # record, rather than a list of prompts.
+                record["rephrase_prompt"] = rephrase_prompts[0]
+            metrics = _jsonable(
+                compute_edit_quality(
+                    runtime_bundle["model"],
+                    model_name,
+                    hparams,
+                    runtime_bundle["tokenizer"],
+                    record,
+                    hparams.device,
+                )
+            )
+            cases.append(
+                {
+                    "prompt": prompt,
+                    "target_new": target_new,
+                    "reliability_score": _rewrite_accuracy_score(metrics),
+                    "generalization_score": _rephrase_accuracy_score(metrics),
+                    "rephrase_prompt": rephrase_prompts[0] if rephrase_prompts else None,
+                    "metrics": metrics,
+                }
+            )
+
+    prompts = [case["prompt"] for case in cases]
+    result = {
+        "model_id": model_id,
+        "method": method_key,
+        "active_patch_ids": patch_service.active_patches_for_model(model_id),
+        "metric_name": "rewrite_acc",
+        "mean_reliability": _mean_case_score(cases, "reliability_score"),
+        "mean_generalization": _mean_case_score(cases, "generalization_score"),
+        "cases": cases,
+    }
+    if include_generations:
+        from app.ml.inference.generate import generate_text
+
+        result["sample_generations"] = [
+            {
+                "prompt": prompt,
+                "clean_model": generate_text(
+                    model_id,
+                    prompt,
+                    max_new_tokens=32,
+                    patch_id=None,
+                    use_active_patches=False,
+                )["text"],
+                "active_model": generate_text(
+                    model_id,
+                    prompt,
+                    max_new_tokens=32,
+                    patch_id=None,
+                    use_active_patches=True,
+                )["text"],
+            }
+            for prompt in prompts
+        ]
+        rephrase_prompts = [case["rephrase_prompt"] for case in cases]
+        if all(isinstance(prompt, str) and prompt for prompt in rephrase_prompts):
+            result["sample_rephrase_generations"] = [
+                {
+                    "prompt": prompt,
+                    "clean_model": generate_text(
+                        model_id,
+                        prompt,
+                        max_new_tokens=32,
+                        patch_id=None,
+                        use_active_patches=False,
+                    )["text"],
+                    "active_model": generate_text(
+                        model_id,
+                        prompt,
+                        max_new_tokens=32,
+                        patch_id=None,
+                        use_active_patches=True,
+                    )["text"],
+                }
+                for prompt in rephrase_prompts
+            ]
+    return result
+
+
+def _rewrite_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    """Reduce EasyEdit's scalar or per-target-token rewrite accuracy to one score."""
+    value = metrics.get("rewrite_acc")
+    values = _numeric_values(value)
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _rephrase_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    """Reduce EasyEdit's scalar or token-level rephrase accuracy to one score."""
+    values = _numeric_values(metrics.get("rephrase_acc"))
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _mean_case_score(cases: list[dict[str, Any]], key: str) -> float | None:
+    scores = [float(case[key]) for case in cases if isinstance(case.get(key), (int, float))]
+    return round(sum(scores) / len(scores), 4) if scores else None
+
+
+def _numeric_values(value: Any) -> list[float]:
+    if isinstance(value, bool):
+        return [float(value)]
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, list):
+        return [number for item in value for number in _numeric_values(item)]
+    return []
+
+
 def run_easyedit_kn(
     model_id: str,
     edit: dict[str, Any],

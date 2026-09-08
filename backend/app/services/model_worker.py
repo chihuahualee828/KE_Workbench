@@ -88,6 +88,10 @@ def _dispatch(runtime: Any, action: str, payload: dict[str, Any]) -> dict[str, A
         from app.ml.tracing.causal_trace import run_causal_trace
 
         return run_causal_trace(**payload)
+    if action == "easyedit_reliability":
+        from app.ml.editing.easyedit_runtime import evaluate_easyedit_reliability
+
+        return evaluate_easyedit_reliability(**payload)
     if action == "rome_edit":
         from app.ml.editing.rome_wrapper import run_rome_edit
 

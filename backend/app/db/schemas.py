@@ -126,6 +126,16 @@ class EvaluationRequest(BaseModel):
     prompts: list[str] = Field(default_factory=list)
 
 
+class ReliabilityEvaluationRequest(BaseModel):
+    """Evaluate edit quality on the current active model without editing it."""
+
+    model_id: str = "gpt2-xl"
+    method: Literal["rome", "r_rome", "memit", "kn"]
+    edits: list[EditSpec] = Field(min_length=1, max_length=100)
+    include_generations: bool = False
+    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+
+
 class JobResponse(BaseModel):
     job_id: str
     experiment_id: str
