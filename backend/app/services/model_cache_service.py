@@ -488,6 +488,7 @@ class ModelCacheService:
                             "supports_logit_lens",
                             "supports_causal_trace",
                             "supports_rome",
+                            "supports_r_rome",
                             "supports_memit",
                             "supports_kn",
                         )
@@ -641,11 +642,13 @@ class ModelCacheService:
             "supports_logit_lens": metadata["supports_logit_lens"],
             "supports_causal_trace": metadata["supports_causal_trace"],
             "supports_rome": metadata["supports_rome"],
+            "supports_r_rome": metadata["supports_r_rome"],
             "supports_memit": metadata["supports_memit"],
             "supports_kn": metadata["supports_kn"],
             "trust_remote_code": metadata["trust_remote_code"],
             "generation_use_cache": metadata["generation_use_cache"],
             "rome_hparams": metadata["easyedit"].get("rome_hparams"),
+            "r_rome_hparams": metadata["easyedit"].get("r_rome_hparams"),
             "memit_hparams": metadata["easyedit"].get("memit_hparams"),
             "kn_hparams": metadata["easyedit"].get("kn_hparams"),
         }

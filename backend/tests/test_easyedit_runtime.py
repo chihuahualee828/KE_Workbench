@@ -95,3 +95,88 @@ def test_imported_model_reuses_base_model_mom2_cache_identity(monkeypatch: pytes
     assert runtime_model.config._name_or_path == "gpt2-xl"
     easyedit_runtime._restore_loaded_model_mom2_cache_identity(identity)
     assert runtime_model.config._name_or_path == "/models/gpt2-xl_local6"
+
+
+def test_r_rome_is_registered_as_an_easyedit_method() -> None:
+    assert easyedit_runtime.METHODS["r_rome"] == {
+        "hparams_class": "R_ROMEHyperParams",
+        "hparams_key": "r_rome_hparams",
+        "support_key": "supports_r_rome",
+        "requires_subject": True,
+    }
+
+
+def test_reliability_evaluation_uses_active_runtime_without_editing(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = {
+        "id": "demo",
+        "hf_id": "example/demo",
+        "n_layers": 3,
+        "supports_rome": True,
+    }
+    hparams = SimpleNamespace(model_name="example/demo", device=0, alg_name="ROME")
+    runtime_model = object()
+    runtime_tokenizer = SimpleNamespace(pad_token_id=0, eos_token_id=0)
+    calls: list[dict[str, str]] = []
+
+    def compute_edit_quality(_model, _name, _hparams, _tokenizer, record, _device):
+        calls.append(record)
+        return {
+            "rewrite_acc": 1.0 if record["target_new"] == "Paris" else 0.0,
+            "rephrase_acc": 0.75 if record.get("rephrase_prompt") else None,
+        }
+
+    monkeypatch.setattr(easyedit_runtime.model_registry, "get", lambda _: model)
+    monkeypatch.setattr(easyedit_runtime, "_load_easyedit", lambda _: (None, SimpleNamespace(from_hparams=lambda _: hparams)))
+    monkeypatch.setattr(easyedit_runtime, "_resolve_hparams_path", lambda *_: Path("/tmp/rome.yaml"))
+    monkeypatch.setattr(
+        easyedit_runtime,
+        "model_runtime_service",
+        SimpleNamespace(
+            exclusive_runtime_access=contextlib.nullcontext,
+            require_loaded_runtime_bundle=lambda _: {
+                "model": runtime_model,
+                "tokenizer": runtime_tokenizer,
+                "device": "cpu",
+            },
+        ),
+    )
+    monkeypatch.setattr(easyedit_runtime.patch_service, "active_patches_for_model", lambda _: ["patch_demo"])
+    monkeypatch.setattr(easyedit_runtime.patch_service, "sync_active_patches_to_model", lambda *_: None)
+    monkeypatch.setattr(
+        easyedit_runtime.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(
+            compute_edit_quality=compute_edit_quality
+        ) if name == "easyeditor.evaluate" else None,
+    )
+
+    result = easyedit_runtime.evaluate_easyedit_reliability(
+        model_id="demo",
+        method="rome",
+        edits=[
+            {
+                "subject": "The Space Needle",
+                "relation_prompt": "{} is in",
+                "new_object": "Paris",
+                "rephrase_prompts": ["The Space Needle can be found in"],
+            },
+            {"subject": "The Eiffel Tower", "relation_prompt": "{} is in", "new_object": "Rome"},
+        ],
+    )
+
+    assert calls == [
+        {
+            "prompt": "The Space Needle is in",
+            "target_new": "Paris",
+            "ground_truth": "",
+            "rephrase_prompt": "The Space Needle can be found in",
+        },
+        {"prompt": "The Eiffel Tower is in", "target_new": "Rome", "ground_truth": ""},
+    ]
+    assert result["active_patch_ids"] == ["patch_demo"]
+    assert result["mean_reliability"] == 0.5
+    assert result["mean_generalization"] == 0.75
+    assert result["cases"][0]["reliability_score"] == 1.0
+    assert result["cases"][1]["reliability_score"] == 0.0
+    assert result["cases"][0]["generalization_score"] == 0.75
+    assert result["cases"][1]["generalization_score"] is None

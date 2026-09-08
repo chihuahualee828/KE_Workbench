@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
+from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -24,6 +24,7 @@ from app.ml.editing.easyedit_runtime import (
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
+from app.ml.editing.r_rome_wrapper import run_r_rome_edit
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 from app.services.patch_service import patch_service
@@ -58,6 +59,21 @@ def rome_edit(request: RomeEditRequest) -> JobResponse:
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
+    return _job_response(job)
+
+
+@router.post("/edit/r-rome", response_model=JobResponse)
+def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    _require_mom2_statistics(
+        request.model_id,
+        "r_rome",
+        [request.target_layer] if request.target_layer is not None else None,
+        request.mom2_adjustment,
+    )
+    experiment = experiment_service.create("r_rome_edit", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread("R-ROME", job["id"], run_r_rome_edit, request.model_dump())
     return _job_response(job)
 
 
@@ -138,8 +154,8 @@ def import_mom2(
     files: list[UploadFile] = File(...),
 ) -> dict:
     try:
-        if method not in {"rome", "memit"}:
-            raise ValueError("Method must be rome or memit.")
+        if method not in {"rome", "r_rome", "memit"}:
+            raise ValueError("Method must be rome, r_rome, or memit.")
         parsed_layers = json.loads(layers)
         if not isinstance(parsed_layers, list) or not all(isinstance(layer, int) for layer in parsed_layers):
             raise ValueError("Layers must be a JSON array of integers.")
