@@ -1,12 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { api } from "@/lib/api";
 import { announceModelRuntimeConnected, announceModelRuntimeDisconnected, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeStream } from "@/lib/modelRuntimeEvents";
 import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 
+type WorkbenchData = ReturnType<typeof useWorkbenchDataStore>;
+
+const WorkbenchDataContext = createContext<WorkbenchData | null>(null);
+
+export function WorkbenchDataProvider({ children }: { children: ReactNode }) {
+  const value = useWorkbenchDataStore();
+  return <WorkbenchDataContext.Provider value={value}>{children}</WorkbenchDataContext.Provider>;
+}
+
 export function useWorkbenchData() {
+  const value = useContext(WorkbenchDataContext);
+  if (!value) throw new Error("useWorkbenchData must be used inside WorkbenchDataProvider.");
+  return value;
+}
+
+function useWorkbenchDataStore() {
   const [models, setModels] = useState<SupportedModel[]>([]);
   const [patches, setPatches] = useState<Patch[]>([]);
   const [experiments, setExperiments] = useState<Experiment[]>([]);

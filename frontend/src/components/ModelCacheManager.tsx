@@ -8,6 +8,7 @@ import { announceModelCacheStatus, announceModelDownload, applyCacheStatusToCach
 import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { GpuVramMonitor } from "./GpuVramMonitor";
 
 const activeDownloadStatuses = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
 const folderImportChunkSize = 8 * 1024 * 1024;
@@ -395,7 +396,7 @@ export function ModelCacheManager({
         </div>
       ) : (
         <>
-          <GpuRuntimeSummary runtime={runtime} />
+          <GpuVramMonitor runtime={runtime} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1050px] table-fixed border-collapse text-sm">
               <colgroup>
@@ -659,50 +660,6 @@ function configureLocalFolderInput(input: HTMLInputElement | null) {
   input.setAttribute("directory", "");
   directoryInput.webkitdirectory = true;
   directoryInput.directory = true;
-}
-
-function GpuRuntimeSummary({ runtime }: { runtime: ModelRuntimeStatus[] }) {
-  const loadedRuntime = runtime.find((status) => status.loaded);
-  const gpu = loadedRuntime?.gpu ?? runtime.find((status) => status.gpu)?.gpu;
-  if (!gpu?.cuda_available) {
-    return (
-      <div className="mb-4 rounded-md border border-line bg-panel p-3 text-sm text-ink/70">
-        GPU: CUDA not available to the backend.
-      </div>
-    );
-  }
-  const totalBytes = gpu.total_bytes ?? 0;
-  const usedBytes = gpu.used_bytes ?? (totalBytes && gpu.free_bytes !== undefined
-    ? Math.max(0, totalBytes - gpu.free_bytes)
-    : gpu.allocated_bytes ?? 0);
-  const usedPercent = totalBytes ? Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100)) : 0;
-  return (
-    <div className="mb-4 grid gap-3 rounded-md border border-line bg-panel p-3 text-sm md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
-      <div>
-        <div className="label mb-1">GPU</div>
-        <div className="font-medium">{gpu.device_name ?? `CUDA ${gpu.device ?? "0"}`}</div>
-      </div>
-      <div>
-        <div className="mb-1 flex items-center justify-between gap-3">
-          <div className="label">GPU VRAM</div>
-          <div className="font-mono text-xs text-ink/70">
-            {formatBytes(usedBytes)} / {formatBytes(totalBytes)}
-          </div>
-        </div>
-        <div className="h-2.5 w-full overflow-hidden rounded-full bg-line">
-          <div className="h-full rounded-full bg-cyan transition-[width]" style={{ width: `${usedPercent}%` }} />
-        </div>
-        <div className="mt-1 font-mono text-xs text-ink/50">{usedPercent.toFixed(1)}% used · {gpu.memory_source ?? "torch"}</div>
-      </div>
-      <div>
-        <div className="label mb-1">Loaded Model</div>
-        <div className="font-mono text-xs text-ink/70">
-          {loadedRuntime ? `${formatBytes(loadedRuntime.model_vram_bytes ?? 0)} (${loadedRuntime.model_id})` : "No model loaded"}
-        </div>
-        <div className="mt-1 font-mono text-xs text-ink/50">{formatBytes(gpu.allocated_bytes ?? 0)} allocated / {formatBytes(gpu.reserved_bytes ?? 0)} reserved</div>
-      </div>
-    </div>
-  );
 }
 
 function formatBytes(bytes: number) {
