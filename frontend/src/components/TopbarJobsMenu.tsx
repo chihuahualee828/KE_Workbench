@@ -199,7 +199,7 @@ export function TopbarJobsMenu() {
           <span className={`ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan px-1.5 py-0.5 text-xs font-semibold text-white ${hasNewWork ? "animate-pulse ring-2 ring-cyan/30" : ""}`}>
             {activeCount}
           </span>
-        ) : null}
+        ) : hasNewWork ? <span aria-label="New job activity" className="ml-2 inline-flex size-2 animate-pulse rounded-full bg-cyan ring-2 ring-cyan/30" /> : null}
       </button>
       {open ? (
         <div id="topbar-jobs" className="absolute right-0 top-full z-30 mt-2 w-[min(92vw,520px)] rounded-xl border border-line bg-white p-4 shadow-xl">
