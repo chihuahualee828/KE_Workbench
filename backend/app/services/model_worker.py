@@ -92,6 +92,10 @@ def _dispatch(runtime: Any, action: str, payload: dict[str, Any]) -> dict[str, A
         from app.ml.editing.rome_wrapper import run_rome_edit
 
         return run_rome_edit(**payload)
+    if action == "r_rome_edit":
+        from app.ml.editing.r_rome_wrapper import run_r_rome_edit
+
+        return run_r_rome_edit(**payload)
     if action == "rome_sequential_edits":
         from app.ml.editing.rome_wrapper import run_rome_sequential_edits
 

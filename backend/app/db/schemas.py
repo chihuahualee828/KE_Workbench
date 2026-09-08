@@ -73,6 +73,10 @@ class RomeEditRequest(BaseModel):
     mom2_adjustment: bool = False
 
 
+class RRomeEditRequest(RomeEditRequest):
+    """Request schema for EasyEdit's rebuilding-ROME implementation."""
+
+
 class KnEditRequest(BaseModel):
     model_id: str = "gpt2-xl"
     subject: str
@@ -112,7 +116,7 @@ class MemitEditRequest(BaseModel):
 
 class Mom2StatisticsRequest(BaseModel):
     model_id: str
-    method: Literal["rome", "memit"]
+    method: Literal["rome", "r_rome", "memit"]
     layers: list[int] | None = None
 
 

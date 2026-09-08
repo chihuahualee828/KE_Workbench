@@ -21,7 +21,7 @@ type CacheResponse = {
   statistics: CacheEntry[];
 };
 
-export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId: string; method: "rome" | "memit"; onClose: () => void }) {
+export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId: string; method: "rome" | "r_rome" | "memit"; onClose: () => void }) {
   const [cache, setCache] = useState<CacheResponse | null>(null);
   const [deletingLayer, setDeletingLayer] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -62,7 +62,7 @@ export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId:
               <Database size={17} />
               <h2 id="second-moment-cache-title" className="text-base font-semibold">Second-Moment Cache</h2>
             </div>
-            <p className="mt-1 text-sm text-ink/60">{modelId} · {method.toUpperCase()} · {cache?.dataset ?? "Loading dataset..."}</p>
+            <p className="mt-1 text-sm text-ink/60">{modelId} · {method === "r_rome" ? "R-ROME" : method.toUpperCase()} · {cache?.dataset ?? "Loading dataset..."}</p>
           </div>
           <div className="flex items-center gap-1">
             <button className="ghost-button grid size-8 place-items-center p-0" onClick={() => void refresh()} title="Refresh cache" type="button">

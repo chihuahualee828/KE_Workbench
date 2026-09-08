@@ -153,6 +153,27 @@ When `target_layer` is `null`, the backend runs causal tracing first and uses th
 }
 ```
 
+## r-ROME Edit
+
+`POST /api/edit/r-rome`
+
+Runs EasyEdit's rebuilding-ROME implementation for a model with an `R-ROME` hparams profile. It produces the same reversible safetensors patch artifact as the ROME endpoint.
+
+```json
+{
+  "model_id": "gpt2-xl",
+  "subject": "The Space Needle",
+  "relation_prompt": "{} is located in the city of",
+  "ground_truth": "Seattle",
+  "new_object": "Paris",
+  "target_layer": 17,
+  "evaluation_prompts": [
+    "The landmark called the Space Needle can be found in"
+  ],
+  "sequential_edit": false
+}
+```
+
 ## MEMIT Edit
 
 `POST /api/edit/memit`

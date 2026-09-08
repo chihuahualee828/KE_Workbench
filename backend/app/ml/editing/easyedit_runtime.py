@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -31,11 +32,19 @@ METHODS = {
         "hparams_class": "ROMEHyperParams",
         "hparams_key": "rome_hparams",
         "support_key": "supports_rome",
+        "requires_subject": True,
+    },
+    "r_rome": {
+        "hparams_class": "R_ROMEHyperParams",
+        "hparams_key": "r_rome_hparams",
+        "support_key": "supports_r_rome",
+        "requires_subject": True,
     },
     "memit": {
         "hparams_class": "MEMITHyperParams",
         "hparams_key": "memit_hparams",
         "support_key": "supports_memit",
+        "requires_subject": True,
     },
     "kn": {
         "hparams_class": "KNHyperParams",
@@ -117,9 +126,16 @@ def run_easyedit(
     effective_layers = _hparams_layers(hparams)
     print(f"{method_key.upper()} hparams: {hparams}")
 
-    prompts = [build_prompt(edit["subject"], edit["relation_prompt"]) for edit in edits]
-    target_new = [edit["new_object"] for edit in edits]
-    ground_truth = [edit.get("ground_truth") for edit in edits]
+    prompts: list[str] = []
+    subjects: list[str] = []
+    target_new: list[str] = []
+    ground_truth: list[Any] = []
+    for edit in edits:
+        subject = edit["subject"]
+        prompts.append(build_prompt(subject, edit["relation_prompt"]))
+        subjects.append(subject)
+        target_new.append(edit["new_object"])
+        ground_truth.append(edit.get("ground_truth"))
     if not any(ground_truth):
         ground_truth = None
     editor = None
@@ -160,29 +176,19 @@ def run_easyedit(
             # We keep the edited weights briefly, save our delta, then restore the baseline
             # ourselves so workbench patch state remains explicit and replayable.
             easyedit_sequential = True
-            if hparams_cls.__name__ == "ROMEHyperParams" or hparams_cls.__name__ == "MEMITHyperParams":
-                metrics, edited_model, _ = editor.edit(
-                    prompts=prompts,
-                    subject=[edit["subject"] for edit in edits],
-                    ground_truth=ground_truth,
-                    target_new=target_new,
-                    rephrase_prompts=rephrase_prompts or None,
-                    locality_inputs=locality_inputs,
-                    portability_inputs=portability_inputs,
-                    sequential_edit=easyedit_sequential,
-                    keep_original_weight=True,
-                )
-            else:
-                metrics, edited_model, _ = editor.edit(
-                    prompts=prompts,
-                    ground_truth=ground_truth,
-                    target_new=target_new,
-                    rephrase_prompts=rephrase_prompts or None,
-                    locality_inputs=locality_inputs,
-                    portability_inputs=portability_inputs,
-                    sequential_edit=easyedit_sequential,
-                    keep_original_weight=True,
-                )
+            edit_args = {
+                "prompts": prompts,
+                "ground_truth": ground_truth,
+                "target_new": target_new,
+                "rephrase_prompts": rephrase_prompts or None,
+                "locality_inputs": locality_inputs,
+                "portability_inputs": portability_inputs,
+                "sequential_edit": easyedit_sequential,
+                "keep_original_weight": True,
+            }
+            if spec.get("requires_subject", False):
+                edit_args["subject"] = subjects
+            metrics, edited_model, _ = editor.edit(**edit_args)
             patch_id = patch_service.new_patch_id()
             tensor_delta_paths = _save_weight_deltas(edited_model, baseline_weights, patch_id)
             if not tensor_delta_paths:
@@ -536,22 +542,26 @@ def _load_easyedit(hparams_class_name: str) -> tuple[Any, Any]:
 
 def _configure_easyedit_statistics_loader() -> None:
     """Avoid worker spawning for EasyEdit's nested, non-picklable collate function."""
-    try:
-        from easyeditor.models.rome import layer_stats as layer_stats_module
-    except ImportError:
-        return
+    for module_name in (
+        "easyeditor.models.rome.layer_stats",
+        "easyeditor.models.r_rome.layer_stats",
+    ):
+        try:
+            layer_stats_module = importlib.import_module(module_name)
+        except ImportError:
+            continue
 
-    if getattr(layer_stats_module, "_workbench_single_process_loader", False):
-        return
+        if getattr(layer_stats_module, "_workbench_single_process_loader", False):
+            continue
 
-    original_tally = layer_stats_module.tally
+        original_tally = layer_stats_module.tally
 
-    def single_process_tally(*args, **kwargs):
-        kwargs["num_workers"] = 0
-        return original_tally(*args, **kwargs)
+        def single_process_tally(*args, _original_tally=original_tally, **kwargs):
+            kwargs["num_workers"] = 0
+            return _original_tally(*args, **kwargs)
 
-    layer_stats_module.tally = single_process_tally
-    layer_stats_module._workbench_single_process_loader = True
+        layer_stats_module.tally = single_process_tally
+        layer_stats_module._workbench_single_process_loader = True
 
 
 def _add_easyedit_to_python_path() -> None:
@@ -703,7 +713,7 @@ def _configure_loaded_tokenizer(tokenizer: Any, model_name: str, method_key: str
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if getattr(tokenizer, "pad_token_id", None) is None and eos_token_id is not None:
         tokenizer.pad_token_id = eos_token_id
-    if method_key in {"rome", "memit"} and any(name in model_name.lower() for name in ("mistral", "llama", "qwen")):
+    if method_key in {"rome", "r_rome", "memit"} and any(name in model_name.lower() for name in ("mistral", "llama", "qwen")):
         tokenizer.padding_side = "right"
 
 
