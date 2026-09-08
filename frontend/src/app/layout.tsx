@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/AppShell";
+import { WorkbenchDataProvider } from "@/components/DataState";
 import { WorkbenchSessionProvider } from "@/components/WorkbenchSession";
 import "./globals.css";
 
@@ -12,9 +13,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <WorkbenchSessionProvider>
-          <AppShell>{children}</AppShell>
-        </WorkbenchSessionProvider>
+        <WorkbenchDataProvider>
+          <WorkbenchSessionProvider>
+            <AppShell>{children}</AppShell>
+          </WorkbenchSessionProvider>
+        </WorkbenchDataProvider>
       </body>
     </html>
   );

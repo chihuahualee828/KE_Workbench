@@ -4,6 +4,8 @@ import { Activity, ArrowUpRight, Blocks, ChevronRight, FlaskConical, Layers3, La
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useWorkbenchData } from "./DataState";
+import { GpuVramMonitor } from "./GpuVramMonitor";
 import { TopbarJobsMenu } from "./TopbarJobsMenu";
 
 const navigation = [
@@ -20,6 +22,7 @@ const navigation = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const current = navigation.find((item) => item.href === pathname);
+  const { runtime } = useWorkbenchData();
 
   return (
     <div className="app-shell">
@@ -40,7 +43,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-slate-200"><span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />Your local workspace</div>
+          <GpuVramMonitor runtime={runtime} variant="sidebar" />
+          <div className="mb-2 mt-4 flex items-center gap-2 text-xs font-medium text-slate-200"><span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />Your local workspace</div>
           <p className="text-xs leading-5 text-slate-400">Explore how models know.<br />Shape what they remember.</p>
           <Link href="/settings" className="mt-4 inline-flex items-center gap-2 text-xs text-slate-300 hover:text-white">Manage workspace<ArrowUpRight size={13} /></Link>
         </div>
