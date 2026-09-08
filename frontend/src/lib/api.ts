@@ -350,5 +350,22 @@ export const api = {
     request<{ job_id: string; experiment_id: string; status: string; result: Record<string, unknown> }>("/api/evaluate", {
       method: "POST",
       body: JSON.stringify(body)
+    }),
+  easyEditReliability: (body: {
+    model_id: string;
+    method: "rome" | "r_rome" | "memit" | "kn";
+    edits: Array<{
+      subject: string;
+      relation_prompt: string;
+      new_object: string;
+      ground_truth?: string | null;
+      rephrase_prompts?: string[];
+    }>;
+    include_generations?: boolean;
+    evaluation_modes?: Array<"reliability" | "generalization" | "locality" | "portability">;
+  }) =>
+    request<EditJob>("/api/evaluate/reliability", {
+      method: "POST",
+      body: JSON.stringify(body)
     })
 };

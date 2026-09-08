@@ -1,8 +1,8 @@
 "use client";
 
-import { BarChart3, Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { announceExperimentStarted } from "@/lib/experimentEvents";
@@ -92,12 +92,16 @@ function KnForm({
   const [relationPrompt, setRelationPrompt] = usePersistentState("kew:edit:kn:relationPrompt", "{} is located in the city of");
   const [newObject, setNewObject] = usePersistentState("kew:edit:kn:newObject", "Paris");
   const [groundTruth, setGroundTruth] = usePersistentState("kew:edit:kn:groundTruth", "Seattle");
-  const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:kn:evaluationPrompts", "The landmark called the Space Needle can be found in");
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:kn:sequentialEdit", false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [evaluating, setEvaluating] = useState(false);
+  const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const evaluationPrompts = useMemo(
+    () => buildFactEvaluationPrompts([{ subject, relation_prompt: relationPrompt }]),
+    [relationPrompt, subject]
+  );
 
   useLoadedModelSelection(knModels, runtime, setModelId);
 
@@ -106,6 +110,10 @@ function KnForm({
       setModelId(knModels[0].id);
     }
   }, [knModels, modelId, setModelId]);
+
+  useEffect(() => {
+    setReliabilityResult(null);
+  }, [evaluationPrompts, modelId, newObject]);
 
   async function run() {
     if (!modelLoaded || busy) return;
@@ -124,7 +132,7 @@ function KnForm({
         relation_prompt: relationPrompt,
         new_object: newObject,
         ground_truth: groundTruth,
-        evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
+        evaluation_prompts: evaluationPrompts,
         sequential_edit: sequentialEdit
       });
       const completed = await watchEditJob(response, setJob);
@@ -137,27 +145,32 @@ function KnForm({
     }
   }
 
-  async function evaluatePrompts() {
-    const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
-    if (!modelLoaded || !prompts.length || busy || evaluating) return;
-    setEvaluating(true);
+  async function testReliability() {
+    if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability) return;
+    setTestingReliability(true);
     setError("");
     try {
-      const generations = [];
-      for (const prompt of prompts) {
-        const response = await api.generate({
-          model_id: modelId,
-          prompt,
-          max_new_tokens: 32,
-          decoding_strategy: "greedy"
-        });
-        generations.push({ prompt, text: response.text });
-      }
-      setResult({ generations, evaluation_only: true, model_id: modelId });
+      const generations = await generateReliabilityTestOutputs(modelId, [{
+        subject,
+        relation_prompt: relationPrompt,
+        new_object: newObject
+      }]);
+      const response = await api.easyEditReliability({
+        model_id: modelId,
+        method: "kn",
+        edits: [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }]
+      });
+      setReliabilityResult(response.result ?? null);
+      setResult({
+        reliability: response.result ?? null,
+        generations,
+        evaluation_only: true,
+        model_id: modelId
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setEvaluating(false);
+      setTestingReliability(false);
     }
   }
 
@@ -172,31 +185,22 @@ function KnForm({
         <TextInput label="Relation Prompt" value={relationPrompt} onChange={setRelationPrompt} />
         <TextInput label="New Object" value={newObject} onChange={setNewObject} />
         <TextInput label="Original Object" value={groundTruth} onChange={setGroundTruth} />
-        <div className="grid gap-2">
-          <span className="flex items-center justify-between gap-2">
-            <span className="label">Evaluation Prompts</span>
-            <button
-              type="button"
-              className="ghost-button min-h-8 px-2 py-1 text-xs"
-              onClick={evaluatePrompts}
-              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
-              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
-            >
-              <BarChart3 size={14} />
-              {evaluating ? "Evaluating" : "Evaluate"}
-            </button>
-          </span>
-          <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
-        </div>
+        <DerivedEvaluationPrompts
+          prompts={evaluationPrompts}
+          onTest={testReliability}
+          reliabilityResult={reliabilityResult}
+          testing={testingReliability}
+          testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
+        />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Sequential edit</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
         </label>
-        <button className="tool-button w-full" onClick={run} disabled={busy || evaluating || !modelLoaded} title={modelLoaded ? "Identify knowledge neurons and apply the KN edit" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded} title={modelLoaded ? "Identify knowledge neurons and apply the KN edit" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
           {busy ? "Editing" : "Apply KN"}
         </button>
-        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -272,7 +276,8 @@ function RomeForm({
   const [mom2Adjustment, setMom2Adjustment] = usePersistentState(`kew:edit:${method}:mom2Adjustment`, false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [evaluating, setEvaluating] = useState(false);
+  const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
   const [locatingLayer, setLocatingLayer] = useState(false);
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
@@ -286,6 +291,20 @@ function RomeForm({
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const seriesEditDrafts = useMemo(() => parseFactEditDrafts(seriesEdits), [seriesEdits]);
   const isSeriesEdit = supportsSeries && editMode === "series";
+  const evaluationPrompts = useMemo(
+    () => buildFactEvaluationPrompts(
+      isSeriesEdit
+        ? seriesEditDrafts ?? []
+        : [{ subject, relation_prompt: relationPrompt }]
+    ),
+    [isSeriesEdit, relationPrompt, seriesEditDrafts, subject]
+  );
+  const reliabilityEdits = useMemo(
+    () => isSeriesEdit
+      ? seriesEditDrafts ?? []
+      : [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth }],
+    [groundTruth, isSeriesEdit, newObject, relationPrompt, seriesEditDrafts, subject]
+  );
 
   useLoadedModelSelection(romeModels, runtime, setModelId);
 
@@ -295,6 +314,10 @@ function RomeForm({
       setModelId(romeModels[0].id);
     }
   }, [modelId, romeModels, setModelId]);
+
+  useEffect(() => {
+    setReliabilityResult(null);
+  }, [modelId, reliabilityEdits]);
 
   useEffect(() => {
     let active = true;
@@ -333,12 +356,11 @@ function RomeForm({
     setResult(null);
     setJob(null);
     try {
-      const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
       const response = isSeriesEdit
         ? await startRomeSequentialSeries(seriesEditDrafts, {
             modelId,
             targetLayer: targetLayerNumber,
-            evaluationPrompts: prompts,
+            evaluationPrompts,
             mom2Adjustment
           })
         : await (isRRome ? api.rRomeEdit : api.romeEdit)({
@@ -348,7 +370,7 @@ function RomeForm({
             new_object: newObject,
             ground_truth: groundTruth || null,
             target_layer: targetLayerNumber,
-            evaluation_prompts: prompts,
+            evaluation_prompts: evaluationPrompts,
             sequential_edit: sequentialEdit,
             mom2_adjustment: mom2Adjustment
           });
@@ -365,6 +387,36 @@ function RomeForm({
       setError(message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function testReliability() {
+    if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability) return;
+    setTestingReliability(true);
+    setError("");
+    try {
+      const generations = await generateReliabilityTestOutputs(modelId, reliabilityEdits);
+      const response = await api.easyEditReliability({
+        model_id: modelId,
+        method,
+        edits: reliabilityEdits.map((edit) => ({
+          subject: edit.subject,
+          relation_prompt: edit.relation_prompt,
+          new_object: edit.new_object,
+          ground_truth: edit.ground_truth || null
+        }))
+      });
+      setReliabilityResult(response.result ?? null);
+      setResult({
+        reliability: response.result ?? null,
+        generations,
+        evaluation_only: true,
+        model_id: modelId
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestingReliability(false);
     }
   }
 
@@ -392,30 +444,6 @@ function RomeForm({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLocatingLayer(false);
-    }
-  }
-
-  async function evaluatePrompts() {
-    const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
-    if (!modelLoaded || !prompts.length) return;
-    setEvaluating(true);
-    setError("");
-    try {
-      const generations = [];
-      for (const prompt of prompts) {
-        const response = await api.generate({
-          model_id: modelId,
-          prompt,
-          max_new_tokens: 32,
-          decoding_strategy: "greedy"
-        });
-        generations.push({ prompt, text: response.text });
-      }
-      setResult({ generations, evaluation_only: true, model_id: modelId });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setEvaluating(false);
     }
   }
 
@@ -481,22 +509,13 @@ function RomeForm({
           {isSeriesEdit ? <span className="text-xs text-ink/60">Each fact in this series uses the selected layer.</span> : null}
           {layerNotice ? <span className="text-xs text-cyan">{layerNotice}</span> : null}
         </label>
-        <div className="grid gap-2">
-          <span className="flex items-center justify-between gap-2">
-            <span className="label">Evaluation Prompts</span>
-            <button
-              type="button"
-              className="ghost-button min-h-8 px-2 py-1 text-xs"
-              onClick={evaluatePrompts}
-              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
-              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
-            >
-              <BarChart3 size={14} />
-              {evaluating ? "Evaluating" : "Evaluate"}
-            </button>
-          </span>
-          <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
-        </div>
+        <DerivedEvaluationPrompts
+          prompts={evaluationPrompts}
+          onTest={testReliability}
+          reliabilityResult={reliabilityResult}
+          testing={testingReliability}
+          testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
+        />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>{isSeriesEdit ? "Sequential edit" : "Sequential edit"}</span>
           <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
@@ -516,7 +535,7 @@ function RomeForm({
           <FlaskConical size={16} />
           {busy ? "Editing" : isSeriesEdit ? "Apply ROME Series" : `Apply ${methodLabel}`}
         </button>
-        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -655,12 +674,12 @@ function MemitForm({
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">("kew:edit:memit:inputMode", "form");
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
-  const [evaluationPrompts, setEvaluationPrompts] = usePersistentState("kew:edit:memit:evaluationPrompts", "Michael Jordan plays the sport of\nThe Space Needle is located in the city of");
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
   const mom2Adjustment = true;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [evaluating, setEvaluating] = useState(false);
+  const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
@@ -671,6 +690,10 @@ function MemitForm({
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const editDrafts = useMemo(() => parseFactEditDrafts(edits), [edits]);
+  const evaluationPrompts = useMemo(
+    () => buildFactEvaluationPrompts(editDrafts ?? []),
+    [editDrafts]
+  );
 
   useLoadedModelSelection(memitModels, runtime, setModelId);
 
@@ -680,6 +703,10 @@ function MemitForm({
       setModelId(memitModels[0].id);
     }
   }, [memitModels, modelId, setModelId]);
+
+  useEffect(() => {
+    setReliabilityResult(null);
+  }, [editDrafts, modelId]);
 
   useEffect(() => {
     let active = true;
@@ -734,7 +761,7 @@ function MemitForm({
           ground_truth: edit.ground_truth.trim() || null
         })),
         layers: selectedLayers,
-        evaluation_prompts: evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean),
+        evaluation_prompts: evaluationPrompts,
         sequential_edit: sequentialEdit,
         mom2_adjustment: mom2Adjustment
       });
@@ -751,6 +778,36 @@ function MemitForm({
       setError(message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function testReliability() {
+    if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability || !editDrafts?.length) return;
+    setTestingReliability(true);
+    setError("");
+    try {
+      const generations = await generateReliabilityTestOutputs(modelId, editDrafts);
+      const response = await api.easyEditReliability({
+        model_id: modelId,
+        method: "memit",
+        edits: editDrafts.map((edit) => ({
+          subject: edit.subject,
+          relation_prompt: edit.relation_prompt,
+          new_object: edit.new_object,
+          ground_truth: edit.ground_truth || null
+        }))
+      });
+      setReliabilityResult(response.result ?? null);
+      setResult({
+        reliability: response.result ?? null,
+        generations,
+        evaluation_only: true,
+        model_id: modelId
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestingReliability(false);
     }
   }
 
@@ -802,30 +859,6 @@ function MemitForm({
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function evaluatePrompts() {
-    const prompts = evaluationPrompts.split("\n").map((line) => line.trim()).filter(Boolean);
-    if (!modelLoaded || !prompts.length || busy || evaluating) return;
-    setEvaluating(true);
-    setError("");
-    try {
-      const generations = [];
-      for (const prompt of prompts) {
-        const response = await api.generate({
-          model_id: modelId,
-          prompt,
-          max_new_tokens: 32,
-          decoding_strategy: "greedy"
-        });
-        generations.push({ prompt, text: response.text });
-      }
-      setResult({ generations, evaluation_only: true, model_id: modelId });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setEvaluating(false);
     }
   }
 
@@ -903,22 +936,13 @@ function MemitForm({
             <span>EasyEdit default: {easyEditDefaultLayerValues?.join(",") ?? "Loading..."}</span>
           </div>
         </label>
-        <div className="grid gap-2">
-          <span className="flex items-center justify-between gap-2">
-            <span className="label">Evaluation Prompts</span>
-            <button
-              type="button"
-              className="ghost-button min-h-8 px-2 py-1 text-xs"
-              onClick={evaluatePrompts}
-              disabled={busy || evaluating || !evaluationPrompts.trim() || !modelLoaded}
-              title={modelLoaded ? "Generate from the current active model without applying a new edit" : "Load the selected model before evaluating"}
-            >
-              <BarChart3 size={14} />
-              {evaluating ? "Evaluating" : "Evaluate"}
-            </button>
-          </span>
-          <textarea className="control min-h-28" value={evaluationPrompts} onChange={(event) => setEvaluationPrompts(event.target.value)} />
-        </div>
+        <DerivedEvaluationPrompts
+          prompts={evaluationPrompts}
+          onTest={testReliability}
+          reliabilityResult={reliabilityResult}
+          testing={testingReliability}
+          testDisabled={busy || !modelLoaded || !evaluationPrompts.length || !editDrafts?.length}
+        />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Sequential edit</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
@@ -934,11 +958,11 @@ function MemitForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || evaluating || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
         </button>
-        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy || evaluating} />
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} job={job} />
@@ -1072,6 +1096,106 @@ function isEditableMemitLayerInput(value: string, maxLayer: number) {
 
 function buildEditPrompt(subject: string, relationPrompt: string) {
   return relationPrompt.includes("{}") ? relationPrompt.replace("{}", subject) : `${subject} ${relationPrompt}`.trim();
+}
+
+function buildFactEvaluationPrompts(edits: Array<Pick<FactEditDraft, "subject" | "relation_prompt">>) {
+  return edits.flatMap((edit) => {
+    if (!edit.subject.trim() || !edit.relation_prompt.trim()) return [];
+    return [buildEditPrompt(edit.subject, edit.relation_prompt)];
+  });
+}
+
+async function generateReliabilityTestOutputs(
+  modelId: string,
+  edits: Array<Pick<FactEditDraft, "subject" | "relation_prompt" | "new_object">> | null
+) {
+  const generations = [];
+  for (const edit of edits ?? []) {
+    if (!edit.subject.trim() || !edit.relation_prompt.trim()) continue;
+    const prompt = buildEditPrompt(edit.subject, edit.relation_prompt);
+    const response = await api.generate({
+      model_id: modelId,
+      prompt,
+      max_new_tokens: 32,
+      decoding_strategy: "greedy"
+    });
+    generations.push({ prompt, text: response.text, target_new: edit.new_object });
+  }
+  return generations;
+}
+
+function DerivedEvaluationPrompts({
+  prompts,
+  onTest,
+  reliabilityResult,
+  testing,
+  testDisabled
+}: {
+  prompts: string[];
+  onTest: () => void;
+  reliabilityResult: Record<string, unknown> | null;
+  testing: boolean;
+  testDisabled: boolean;
+}) {
+  const meanReliability = typeof reliabilityResult?.mean_reliability === "number"
+    ? reliabilityResult.mean_reliability
+    : null;
+  const cases = Array.isArray(reliabilityResult?.cases)
+    ? reliabilityResult.cases.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+
+  return (
+    <div className="grid min-w-0 max-w-full gap-2">
+      <span className="flex min-w-0 items-center justify-between gap-2">
+        <span className="label min-w-0">Edit Evaluation Prompts</span>
+        <button
+          type="button"
+          className="ghost-button min-h-8 px-2 py-1 text-xs"
+          disabled={testDisabled || testing}
+          onClick={onTest}
+          title="Evaluate EasyEdit rewrite reliability on the current active model without applying an edit"
+        >
+          <FlaskConical size={14} />
+          {testing ? "Testing" : "Test"}
+        </button>
+      </span>
+      <textarea
+        aria-label="Edit evaluation prompts derived from the current facts"
+        className="control h-28 resize-y overflow-y-auto"
+        placeholder="Add an edit fact to create its evaluation prompt."
+        readOnly
+        value={prompts.join("\n")}
+      />
+      <p className="max-w-full break-words text-xs text-ink/60">Derived from the current edit facts and evaluated after the edit. Use Generate for custom prompt testing.</p>
+      {reliabilityResult ? (
+        <div className="grid min-w-0 max-w-full gap-2 overflow-hidden rounded-md border border-cyan/30 bg-cyan/5 p-3 text-sm">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2">
+            <span className="min-w-0 break-words font-medium">Reliability · EasyEdit rewrite_acc</span>
+            <span className="font-mono text-cyan">{meanReliability === null ? "Metric unavailable" : formatReliabilityScore(meanReliability)}</span>
+          </div>
+          {cases.length ? (
+            <div className="grid min-w-0 max-w-full max-h-36 gap-2 overflow-x-hidden overflow-y-auto pr-1 text-xs">
+              {cases.map((testCase, index) => {
+                const prompt = typeof testCase.prompt === "string" ? testCase.prompt : "";
+                const target = typeof testCase.target_new === "string" ? testCase.target_new : "";
+                const score = typeof testCase.reliability_score === "number" ? testCase.reliability_score : null;
+                return (
+                  <div key={`${prompt}-${index}`} className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1 border-t border-cyan/20 pt-2 first:border-t-0 first:pt-0">
+                    <span className="min-w-0 max-w-full break-words font-mono text-ink/65">{prompt} <span className="text-ink/40">→</span> {target}</span>
+                    <span className="shrink-0 font-mono text-ink">{score === null ? "—" : formatReliabilityScore(score)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatReliabilityScore(score: number) {
+  return `${(score * 100).toFixed(1)}%`;
 }
 
 async function startRomeSequentialSeries(
@@ -1209,7 +1333,9 @@ function ResultPanel({ result, job }: { result: Record<string, unknown> | null; 
             {generations.map((generation, index) => (
               <div key={`${generation.prompt}-${index}`} className="grid gap-2 border-b border-line pb-3 last:border-b-0 last:pb-0">
                 <div className="font-mono text-xs text-ink/50">{generation.prompt}</div>
-                <div className="whitespace-pre-wrap text-sm leading-6 text-ink">{generation.text}</div>
+                <div className="whitespace-pre-wrap break-words text-sm leading-6 text-ink">
+                  <HighlightedGeneration text={generation.text} target={generation.targetNew} />
+                </div>
               </div>
             ))}
           </div>
@@ -1224,14 +1350,55 @@ function ResultPanel({ result, job }: { result: Record<string, unknown> | null; 
 function parseGenerations(result: Record<string, unknown> | null) {
   const value = result?.generations;
   if (!Array.isArray(value)) return [];
+  const targetByPrompt = new Map<string, string>();
+  const patch = result?.patch;
+  if (patch && typeof patch === "object") {
+    const edits = (patch as Record<string, unknown>).edits;
+    if (Array.isArray(edits)) {
+      for (const edit of edits) {
+        if (!edit || typeof edit !== "object") continue;
+        const record = edit as Record<string, unknown>;
+        if (typeof record.subject !== "string" || typeof record.relation_prompt !== "string" || typeof record.new_object !== "string") continue;
+        targetByPrompt.set(buildEditPrompt(record.subject, record.relation_prompt), record.new_object);
+      }
+    }
+  }
   return value
     .map((item) => {
       if (!item || typeof item !== "object") return null;
       const record = item as Record<string, unknown>;
+      const prompt = typeof record.prompt === "string" ? record.prompt : "";
       return {
-        prompt: typeof record.prompt === "string" ? record.prompt : "",
-        text: typeof record.text === "string" ? record.text : ""
+        prompt,
+        text: typeof record.text === "string" ? record.text : "",
+        targetNew: typeof record.target_new === "string" ? record.target_new : targetByPrompt.get(prompt) ?? ""
       };
     })
-    .filter((item): item is { prompt: string; text: string } => Boolean(item?.text));
+    .filter((item): item is { prompt: string; text: string; targetNew: string } => Boolean(item?.text));
+}
+
+function HighlightedGeneration({ text, target }: { text: string; target: string }) {
+  const normalizedTarget = target.trim();
+  if (!normalizedTarget) return <>{text}</>;
+
+  const normalizedText = text.toLocaleLowerCase();
+  const needle = normalizedTarget.toLocaleLowerCase();
+  const fragments: ReactNode[] = [];
+  let cursor = 0;
+  let matchIndex = normalizedText.indexOf(needle, cursor);
+
+  while (matchIndex >= 0) {
+    if (matchIndex > cursor) fragments.push(text.slice(cursor, matchIndex));
+    fragments.push(
+      <mark key={`${matchIndex}-${cursor}`} className="rounded bg-cyan/20 px-0.5 font-medium text-cyan">
+        {text.slice(matchIndex, matchIndex + normalizedTarget.length)}
+      </mark>
+    );
+    cursor = matchIndex + normalizedTarget.length;
+    matchIndex = normalizedText.indexOf(needle, cursor);
+  }
+
+  if (cursor === 0) return <>{text}</>;
+  if (cursor < text.length) fragments.push(text.slice(cursor));
+  return <>{fragments}</>;
 }
