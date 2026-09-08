@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AccentThemeProvider } from "@/components/AccentTheme";
 import { AppShell } from "@/components/AppShell";
 import { WorkbenchDataProvider } from "@/components/DataState";
 import { WorkbenchSessionProvider } from "@/components/WorkbenchSession";
@@ -13,11 +14,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <WorkbenchDataProvider>
-          <WorkbenchSessionProvider>
-            <AppShell>{children}</AppShell>
-          </WorkbenchSessionProvider>
-        </WorkbenchDataProvider>
+        <AccentThemeProvider>
+          <WorkbenchDataProvider>
+            <WorkbenchSessionProvider>
+              <AppShell>{children}</AppShell>
+            </WorkbenchSessionProvider>
+          </WorkbenchDataProvider>
+        </AccentThemeProvider>
       </body>
     </html>
   );

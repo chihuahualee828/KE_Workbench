@@ -3,6 +3,9 @@
 @tailwind utilities;
 
 :root {
+  --accent: 91 87 214;
+  --accent-hover: 67 56 202;
+  --accent-light: 200 197 255;
   color-scheme: light;
   background: #f6f7fb;
   color: #202939;
@@ -11,13 +14,18 @@
   -webkit-font-smoothing: antialiased;
 }
 
+[data-accent="blue"] { --accent: 37 99 235; --accent-hover: 29 78 216; --accent-light: 191 219 254; }
+[data-accent="teal"] { --accent: 15 118 110; --accent-hover: 17 94 89; --accent-light: 153 246 228; }
+[data-accent="green"] { --accent: 21 128 61; --accent-hover: 22 101 52; --accent-light: 187 247 208; }
+[data-accent="rose"] { --accent: 190 24 93; --accent-hover: 157 23 77; --accent-light: 251 207 232; }
+
 * { box-sizing: border-box; }
 body { margin: 0; }
 button, input, textarea, select { font: inherit; }
 button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
 button, a, summary { touch-action: manipulation; }
-:focus-visible { outline: 3px solid #9b96f1; outline-offset: 3px; }
-::selection { background: #e3e0ff; }
+:focus-visible { outline: 3px solid rgb(var(--accent) / 0.55); outline-offset: 3px; }
+::selection { background: rgb(var(--accent) / 0.18); }
 input, select, textarea { min-width: 0; max-width: 100%; }
 pre { overflow-wrap: anywhere; }
 summary { cursor: pointer; }
@@ -28,8 +36,12 @@ summary { cursor: pointer; }
     @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none transition placeholder:text-ink/35 hover:border-ink/25 focus:border-cyan focus:ring-4 focus:ring-cyan/10 disabled:cursor-not-allowed disabled:bg-panel disabled:text-ink/50;
   }
   .tool-button {
-    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-transparent bg-cyan px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-moss active:translate-y-px disabled:cursor-not-allowed disabled:bg-line disabled:text-ink/40 disabled:shadow-none;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-transparent px-4 py-2.5 text-sm font-medium text-white shadow-sm transition active:translate-y-px disabled:cursor-not-allowed disabled:bg-line disabled:text-ink/40 disabled:shadow-none;
   }
+  /* Resolve primary action colors at runtime after every theme switch. */
+  .tool-button { background-color: rgb(var(--accent)); }
+  .tool-button:hover:not(:disabled) { background-color: rgb(var(--accent-hover)); }
+  .tool-button:disabled { background-color: #e3e7ef; }
   .ghost-button {
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-medium text-ink/75 shadow-sm transition hover:border-cyan/30 hover:bg-cyan/5 hover:text-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-ink/35 disabled:shadow-none;
   }
@@ -47,11 +59,11 @@ summary { cursor: pointer; }
   .app-main { @apply mx-auto min-h-[calc(100vh-120px)] max-w-[1600px] outline-none; }
   .app-sidebar { @apply fixed inset-y-0 left-0 z-40 hidden w-[224px] flex-col bg-[#161d2e] text-white lg:flex; }
   .brand-link { @apply flex items-center gap-3 border-b border-white/[0.07] px-5 py-6; }
-  .brand-mark { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#736ee7] text-white; }
+  .brand-mark { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan text-white; }
   .sidebar-navigation { @apply flex-1 overflow-y-auto px-3 pb-6 pt-2; }
   .nav-group-label { @apply mb-2 mt-6 px-3 text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-500; }
   .nav-link { @apply mb-1 flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium text-slate-400 transition hover:bg-white/5 hover:text-white; }
-  .nav-link-active { @apply bg-[#736ee7]/20 text-[#c8c5ff] ring-1 ring-inset ring-[#736ee7]/15 hover:bg-[#736ee7]/20 hover:text-[#c8c5ff]; }
+  .nav-link-active { @apply bg-cyan/20 text-[rgb(var(--accent-light))] ring-1 ring-inset ring-cyan/15 hover:bg-cyan/20 hover:text-[rgb(var(--accent-light))]; }
   .sidebar-footer { @apply border-t border-white/[0.07] p-6; }
   .app-topbar { @apply sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-line bg-white/95 px-4 backdrop-blur-md sm:px-6 xl:px-9; }
   .mobile-navigation { @apply sticky top-16 z-20 flex gap-1 overflow-x-auto border-b border-line bg-white px-3 py-2 lg:hidden; }

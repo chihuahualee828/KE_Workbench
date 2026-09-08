@@ -8,9 +8,9 @@ const config: Config = {
         ink: "#202939",
         panel: "#f6f7fb",
         line: "#e3e7ef",
-        moss: "#4338ca",
+        moss: "rgb(var(--accent-hover) / <alpha-value>)",
         rust: "#b45332",
-        cyan: "#5b57d6"
+        cyan: "rgb(var(--accent) / <alpha-value>)"
       }
     }
   },
