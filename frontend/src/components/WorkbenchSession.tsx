@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 import type { EditJob } from "@/lib/types";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 type EditSessionState = {
   result: Record<string, unknown> | null;
@@ -22,7 +23,7 @@ const WorkbenchSessionContext = createContext<WorkbenchSessionValue | null>(null
 
 export function WorkbenchSessionProvider({ children }: { children: React.ReactNode }) {
   const [edit, setEditState] = useState<EditSessionState>({ result: null, job: null });
-  const [evaluationResult, setEvaluationResult] = useState<Record<string, unknown> | null>(null);
+  const [evaluationResult, setEvaluationResult] = usePersistentState<Record<string, unknown> | null>("kew:evaluate:result", null);
   const [generationOutputs, setGenerationOutputs] = useState<Record<string, string>>({});
   const setEdit = useCallback((update: (current: EditSessionState) => EditSessionState) => {
     setEditState(update);
