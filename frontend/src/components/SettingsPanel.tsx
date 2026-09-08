@@ -8,6 +8,7 @@ import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { AppSettings, EditJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { AccentThemeSettings } from "./AccentTheme";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 
 export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; runtime: ModelRuntimeStatus[] }) {
@@ -60,6 +61,7 @@ export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; r
 
   return (
     <div className="grid gap-4">
+      <AccentThemeSettings />
       <section className="panel">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">

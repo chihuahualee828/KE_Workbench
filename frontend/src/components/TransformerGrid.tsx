@@ -151,11 +151,11 @@ export function TransformerGrid({ cells, tokens, selected, onSelect }: { cells: 
             <text x={LABEL_WIDTH} y={16} fontSize={10} fontWeight={600} letterSpacing={1.2} fill="#778196">TRANSFORMER LAYERS →</text>
             <text x={0} y={HEADER_HEIGHT - 12} fontSize={10} fill="#778196">TOKEN / POSITION</text>
             {layers.map((layer, column) => <g key={layer}>
-              {(hovered ?? selected)?.layer === layer ? <rect x={LABEL_WIDTH + column * CELL_WIDTH} y={25} width={CELL_WIDTH} height={contentHeight - 25} rx={5} fill="#5b57d6" fillOpacity={0.07} /> : null}
+              {(hovered ?? selected)?.layer === layer ? <rect x={LABEL_WIDTH + column * CELL_WIDTH} y={25} width={CELL_WIDTH} height={contentHeight - 25} rx={5} fill="rgb(var(--accent))" fillOpacity={0.07} /> : null}
               <text x={LABEL_WIDTH + (column + 0.5) * CELL_WIDTH} y={HEADER_HEIGHT - 12} textAnchor="middle" fontSize={11} fontWeight={500} fill="#637086">{layer}</text>
             </g>)}
             {tokens.map((token, row) => <g key={row}>
-              {(hovered ?? selected)?.token_index === row ? <rect x={0} y={HEADER_HEIGHT + row * CELL_HEIGHT} width={contentWidth} height={CELL_HEIGHT} rx={5} fill="#5b57d6" fillOpacity={0.07} /> : null}
+              {(hovered ?? selected)?.token_index === row ? <rect x={0} y={HEADER_HEIGHT + row * CELL_HEIGHT} width={contentWidth} height={CELL_HEIGHT} rx={5} fill="rgb(var(--accent))" fillOpacity={0.07} /> : null}
               <text x={0} y={HEADER_HEIGHT + (row + 0.5) * CELL_HEIGHT + 4} fontSize={10} fill="#94a0b3">{String(row).padStart(2, "0")}</text>
               <text x={26} y={HEADER_HEIGHT + (row + 0.5) * CELL_HEIGHT + 4} fontSize={11} fill="#39455b" fontFamily="ui-monospace, monospace"><title>{token}</title>{token.length > 10 ? `${token.slice(0, 9)}…` : token.replace(/ /g, "·")}</text>
               {layers.map((layer, column) => {
@@ -166,8 +166,8 @@ export function TransformerGrid({ cells, tokens, selected, onSelect }: { cells: 
                 const y = HEADER_HEIGHT + row * CELL_HEIGHT + 3;
                 const color = (cell?.indirect_effect ?? 0) < 0 ? "194, 79, 110" : "24, 143, 133";
                 return <g key={layer}>
-                  <rect x={x} y={y} width={CELL_WIDTH - 6} height={CELL_HEIGHT - 6} rx={6} fill={cell ? `rgba(${color}, ${0.07 + intensity * 0.83})` : "#e9edf3"} stroke={isSelected ? "#5b57d6" : "#ffffff"} strokeWidth={isSelected ? 2.5 : 1}><title>{cell ? `Token ${row}: ${token}, layer ${layer}. Indirect effect: ${cell.indirect_effect.toFixed(4)}` : "Not evaluated"}</title></rect>
-                  {isSelected ? <g pointerEvents="none"><circle cx={x + 19} cy={y + 18} r={9} fill="white" stroke="#5b57d6" strokeWidth={1.5} /><circle cx={x + 19} cy={y + 18} r={3.5} fill="#5b57d6" /></g> : null}
+                  <rect x={x} y={y} width={CELL_WIDTH - 6} height={CELL_HEIGHT - 6} rx={6} fill={cell ? `rgba(${color}, ${0.07 + intensity * 0.83})` : "#e9edf3"} stroke={isSelected ? "rgb(var(--accent))" : "#ffffff"} strokeWidth={isSelected ? 2.5 : 1}><title>{cell ? `Token ${row}: ${token}, layer ${layer}. Indirect effect: ${cell.indirect_effect.toFixed(4)}` : "Not evaluated"}</title></rect>
+                  {isSelected ? <g pointerEvents="none"><circle cx={x + 19} cy={y + 18} r={9} fill="white" stroke="rgb(var(--accent))" strokeWidth={1.5} /><circle cx={x + 19} cy={y + 18} r={3.5} fill="rgb(var(--accent))" /></g> : null}
                 </g>;
               })}
             </g>)}

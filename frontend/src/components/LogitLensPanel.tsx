@@ -79,7 +79,7 @@ export function LogitLensPanel({ models, runtime = [] }: { models: SupportedMode
               <XAxis dataKey="layer" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis domain={[0, 1]} tickFormatter={(value: number) => `${Math.round(value * 100)}%`} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
               <Tooltip />
-              <Line type="monotone" dataKey="probability" stroke="#5b57d6" strokeWidth={2.5} dot={false} />
+              <Line type="monotone" dataKey="probability" stroke="rgb(var(--accent))" strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
