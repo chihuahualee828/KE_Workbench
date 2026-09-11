@@ -1,10 +1,49 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from app.ml.inference.generate import generate_text
 from app.services.patch_service import patch_service
 
 
 class EvaluationService:
+    def evaluate_easyedit_quality(
+        self,
+        model_id: str,
+        method: str,
+        edits: list[dict],
+        include_generations: bool = False,
+        on_progress: Callable[[int, int], None] | None = None,
+        cancel_job_id: str | None = None,
+    ) -> dict:
+        from app.ml.editing.easyedit_runtime import evaluate_easyedit_quality
+        from app.services.model_runtime_service import model_runtime_service
+
+        if getattr(model_runtime_service, "uses_hard_worker", False):
+            return model_runtime_service.execute(
+                "easyedit_edit_quality",
+                {
+                    "model_id": model_id,
+                    "method": method,
+                    "edits": edits,
+                    "include_generations": include_generations,
+                    "cancel_job_id": cancel_job_id,
+                },
+                timeout=7200.0,
+                progress_callback=(
+                    (lambda update: on_progress(int(update["current"]), int(update["total"])))
+                    if on_progress is not None else None
+                ),
+            )
+        return evaluate_easyedit_quality(
+            model_id=model_id,
+            method=method,
+            edits=edits,
+            include_generations=include_generations,
+            progress_callback=on_progress,
+            cancel_job_id=cancel_job_id,
+        )
+
     def evaluate_easyedit_reliability(
         self,
         model_id: str,
@@ -13,21 +52,14 @@ class EvaluationService:
         include_generations: bool = False,
         evaluation_modes: list[str] | None = None,
     ) -> dict:
-        from app.ml.editing.easyedit_runtime import evaluate_easyedit_reliability
-        from app.services.model_runtime_service import model_runtime_service
+        """Compatibility entry point for existing reliability-only callers.
 
-        if getattr(model_runtime_service, "uses_hard_worker", False):
-            return model_runtime_service.execute(
-                "easyedit_reliability",
-                {
-                    "model_id": model_id,
-                    "method": method,
-                    "edits": edits,
-                    "include_generations": include_generations,
-                },
-                timeout=7200.0,
-            )
-        return evaluate_easyedit_reliability(
+        ``evaluation_modes`` was previously accepted by the public endpoint but
+        did not affect the evaluator.  The quality evaluator derives enabled
+        sub-metrics from each edit record instead.
+        """
+        del evaluation_modes
+        return self.evaluate_easyedit_quality(
             model_id=model_id,
             method=method,
             edits=edits,

@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 import zipfile
@@ -608,14 +609,20 @@ class HardUnloadModelRuntimeService:
             )
         return bundle
 
-    def execute(self, action: str, payload: dict[str, Any], timeout: float = 3600.0) -> dict[str, Any]:
+    def execute(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        timeout: float = 3600.0,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         model_id = payload.get("model_id")
         if not isinstance(model_id, str):
             raise ValueError("Model worker commands require model_id.")
         self.require_loaded_runtime_bundle(model_id)
         with self._worker_lock:
             self.require_loaded_runtime_bundle(model_id)
-            return self._call_worker_locked(action, payload, timeout=timeout)
+            return self._call_worker_locked(action, payload, timeout=timeout, progress_callback=progress_callback)
 
     def sync_loaded_model_to_active_patches(self, model_id: str) -> None:
         if self.loaded_runtime_bundle(model_id) is None:
@@ -709,7 +716,13 @@ class HardUnloadModelRuntimeService:
             self._terminate_worker_locked()
             raise ModelWorkerError("The isolated model worker did not initialize correctly.")
 
-    def _call_worker_locked(self, action: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    def _call_worker_locked(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        timeout: float,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         connection = self._connection
         if connection is None or not self._worker_is_alive_locked():
             raise ModelWorkerError("The isolated model worker is not running.")
@@ -722,16 +735,25 @@ class HardUnloadModelRuntimeService:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ModelWorkerError(f"Timed out while running model worker action {action!r}.")
-            if not connection.poll(min(0.25, remaining)):
+            try:
+                has_message = connection.poll(min(0.25, remaining))
+            except (EOFError, OSError) as exc:
+                raise ModelWorkerError("The isolated model worker exited unexpectedly.") from exc
+            if not has_message:
                 if not self._worker_is_alive_locked():
                     raise ModelWorkerError("The isolated model worker exited unexpectedly.")
                 continue
             try:
                 message = connection.recv()
-            except EOFError as exc:
+            except (EOFError, OSError) as exc:
                 raise ModelWorkerError("The isolated model worker exited unexpectedly.") from exc
             if message.get("type") == "log":
                 print(str(message.get("text", "")), end="")
+                continue
+            if message.get("type") == "progress":
+                progress = message.get("progress")
+                if isinstance(progress, dict) and progress_callback is not None:
+                    progress_callback(progress)
                 continue
             if message.get("type") != "result":
                 continue
