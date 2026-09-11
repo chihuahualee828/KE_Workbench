@@ -137,12 +137,30 @@ class ReliabilityEvaluationRequest(BaseModel):
     evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
 
 
+class ActiveModelEvaluationRequest(BaseModel):
+    """Evaluate the edit facts currently active for a model.
+
+    Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive
+    the full edit list from the browser.  The server resolves that list from the
+    active patch stack so a large evaluation does not require the page to have
+    loaded every fact first.
+    """
+
+    model_id: str = "gpt2-xl"
+    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    rephrase_overrides: dict[str, str] = Field(default_factory=dict)
+    include_generations: bool = True
+
+
 class JobResponse(BaseModel):
     job_id: str
     experiment_id: str
     status: str
     progress: float = 0.0
+    progress_current: int | None = None
+    progress_total: int | None = None
     logs: list[str] = Field(default_factory=list)
+    log_count: int = 0
     result: dict[str, Any] | None = None
 
 
