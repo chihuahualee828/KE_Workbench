@@ -19,6 +19,7 @@ def run_rome_edit(
     portability_inputs: dict | None,
     sequential_edit: bool,
     mom2_adjustment: bool,
+    source_metadata: dict | None = None,
     generate_evaluation: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
@@ -39,6 +40,7 @@ def run_rome_edit(
                 "portability_inputs": portability_inputs,
                 "sequential_edit": sequential_edit,
                 "mom2_adjustment": mom2_adjustment,
+                "source_metadata": source_metadata,
                 "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
@@ -46,6 +48,8 @@ def run_rome_edit(
     edit = edit_to_patch_entry(subject, relation_prompt, new_object)
     if ground_truth is not None:
         edit["ground_truth"] = ground_truth
+    if source_metadata:
+        edit["source_metadata"] = source_metadata
     all_rephrases = [*evaluation_prompts, *rephrase_prompts]
 
     model_info = model_registry.get(model_id)
@@ -126,6 +130,7 @@ def run_rome_sequential_edits(
             portability_inputs=None,
             sequential_edit=True,
             mom2_adjustment=mom2_adjustment,
+            source_metadata=edit.get("source_metadata") if isinstance(edit.get("source_metadata"), dict) else None,
             generate_evaluation=False,
         )
         patch_results.append(result)

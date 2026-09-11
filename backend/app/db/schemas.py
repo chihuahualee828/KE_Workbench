@@ -93,6 +93,7 @@ class EditSpec(BaseModel):
     new_object: str
     ground_truth: str | None = None
     rephrase_prompts: list[str] = Field(default_factory=list)
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RomeSequentialEditsRequest(BaseModel):
