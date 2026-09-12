@@ -2,14 +2,15 @@
 
 import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceExperimentStarted } from "@/lib/experimentEvents";
+import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
+import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
 import { PatchHistory } from "./PatchHistory";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 import { useWorkbenchSession } from "./WorkbenchSession";
@@ -26,6 +27,7 @@ type FactEditDraft = {
 };
 
 type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type ReliabilityTestProgress = { completed: number; total: number } | null;
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
@@ -96,7 +98,9 @@ function KnForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityTestProgress, setReliabilityTestProgress] = useState<ReliabilityTestProgress>(null);
   const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
+  const reliabilityTestCancellation = useReliabilityTestCancellation();
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const evaluationPrompts = useMemo(
     () => buildFactEvaluationPrompts([{ subject, relation_prompt: relationPrompt }]),
@@ -149,6 +153,9 @@ function KnForm({
     if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability) return;
     setTestingReliability(true);
     setError("");
+    setReliabilityResult(null);
+    setReliabilityTestProgress(null);
+    reliabilityTestCancellation.reset();
     try {
       const response = await api.easyEditReliability({
         model_id: modelId,
@@ -156,9 +163,11 @@ function KnForm({
         edits: [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }],
         include_generations: true
       });
+      reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
         if (!job.result) return;
         setReliabilityResult(job.result);
+        setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
           reliability: job.result,
           reliability_test_job_id: job.job_id,
@@ -172,6 +181,7 @@ function KnForm({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTestingReliability(false);
+      reliabilityTestCancellation.reset();
     }
   }
 
@@ -189,8 +199,12 @@ function KnForm({
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
           onTest={testReliability}
+          onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
           reliabilityResult={reliabilityResult}
+          testProgress={reliabilityTestProgress}
           testing={testingReliability}
+          testCancelable={Boolean(reliabilityTestCancellation.jobId)}
+          testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
@@ -278,7 +292,9 @@ function RomeForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityTestProgress, setReliabilityTestProgress] = useState<ReliabilityTestProgress>(null);
   const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
+  const reliabilityTestCancellation = useReliabilityTestCancellation();
   const [locatingLayer, setLocatingLayer] = useState(false);
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
@@ -395,6 +411,9 @@ function RomeForm({
     if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability) return;
     setTestingReliability(true);
     setError("");
+    setReliabilityResult(null);
+    setReliabilityTestProgress(null);
+    reliabilityTestCancellation.reset();
     try {
       const response = await api.easyEditReliability({
         model_id: modelId,
@@ -407,9 +426,11 @@ function RomeForm({
         })),
         include_generations: true
       });
+      reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
         if (!job.result) return;
         setReliabilityResult(job.result);
+        setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
           reliability: job.result,
           reliability_test_job_id: job.job_id,
@@ -423,6 +444,7 @@ function RomeForm({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTestingReliability(false);
+      reliabilityTestCancellation.reset();
     }
   }
 
@@ -518,8 +540,12 @@ function RomeForm({
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
           onTest={testReliability}
+          onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
           reliabilityResult={reliabilityResult}
+          testProgress={reliabilityTestProgress}
           testing={testingReliability}
+          testCancelable={Boolean(reliabilityTestCancellation.jobId)}
+          testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
@@ -685,7 +711,9 @@ function MemitForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityTestProgress, setReliabilityTestProgress] = useState<ReliabilityTestProgress>(null);
   const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
+  const reliabilityTestCancellation = useReliabilityTestCancellation();
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
@@ -791,6 +819,9 @@ function MemitForm({
     if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability || !editDrafts?.length) return;
     setTestingReliability(true);
     setError("");
+    setReliabilityResult(null);
+    setReliabilityTestProgress(null);
+    reliabilityTestCancellation.reset();
     try {
       const response = await api.easyEditReliability({
         model_id: modelId,
@@ -803,9 +834,11 @@ function MemitForm({
         })),
         include_generations: true
       });
+      reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
         if (!job.result) return;
         setReliabilityResult(job.result);
+        setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
           reliability: job.result,
           reliability_test_job_id: job.job_id,
@@ -819,6 +852,7 @@ function MemitForm({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTestingReliability(false);
+      reliabilityTestCancellation.reset();
     }
   }
 
@@ -950,8 +984,12 @@ function MemitForm({
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
           onTest={testReliability}
+          onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
           reliabilityResult={reliabilityResult}
+          testProgress={reliabilityTestProgress}
           testing={testingReliability}
+          testCancelable={Boolean(reliabilityTestCancellation.jobId)}
+          testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length || !editDrafts?.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
@@ -1137,30 +1175,104 @@ async function generateReliabilityTestOutputs(
 
 async function watchReliabilityTestJob(initial: EditJob, onUpdate: (job: EditJob) => void): Promise<EditJob> {
   announceExperimentStarted(initial.experiment_id);
-  let current = initial;
-  while (current.status === "running") {
-    onUpdate(current);
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
-    current = await api.easyEditReliabilityJob(current.job_id);
-  }
-  onUpdate(current);
-  if (current.status === "failed") {
-    throw new Error(current.logs[current.logs.length - 1] ?? "Reliability evaluation failed.");
-  }
-  return current;
+  return new Promise<EditJob>((resolve, reject) => {
+    let current = initial;
+    let timer: number | null = null;
+    let settled = false;
+    let stopCanceledListener: () => void = () => undefined;
+    const finish = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      stopCanceledListener();
+    };
+    const succeed = (job: EditJob) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      resolve(job);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      reject(error);
+    };
+    stopCanceledListener = listenForExperimentCanceled(({ jobId }) => {
+      if (jobId !== initial.job_id) return;
+      current = { ...current, status: "canceled" };
+      onUpdate(current);
+      succeed(current);
+    });
+    const poll = () => {
+      if (settled) return;
+      onUpdate(current);
+      if (current.status !== "running") {
+        if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Reliability evaluation failed."));
+        else succeed(current);
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void api.easyEditReliabilityJob(current.job_id)
+          .then((job) => {
+            if (settled) return;
+            current = job;
+            poll();
+          })
+          .catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
+      }, 500);
+    };
+    poll();
+  });
+}
+
+function useReliabilityTestCancellation() {
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [canceling, setCanceling] = useState(false);
+  const reset = useCallback(() => {
+    setJobId(null);
+    setCanceling(false);
+  }, []);
+  const cancel = useCallback(async () => {
+    if (!jobId || canceling) return;
+    setCanceling(true);
+    try {
+      const canceledJob = await api.cancelEvaluationJob(jobId);
+      if (canceledJob.status !== "canceled") throw new Error("This evaluation is no longer running.");
+      announceExperimentCanceled({ experimentId: canceledJob.experiment_id, jobId: canceledJob.job_id });
+    } catch (error) {
+      setCanceling(false);
+      throw error;
+    }
+  }, [canceling, jobId]);
+  return { cancel, canceling, jobId, reset, setJobId };
+}
+
+function reliabilityTestJobProgress(job: EditJob): ReliabilityTestProgress {
+  const completed = job.progress_current;
+  const total = job.progress_total;
+  return typeof completed === "number" && typeof total === "number" && total > 0
+    ? { completed, total }
+    : null;
 }
 
 function DerivedEvaluationPrompts({
   prompts,
   onTest,
+  onCancel,
   reliabilityResult,
+  testProgress,
   testing,
+  testCancelable,
+  testCanceling,
   testDisabled
 }: {
   prompts: string[];
   onTest: () => void;
+  onCancel: () => void;
   reliabilityResult: Record<string, unknown> | null;
+  testProgress: ReliabilityTestProgress;
   testing: boolean;
+  testCancelable: boolean;
+  testCanceling: boolean;
   testDisabled: boolean;
 }) {
   const meanReliability = typeof reliabilityResult?.mean_reliability === "number"
@@ -1169,6 +1281,8 @@ function DerivedEvaluationPrompts({
   const cases = Array.isArray(reliabilityResult?.cases)
     ? reliabilityResult.cases.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
     : [];
+  const completed = testProgress?.completed ?? 0;
+  const total = testProgress?.total ?? 0;
 
   return (
     <div className="grid min-w-0 max-w-full gap-2">
@@ -1192,7 +1306,9 @@ function DerivedEvaluationPrompts({
         readOnly
         value={prompts.join("\n")}
       />
-      <p className="max-w-full break-words text-xs text-ink/60">Derived from the current edit facts and evaluated after the edit. Use Generate for custom prompt testing.</p>
+      {testing ? (
+        <EvaluationProgressIndicator cancelDisabled={!testCancelable} canceling={testCanceling} current={completed} multiFactLabel="Testing edit facts…" onCancel={onCancel} preparingLabel="Preparing EasyEdit…" singleFactLabel="Evaluating fact…" total={total} />
+      ) : null}
       {reliabilityResult ? (
         <div className="grid min-w-0 max-w-full gap-2 overflow-hidden rounded-md border border-cyan/30 bg-cyan/5 p-3 text-sm">
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2">

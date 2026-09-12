@@ -34,6 +34,9 @@ def evaluate(request: EvaluationRequest) -> JobResponse:
     except RuntimeError as exc:
         experiment_service.fail_job(job["id"], str(exc))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        experiment_service.fail_job(job["id"], str(exc))
+        raise HTTPException(status_code=500, detail="Evaluation failed") from exc
     experiment_service.complete_job(job["id"], result)
     return JobResponse(
         job_id=job["id"],
@@ -83,6 +86,21 @@ def get_reliability_evaluation_job(job_id: str) -> JobResponse:
     job = experiment_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Reliability evaluation job not found")
+    return _reliability_evaluation_job_response(job)
+
+
+@router.post("/evaluate/jobs/{job_id}/cancel", response_model=JobResponse)
+def cancel_evaluation_job(job_id: str) -> JobResponse:
+    current_job = experiment_service.get_job(job_id)
+    if current_job is None:
+        raise HTTPException(status_code=404, detail="Evaluation job not found")
+    experiment = experiment_service.get_experiment(str(current_job["experiment_id"]))
+    if experiment is None or experiment.get("type") != "evaluation":
+        raise HTTPException(status_code=404, detail="Evaluation job not found")
+
+    job = experiment_service.cancel_job(job_id, None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Evaluation job not found")
     return _reliability_evaluation_job_response(job)
 
 
@@ -152,6 +170,7 @@ def _run_reliability_evaluation(
                     generalization_count=generalization_count,
                 )
 
+            experiment_service.append_job_log(job_id, "Preparing EasyEdit")
             experiment_service.append_job_log(job_id, f"Testing {total} edit fact{'s' if total != 1 else ''}")
             for index, edit in enumerate(edits, start=1):
                 current_job = experiment_service.get_job(job_id)
@@ -403,12 +422,9 @@ def _run_active_model_evaluation(
             job = experiment_service.get_job(job_id)
             if job is None or job.get("status") != "running":
                 return
-            total_facts = len(edits) if needs_edit_quality else len(facts)
             experiment_service.append_job_log(
                 job_id,
-                "Starting evaluation",
-                progress_current=0,
-                progress_total=max(1, total_facts),
+                "Preparing EasyEdit" if needs_edit_quality else "Preparing evaluation",
             )
             experiment_service.set_job_progress(job_id, 0.05)
 

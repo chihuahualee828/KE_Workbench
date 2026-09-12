@@ -4,7 +4,7 @@ import { BarChart3, FlaskConical, Loader2, SlidersHorizontal, X } from "lucide-r
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceExperimentStarted } from "@/lib/experimentEvents";
+import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import { useIndexedFactDataset } from "@/lib/factDataset";
 import type { EvaluationFact, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
@@ -104,6 +104,8 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   const { evaluationExperimentId, setEvaluationExperimentId } = useWorkbenchSession();
   const [overview, setOverview] = useState<EvaluationResultOverview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [evaluationJobId, setEvaluationJobId] = useState<string | null>(null);
   const [evaluationProgress, setEvaluationProgress] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState("");
   const [rawDataOpen, setRawDataOpen] = useState(false);
@@ -139,6 +141,17 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
 
   useLoadedModelSelection(models, runtime, setModelId);
 
+  useEffect(() => listenForExperimentCanceled(({ experimentId, jobId }) => {
+    if (experimentId !== evaluationExperimentId && jobId !== evaluationJobId) return;
+    setBusy(false);
+    setCanceling(false);
+    setEvaluationProgress(null);
+    setOverview(null);
+    setEvaluationExperimentId(null);
+    setEvaluationJobId(null);
+    setError("");
+  }), [evaluationExperimentId, evaluationJobId, setEvaluationExperimentId]);
+
   useEffect(() => {
     setFocusedResultIndex(null);
     setFocusedFactIndex(null);
@@ -147,6 +160,8 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     setRawData(null);
     setRawDataOpen(false);
     setEvaluationProgress(null);
+    setEvaluationJobId(null);
+    setCanceling(false);
   }, [activePatchSignature, modelId]);
 
   useEffect(() => {
@@ -172,6 +187,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       setOverview(null);
       setBusy(false);
       setEvaluationProgress(null);
+      setEvaluationJobId(null);
       return;
     }
     // Wait for the shared patch/runtime state before comparing an evaluation's
@@ -189,10 +205,12 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
           setOverview(null);
           setBusy(false);
           setEvaluationProgress(null);
+          setEvaluationJobId(null);
           return;
         }
         if (experiment.status === "running") {
           setBusy(true);
+          setEvaluationJobId(experiment.job?.id ?? null);
           setOverview(null);
           setEvaluationProgress({
             current: experiment.job?.progress_current ?? 0,
@@ -203,8 +221,17 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
         }
         setBusy(false);
         setEvaluationProgress(null);
+        if (experiment.status === "canceled") {
+          setEvaluationExperimentId(null);
+          setEvaluationJobId(null);
+          setOverview(null);
+          setCanceling(false);
+          setError("");
+          return;
+        }
         if (experiment.status !== "completed") {
           setEvaluationExperimentId(null);
+          setEvaluationJobId(null);
           setOverview(null);
           setError(experiment.error_message || "Evaluation did not complete.");
           return;
@@ -231,8 +258,9 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   async function run() {
     if (!modelLoaded || busy || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)) return;
     setError("");
+    setCanceling(false);
     setBusy(true);
-    setEvaluationProgress({ current: 0, total: facts.total });
+    setEvaluationProgress(null);
     try {
       const rephraseOverrides = Object.fromEntries(facts.items.flatMap((fact): Array<[string, string]> => fact.rephrase_override?.trim() ? [[fact.key, fact.rephrase_override.trim()]] : []));
       const response = await api.evaluateActiveModel({
@@ -243,6 +271,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       });
       announceExperimentStarted(response.experiment_id);
       setEvaluationExperimentId(response.experiment_id);
+      setEvaluationJobId(response.job_id);
       setOverview(null);
       setBusy(response.status === "running");
       if (response.status !== "running") setEvaluationProgress(null);
@@ -259,6 +288,22 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     }
   }
 
+  async function cancel() {
+    if (!evaluationJobId || !busy || canceling) return;
+    setCanceling(true);
+    setError("");
+    try {
+      const canceledJob = await api.cancelEvaluationJob(evaluationJobId);
+      if (canceledJob.status !== "canceled") {
+        throw new Error("This evaluation is no longer running.");
+      }
+      announceExperimentCanceled({ experimentId: canceledJob.experiment_id, jobId: canceledJob.job_id });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel evaluation.");
+    } finally {
+      setCanceling(false);
+    }
+  }
 
   async function saveRephrase(index: number, fact: StoredEvaluationFact) {
     if (editingRephrase?.key !== fact.key || editingRephrase.index !== index) return;
@@ -318,7 +363,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       </section>
       <section className="panel grid gap-4" aria-busy={busy}>
         <h2 className="flex items-center gap-2 text-sm font-semibold"><FlaskConical size={17} className="text-cyan" />Evaluation results</h2>
-        {busy ? <EvaluationProgressIndicator current={evaluationProgress?.current} multiFactLabel="Running highlighted metrics…" singleFactLabel="Evaluating fact…" total={evaluationProgress?.total} /> : null}
+        {busy ? <EvaluationProgressIndicator cancelDisabled={!evaluationJobId} canceling={canceling} current={evaluationProgress?.current} multiFactLabel="Running highlighted metrics…" onCancel={() => void cancel()} preparingLabel={needsEditQuality ? "Preparing EasyEdit…" : "Preparing evaluation…"} singleFactLabel="Evaluating fact…" total={evaluationProgress?.total} /> : null}
         {overview ? <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{Object.entries(overview.metrics).map(([key, value]) => {
             const scoreGenerationMetric: EvaluationGenerationMetric | null = key === "reliability_rewrite_acc" ? "reliability" : key === "generalization_rephrase_acc" ? "generalization" : key === "locality_preservation_acc" ? "locality" : null;

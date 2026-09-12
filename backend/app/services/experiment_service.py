@@ -354,6 +354,29 @@ class ExperimentService:
             local_store.write_json(f"experiments/{experiment['id']}.json", experiment)
             self._condition.notify_all()
 
+    def cancel_job(self, job_id: str, message: str | None = "Canceled by user.") -> dict[str, Any] | None:
+        """Make cancellation terminal before the running worker returns."""
+        with self._condition:
+            try:
+                job = local_store.read_json(f"experiments/{job_id}.json")
+            except FileNotFoundError:
+                return None
+            if job.get("status") != "running":
+                return job
+            experiment = local_store.read_json(f"experiments/{job['experiment_id']}.json")
+            job["status"] = "canceled"
+            job["progress"] = 1.0
+            if message:
+                _append_job_logs(job, [message])
+            job["updated_at"] = _now()
+            experiment["status"] = "canceled"
+            experiment["error_message"] = message or ""
+            experiment["updated_at"] = _now()
+            local_store.write_json(f"experiments/{job_id}.json", job)
+            local_store.write_json(f"experiments/{experiment['id']}.json", experiment)
+            self._condition.notify_all()
+            return job
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         try:
             with self._lock:

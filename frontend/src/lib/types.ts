@@ -35,18 +35,30 @@ export type Experiment = {
   id: string;
   type: string;
   model_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   created_at: string;
   updated_at?: string;
   input_json?: Record<string, unknown>;
   result_path?: string | null;
   error_message?: string | null;
+  job?: ExperimentJobSummary;
+};
+
+export type ExperimentJobSummary = {
+  id: string;
+  experiment_id: string;
+  status: "running" | "completed" | "failed" | "canceled";
+  progress: number;
+  progress_current?: number | null;
+  progress_total?: number | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ExperimentJob = {
   id: string;
   experiment_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   progress: number;
   progress_current?: number | null;
   progress_total?: number | null;
