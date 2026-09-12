@@ -1,4 +1,4 @@
-import type { AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, SupportedModel, TraceCell } from "./types";
+import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, SupportedModel, TraceCell } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -367,5 +367,23 @@ export const api = {
     request<EditJob>("/api/evaluate/reliability", {
       method: "POST",
       body: JSON.stringify(body)
-    })
+    }),
+  activeEvaluationFacts: (modelId: string) =>
+    request<ActiveEvaluationFacts>(`/api/evaluate/active-facts?model_id=${encodeURIComponent(modelId)}`),
+  evaluateActiveModel: (body: {
+    model_id: string;
+    evaluation_modes: Array<"reliability" | "generalization" | "locality" | "portability">;
+    rephrase_overrides: Record<string, string>;
+    include_generations: boolean;
+  }) =>
+    request<EditJob>("/api/evaluate/active-model", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  evaluationResultOverview: (experimentId: string) =>
+    request<EvaluationResultOverview>(`/api/evaluate/results/${encodeURIComponent(experimentId)}`),
+  evaluationResultPage: (experimentId: string, offset: number) =>
+    request<EvaluationResultPage>(`/api/evaluate/results/${encodeURIComponent(experimentId)}/page?offset=${offset}`),
+  evaluationResultRaw: (experimentId: string) =>
+    request<Record<string, unknown>>(`/api/evaluate/results/${encodeURIComponent(experimentId)}/raw`)
 };

@@ -1,9 +1,9 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import type { EditJob } from "@/lib/types";
-import { usePersistentState } from "@/lib/usePersistentState";
+import { useSessionState } from "@/lib/useSessionState";
 
 type EditSessionState = {
   result: Record<string, unknown> | null;
@@ -13,8 +13,8 @@ type EditSessionState = {
 type WorkbenchSessionValue = {
   edit: EditSessionState;
   setEdit: (update: (current: EditSessionState) => EditSessionState) => void;
-  evaluationResult: Record<string, unknown> | null;
-  setEvaluationResult: (result: Record<string, unknown> | null) => void;
+  evaluationExperimentId: string | null;
+  setEvaluationExperimentId: (experimentId: string | null) => void;
   generationOutput: (scope: string) => string;
   setGenerationOutput: (scope: string, output: string) => void;
 };
@@ -23,8 +23,13 @@ const WorkbenchSessionContext = createContext<WorkbenchSessionValue | null>(null
 
 export function WorkbenchSessionProvider({ children }: { children: React.ReactNode }) {
   const [edit, setEditState] = useState<EditSessionState>({ result: null, job: null });
-  const [evaluationResult, setEvaluationResult] = usePersistentState<Record<string, unknown> | null>("kew:evaluate:result", null);
+  const [evaluationExperimentId, setEvaluationExperimentId] = useSessionState<string | null>("kew:evaluate:experimentId", null);
   const [generationOutputs, setGenerationOutputs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    // Earlier versions stored the entire evaluation payload here.  Keep only a
+    // small tab-scoped experiment id now; result cards are loaded from server pages.
+    window.localStorage.removeItem("kew:evaluate:result");
+  }, []);
   const setEdit = useCallback((update: (current: EditSessionState) => EditSessionState) => {
     setEditState(update);
   }, []);
@@ -32,7 +37,7 @@ export function WorkbenchSessionProvider({ children }: { children: React.ReactNo
   const setGenerationOutput = useCallback((scope: string, output: string) => {
     setGenerationOutputs((current) => ({ ...current, [scope]: output }));
   }, []);
-  const value = useMemo(() => ({ edit, setEdit, evaluationResult, setEvaluationResult, generationOutput, setGenerationOutput }), [edit, evaluationResult, generationOutput, setEdit, setGenerationOutput]);
+  const value = useMemo(() => ({ edit, setEdit, evaluationExperimentId, setEvaluationExperimentId, generationOutput, setGenerationOutput }), [edit, evaluationExperimentId, generationOutput, setEdit, setGenerationOutput]);
 
   return <WorkbenchSessionContext.Provider value={value}>{children}</WorkbenchSessionContext.Provider>;
 }
