@@ -150,22 +150,23 @@ function KnForm({
     setTestingReliability(true);
     setError("");
     try {
-      const generations = await generateReliabilityTestOutputs(modelId, [{
-        subject,
-        relation_prompt: relationPrompt,
-        new_object: newObject
-      }]);
       const response = await api.easyEditReliability({
         model_id: modelId,
         method: "kn",
-        edits: [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }]
+        edits: [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }],
+        include_generations: true
       });
-      setReliabilityResult(response.result ?? null);
-      setResult({
-        reliability: response.result ?? null,
-        generations,
-        evaluation_only: true,
-        model_id: modelId
+      await watchReliabilityTestJob(response, (job) => {
+        if (!job.result) return;
+        setReliabilityResult(job.result);
+        setResult({
+          reliability: job.result,
+          reliability_test_job_id: job.job_id,
+          reliability_test_item_count: job.result_item_count ?? 0,
+          reliability_test_page_size: job.result_page_size ?? null,
+          evaluation_only: true,
+          model_id: modelId
+        });
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -395,7 +396,6 @@ function RomeForm({
     setTestingReliability(true);
     setError("");
     try {
-      const generations = await generateReliabilityTestOutputs(modelId, reliabilityEdits);
       const response = await api.easyEditReliability({
         model_id: modelId,
         method,
@@ -404,14 +404,20 @@ function RomeForm({
           relation_prompt: edit.relation_prompt,
           new_object: edit.new_object,
           ground_truth: edit.ground_truth || null
-        }))
+        })),
+        include_generations: true
       });
-      setReliabilityResult(response.result ?? null);
-      setResult({
-        reliability: response.result ?? null,
-        generations,
-        evaluation_only: true,
-        model_id: modelId
+      await watchReliabilityTestJob(response, (job) => {
+        if (!job.result) return;
+        setReliabilityResult(job.result);
+        setResult({
+          reliability: job.result,
+          reliability_test_job_id: job.job_id,
+          reliability_test_item_count: job.result_item_count ?? 0,
+          reliability_test_page_size: job.result_page_size ?? null,
+          evaluation_only: true,
+          model_id: modelId
+        });
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -786,7 +792,6 @@ function MemitForm({
     setTestingReliability(true);
     setError("");
     try {
-      const generations = await generateReliabilityTestOutputs(modelId, editDrafts);
       const response = await api.easyEditReliability({
         model_id: modelId,
         method: "memit",
@@ -795,14 +800,20 @@ function MemitForm({
           relation_prompt: edit.relation_prompt,
           new_object: edit.new_object,
           ground_truth: edit.ground_truth || null
-        }))
+        })),
+        include_generations: true
       });
-      setReliabilityResult(response.result ?? null);
-      setResult({
-        reliability: response.result ?? null,
-        generations,
-        evaluation_only: true,
-        model_id: modelId
+      await watchReliabilityTestJob(response, (job) => {
+        if (!job.result) return;
+        setReliabilityResult(job.result);
+        setResult({
+          reliability: job.result,
+          reliability_test_job_id: job.job_id,
+          reliability_test_item_count: job.result_item_count ?? 0,
+          reliability_test_page_size: job.result_page_size ?? null,
+          evaluation_only: true,
+          model_id: modelId
+        });
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1122,6 +1133,21 @@ async function generateReliabilityTestOutputs(
     generations.push({ prompt, text: response.text, target_new: edit.new_object });
   }
   return generations;
+}
+
+async function watchReliabilityTestJob(initial: EditJob, onUpdate: (job: EditJob) => void): Promise<EditJob> {
+  announceExperimentStarted(initial.experiment_id);
+  let current = initial;
+  while (current.status === "running") {
+    onUpdate(current);
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    current = await api.easyEditReliabilityJob(current.job_id);
+  }
+  onUpdate(current);
+  if (current.status === "failed") {
+    throw new Error(current.logs[current.logs.length - 1] ?? "Reliability evaluation failed.");
+  }
+  return current;
 }
 
 function DerivedEvaluationPrompts({

@@ -202,6 +202,79 @@ class ExperimentService:
             local_store.write_json(f"experiments/{experiment['id']}.json", experiment)
             self._condition.notify_all()
 
+    def set_job_partial_result(self, job_id: str, result: dict[str, Any]) -> None:
+        """Persist a running job's incremental result for a polling UI."""
+        with self._condition:
+            job = local_store.read_json(f"experiments/{job_id}.json")
+            if job.get("status") != "running":
+                return
+            job["partial_result"] = result
+            job["updated_at"] = _now()
+            local_store.write_json(f"experiments/{job_id}.json", job)
+            self._condition.notify_all()
+
+    def upsert_job_result_item(
+        self,
+        job_id: str,
+        index: int,
+        item: dict[str, Any],
+        page_size: int,
+    ) -> None:
+        """Store one incremental result item without retaining every item in a job record."""
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        with self._condition:
+            job = local_store.read_json(f"experiments/{job_id}.json")
+            if job.get("status") != "running":
+                return
+            experiment_id = str(job["experiment_id"])
+            offset = (max(0, index) // page_size) * page_size
+            page_path = f"experiments/{experiment_id}/reliability_test_pages/{offset}.json"
+            try:
+                page = local_store.read_json(page_path)
+            except FileNotFoundError:
+                page = {"offset": offset, "limit": page_size, "items": []}
+            items = page.get("items") if isinstance(page.get("items"), list) else []
+            stored_item = {"index": index, **item}
+            replaced = False
+            for item_index, current in enumerate(items):
+                if isinstance(current, dict) and current.get("index") == index:
+                    items[item_index] = {**current, **stored_item}
+                    replaced = True
+                    break
+            if not replaced:
+                items.append(stored_item)
+            items.sort(key=lambda current: int(current.get("index", 0)) if isinstance(current, dict) else 0)
+            local_store.write_json(page_path, {"offset": offset, "limit": page_size, "items": items})
+            job["result_item_count"] = max(int(job.get("result_item_count") or 0), index + 1)
+            job["result_page_size"] = page_size
+            job["updated_at"] = _now()
+            local_store.write_json(f"experiments/{job_id}.json", job)
+            self._condition.notify_all()
+
+    def get_job_result_page(self, job_id: str, offset: int) -> dict[str, Any] | None:
+        try:
+            with self._lock:
+                job = local_store.read_json(f"experiments/{job_id}.json")
+                page_size = int(job.get("result_page_size") or 25)
+                normalized_offset = (max(0, offset) // page_size) * page_size
+                item_count = int(job.get("result_item_count") or 0)
+                experiment_id = str(job["experiment_id"])
+                try:
+                    page = local_store.read_json(
+                        f"experiments/{experiment_id}/reliability_test_pages/{normalized_offset}.json"
+                    )
+                except FileNotFoundError:
+                    page = {"offset": normalized_offset, "limit": page_size, "items": []}
+                return {
+                    "offset": normalized_offset,
+                    "limit": page_size,
+                    "total": item_count,
+                    "items": page.get("items") if isinstance(page.get("items"), list) else [],
+                }
+        except FileNotFoundError:
+            return None
+
     def complete_paged_evaluation_job(
         self,
         job_id: str,

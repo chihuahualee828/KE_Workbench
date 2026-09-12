@@ -132,7 +132,7 @@ class ReliabilityEvaluationRequest(BaseModel):
 
     model_id: str = "gpt2-xl"
     method: Literal["rome", "r_rome", "memit", "kn"]
-    edits: list[EditSpec] = Field(min_length=1, max_length=100)
+    edits: list[EditSpec] = Field(min_length=1)
     include_generations: bool = False
     evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
 
@@ -161,6 +161,9 @@ class JobResponse(BaseModel):
     progress_total: int | None = None
     logs: list[str] = Field(default_factory=list)
     log_count: int = 0
+    log_start_count: int = 0
+    result_item_count: int = 0
+    result_page_size: int | None = None
     result: dict[str, Any] | None = None
 
 

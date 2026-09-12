@@ -368,6 +368,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  easyEditReliabilityJob: (jobId: string) =>
+    request<EditJob>(`/api/evaluate/reliability/jobs/${encodeURIComponent(jobId)}`),
+  easyEditReliabilityPage: (jobId: string, offset: number) =>
+    request<{ offset: number; limit: number; total: number; items: Array<Record<string, unknown>> }>(`/api/evaluate/reliability/jobs/${encodeURIComponent(jobId)}/page?offset=${Math.max(0, Math.floor(offset))}`),
   activeEvaluationFacts: (modelId: string) =>
     request<ActiveEvaluationFacts>(`/api/evaluate/active-facts?model_id=${encodeURIComponent(modelId)}`),
   evaluateActiveModel: (body: {

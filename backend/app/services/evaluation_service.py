@@ -66,6 +66,55 @@ class EvaluationService:
             include_generations=include_generations,
         )
 
+    def evaluate_edit_reliability_test_pair(
+        self,
+        model_id: str,
+        method: str,
+        edit: dict,
+        include_generation: bool = True,
+        on_generation: Callable[[dict], None] | None = None,
+        cancel_job_id: str | None = None,
+    ) -> dict:
+        """Generate and score one fact, preserving the edit-page test order."""
+        from app.ml.editing.easyedit_runtime import build_prompt
+
+        subject = str(edit.get("subject") or "").strip()
+        relation_prompt = str(edit.get("relation_prompt") or "").strip()
+        target_new = str(edit.get("new_object") or "").strip()
+        if not subject or not relation_prompt or not target_new:
+            raise ValueError("Each reliability test fact needs a subject, relation prompt, and new object.")
+
+        prompt = build_prompt(subject, relation_prompt)
+        generation = None
+        if include_generation:
+            generation = {
+                "prompt": prompt,
+                "active_model": generate_text(
+                    model_id,
+                    prompt,
+                    max_new_tokens=32,
+                    patch_id=None,
+                    use_active_patches=True,
+                )["text"],
+            }
+            if on_generation is not None:
+                on_generation(generation)
+        result = self.evaluate_easyedit_quality(
+            model_id=model_id,
+            method=method,
+            edits=[edit],
+            include_generations=False,
+            cancel_job_id=cancel_job_id,
+        )
+        cases = result.get("cases")
+        if not isinstance(cases, list) or not cases or not isinstance(cases[0], dict):
+            raise RuntimeError("EasyEdit reliability evaluation returned no fact result.")
+        return {
+            "case": cases[0],
+            "generation": generation,
+            "active_patch_ids": result.get("active_patch_ids", []),
+        }
+
     def evaluate_patch(self, model_id: str, patch_id: str, prompts: list[str]) -> dict:
         patch = patch_service.get_patch(patch_id)
         eval_prompts = prompts or [

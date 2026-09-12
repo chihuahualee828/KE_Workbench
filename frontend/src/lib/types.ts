@@ -181,10 +181,36 @@ export type ModelRuntimeJob = {
 export type EditJob = {
   job_id: string;
   experiment_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   progress: number;
+  progress_current?: number | null;
+  progress_total?: number | null;
   logs: string[];
+  log_count: number;
+  log_start_count: number;
+  result_item_count?: number;
+  result_page_size?: number | null;
   result?: Record<string, unknown> | null;
+};
+
+export type ReliabilityTestResultItem = {
+  index: number;
+  generation?: {
+    prompt: string;
+    active_model: string;
+  } | null;
+  case?: {
+    prompt: string;
+    target_new: string;
+    reliability_score?: number | null;
+  } | null;
+};
+
+export type ReliabilityTestResultPage = {
+  offset: number;
+  limit: number;
+  total: number;
+  items: ReliabilityTestResultItem[];
 };
 
 export type EvaluationFact = {

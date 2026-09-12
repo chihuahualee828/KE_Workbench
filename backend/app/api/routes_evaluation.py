@@ -13,7 +13,9 @@ from app.services.patch_service import patch_service
 
 router = APIRouter(tags=["evaluation"])
 EVALUATION_PAGE_SIZE = 50
+RELIABILITY_TEST_PAGE_SIZE = 25
 _active_model_evaluation_lock = threading.Lock()
+_reliability_evaluation_lock = threading.Lock()
 
 
 @router.post("/evaluate", response_model=JobResponse)
@@ -48,23 +50,217 @@ def evaluate_reliability(request: ReliabilityEvaluationRequest) -> JobResponse:
     except ModelNotLoadedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    experiment = experiment_service.create("evaluation", request.model_id, request.model_dump())
+    experiment = experiment_service.create(
+        "evaluation",
+        request.model_id,
+        {
+            "source": "edit_page",
+            "model_id": request.model_id,
+            "method": request.method,
+            "edit_count": len(request.edits),
+            "include_generations": request.include_generations,
+        },
+    )
     job = experiment_service.create_job(experiment["id"])
-    try:
-        result = evaluation_service.evaluate_easyedit_reliability(**request.model_dump())
-    except ValueError as exc:
-        experiment_service.fail_job(job["id"], str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        experiment_service.fail_job(job["id"], str(exc))
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    experiment_service.complete_job(job["id"], result)
+    _start_reliability_evaluation(
+        job_id=job["id"],
+        model_id=request.model_id,
+        method=request.method,
+        edits=[edit.model_dump() for edit in request.edits],
+        include_generations=request.include_generations,
+    )
     return JobResponse(
         job_id=job["id"],
         experiment_id=experiment["id"],
-        status="completed",
-        result=result,
+        status="running",
+        logs=job.get("logs", []),
+        log_count=int(job.get("log_count", len(job.get("logs", [])))),
     )
+
+
+@router.get("/evaluate/reliability/jobs/{job_id}", response_model=JobResponse)
+def get_reliability_evaluation_job(job_id: str) -> JobResponse:
+    job = experiment_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Reliability evaluation job not found")
+    return _reliability_evaluation_job_response(job)
+
+
+@router.get("/evaluate/reliability/jobs/{job_id}/page")
+def get_reliability_evaluation_page(
+    job_id: str,
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    page = experiment_service.get_job_result_page(job_id, offset)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Reliability evaluation job not found")
+    return page
+
+
+def _start_reliability_evaluation(
+    *,
+    job_id: str,
+    model_id: str,
+    method: str,
+    edits: list[dict[str, Any]],
+    include_generations: bool,
+) -> None:
+    threading.Thread(
+        target=_run_reliability_evaluation,
+        kwargs={
+            "job_id": job_id,
+            "model_id": model_id,
+            "method": method,
+            "edits": edits,
+            "include_generations": include_generations,
+        },
+        daemon=True,
+    ).start()
+
+
+def _run_reliability_evaluation(
+    *,
+    job_id: str,
+    model_id: str,
+    method: str,
+    edits: list[dict[str, Any]],
+    include_generations: bool,
+) -> None:
+    try:
+        with _reliability_evaluation_lock:
+            job = experiment_service.get_job(job_id)
+            if job is None or job.get("status") != "running":
+                return
+            total = len(edits)
+            completed_count = 0
+            reliability_total = 0.0
+            reliability_count = 0
+            generalization_total = 0.0
+            generalization_count = 0
+            active_patch_ids: list[str] = []
+
+            def summary() -> dict[str, Any]:
+                return _reliability_result(
+                    model_id=model_id,
+                    method=method,
+                    active_patch_ids=active_patch_ids,
+                    completed_count=completed_count,
+                    total_count=total,
+                    reliability_total=reliability_total,
+                    reliability_count=reliability_count,
+                    generalization_total=generalization_total,
+                    generalization_count=generalization_count,
+                )
+
+            experiment_service.append_job_log(job_id, f"Testing {total} edit fact{'s' if total != 1 else ''}")
+            for index, edit in enumerate(edits, start=1):
+                current_job = experiment_service.get_job(job_id)
+                if current_job is None or current_job.get("status") != "running":
+                    return
+                experiment_service.append_job_log(job_id, f"Generating and evaluating fact {index}/{total}")
+
+                def persist_generation(generation: dict[str, Any]) -> None:
+                    experiment_service.upsert_job_result_item(
+                        job_id,
+                        index - 1,
+                        {"generation": generation},
+                        RELIABILITY_TEST_PAGE_SIZE,
+                    )
+                    experiment_service.set_job_partial_result(job_id, summary())
+                    experiment_service.append_job_log(job_id, f"Generated fact {index}/{total}; computing rewrite accuracy")
+
+                pair = evaluation_service.evaluate_edit_reliability_test_pair(
+                    model_id=model_id,
+                    method=method,
+                    edit=edit,
+                    include_generation=include_generations,
+                    on_generation=persist_generation if include_generations else None,
+                    cancel_job_id=job_id,
+                )
+                current_job = experiment_service.get_job(job_id)
+                if current_job is None or current_job.get("status") != "running":
+                    return
+                case = pair["case"]
+                score = case.get("reliability_score")
+                if isinstance(score, (int, float)):
+                    reliability_total += float(score)
+                    reliability_count += 1
+                generalization_score = case.get("generalization_score")
+                if isinstance(generalization_score, (int, float)):
+                    generalization_total += float(generalization_score)
+                    generalization_count += 1
+                patch_ids = pair.get("active_patch_ids")
+                active_patch_ids = [str(patch_id) for patch_id in patch_ids] if isinstance(patch_ids, list) else []
+                completed_count = index
+                experiment_service.upsert_job_result_item(
+                    job_id,
+                    index - 1,
+                    {"case": case},
+                    RELIABILITY_TEST_PAGE_SIZE,
+                )
+                partial_result = summary()
+                experiment_service.set_job_partial_result(job_id, partial_result)
+                experiment_service.append_job_log(
+                    job_id,
+                    f"Completed fact {index}/{total}",
+                    progress=index / total,
+                    progress_current=index,
+                    progress_total=total,
+                )
+            experiment_service.complete_job(job_id, partial_result)
+    except Exception as exc:
+        experiment_service.fail_job(job_id, str(exc))
+
+
+def _reliability_result(
+    *,
+    model_id: str,
+    method: str,
+    active_patch_ids: list[str],
+    completed_count: int,
+    total_count: int,
+    reliability_total: float,
+    reliability_count: int,
+    generalization_total: float,
+    generalization_count: int,
+) -> dict[str, Any]:
+    return {
+        "model_id": model_id,
+        "method": method,
+        "active_patch_ids": active_patch_ids,
+        "metric_name": "rewrite_acc",
+        "mean_reliability": _mean_score(reliability_total, reliability_count),
+        "mean_generalization": _mean_score(generalization_total, generalization_count),
+        "completed_fact_count": completed_count,
+        "total_fact_count": total_count,
+    }
+
+
+def _mean_score(total: float, count: int) -> float | None:
+    return round(total / count, 4) if count else None
+
+
+def _reliability_evaluation_job_response(job: dict[str, Any]) -> JobResponse:
+    result = job.get("partial_result")
+    if job.get("status") == "completed":
+        details = experiment_service.get_experiment_details(str(job["experiment_id"]))
+        if details and isinstance(details.get("result"), dict):
+            result = details["result"]
+    logs = job.get("logs", [])
+    return JobResponse(
+        job_id=str(job["id"]),
+        experiment_id=str(job["experiment_id"]),
+        status=str(job.get("status") or "running"),
+        progress=float(job.get("progress") or 0.0),
+        progress_current=job.get("progress_current"),
+        progress_total=job.get("progress_total"),
+        logs=logs if isinstance(logs, list) else [],
+        log_count=int(job.get("log_count", len(logs) if isinstance(logs, list) else 0)),
+        result_item_count=int(job.get("result_item_count") or 0),
+        result_page_size=int(job["result_page_size"]) if isinstance(job.get("result_page_size"), int) else None,
+        result=result if isinstance(result, dict) else None,
+    )
+
 
 @router.get("/evaluate/active-facts")
 def list_active_evaluation_facts(
