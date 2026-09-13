@@ -98,9 +98,10 @@ class EditSpec(BaseModel):
 
 class RomeSequentialEditsRequest(BaseModel):
     model_id: str = "gpt2-xl"
-    edits: list[EditSpec] = Field(min_length=1, max_length=100)
+    edits: list[EditSpec] = Field(min_length=1)
     target_layer: int = Field(ge=0)
     evaluation_prompts: list[str] = Field(default_factory=list)
+    sequential_edit: bool = True
     mom2_adjustment: bool = False
 
 

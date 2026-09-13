@@ -29,7 +29,7 @@ class PatchService:
         method: str,
         edits: list[dict[str, Any]],
         modified_layers: list[int],
-        metrics: dict[str, Any] | None = None,
+        metrics: Any = None,
         delta_paths: list[str] | None = None,
         runtime: str = "native",
         extra_metadata: dict[str, Any] | None = None,
@@ -58,6 +58,32 @@ class PatchService:
             )
         local_store.write_json(self._metadata_relative_path(patch_id), metadata)
         return metadata
+
+    def update_patch(
+        self,
+        patch_id: str,
+        *,
+        edits: list[dict[str, Any]],
+        modified_layers: list[int],
+        metrics: Any,
+        delta_paths: list[str],
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist the latest complete state of an existing cumulative patch."""
+        with self._lock:
+            patch = self.get_patch(patch_id)
+            patch.update(
+                {
+                    "edits": edits,
+                    "modified_layers": modified_layers,
+                    "metrics": metrics or {},
+                    "delta_paths": delta_paths,
+                }
+            )
+            if extra_metadata:
+                patch.update(extra_metadata)
+            local_store.write_json(self._metadata_relative_path(patch_id), patch)
+            return patch
 
     def list_patches(self) -> list[dict[str, Any]]:
         active_by_model = self.active_patches_by_model()

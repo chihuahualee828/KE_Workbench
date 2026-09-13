@@ -6,10 +6,11 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -26,6 +27,25 @@ class EasyEditRuntimeError(RuntimeError):
 
 class EasyEditUnsupportedError(ValueError):
     pass
+
+
+@dataclass
+class EasyEditSeriesContext:
+    """State shared by the individual EasyEdit calls in one fact series.
+
+    The baseline is captured from the model state before the first fact. Each
+    later step writes a delta against that same baseline, so one patch can
+    replay the complete series on top of its original parent patch stack.
+    """
+
+    patch_id: str | None = None
+    initial_baseline_weights: dict[str, Any] | None = None
+    parent_patch_ids: list[str] | None = None
+    continue_from_active_patches: bool = True
+    runtime_stack_initialized: bool = False
+    completed_edits: list[dict[str, Any]] = field(default_factory=list)
+    metrics_by_edit: list[Any] = field(default_factory=list)
+    patch_created: bool = False
 
 
 METHODS = {
@@ -100,7 +120,14 @@ def run_easyedit(
     sequential_edit: bool = False,
     layer_source: str | None = None,
     mom2_adjustment: bool | None = None,
+    patch_mode: Literal["individual", "series"] = "individual",
+    series_context: EasyEditSeriesContext | None = None,
 ) -> dict[str, Any]:
+    if patch_mode not in {"individual", "series"}:
+        raise ValueError(f"Unsupported EasyEdit patch mode: {patch_mode}")
+    if patch_mode == "series" and series_context is None:
+        raise ValueError("EasyEdit series mode requires a shared series context.")
+
     method_key = method.lower()
     spec = METHODS.get(method_key)
     if spec is None:
@@ -148,11 +175,29 @@ def run_easyedit(
     mom2_model_identity = None
 
     with model_runtime_service.exclusive_runtime_access():
-        active_patch_ids = patch_service.active_patches_for_model(model_id)
         runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
         used_loaded_runtime = True
-        if not sequential_edit:
-            patch_service.sync_patch_stack_to_model(runtime_bundle["model"], model_id, [])
+        if patch_mode == "series" and series_context is not None:
+            if not series_context.runtime_stack_initialized:
+                if not series_context.continue_from_active_patches:
+                    # This controls the workbench patch baseline only. EasyEdit still
+                    # receives sequential_edit=True so every fact in the series builds
+                    # on the preceding fact within this one job.
+                    patch_service.deactivate_runtime_patches_for_model(model_id)
+                    patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+                series_context.runtime_stack_initialized = True
+            active_patch_ids = patch_service.active_patches_for_model(model_id)
+            if series_context.parent_patch_ids is None:
+                series_context.parent_patch_ids = list(active_patch_ids)
+        elif not sequential_edit:
+            # Starting a new non-continuing edit must update both the runtime weights
+            # and persisted active-stack state. Otherwise a failed edit could leave the
+            # UI claiming old patches are active while the model has been reset.
+            patch_service.deactivate_runtime_patches_for_model(model_id)
+            patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+            active_patch_ids = patch_service.active_patches_for_model(model_id)
+        else:
+            active_patch_ids = patch_service.active_patches_for_model(model_id)
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(easyedit_model_name), method_key)
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         hparams.model_name = (runtime_bundle["model"], runtime_bundle["tokenizer"])
@@ -172,6 +217,8 @@ def run_easyedit(
                     "Unable to snapshot target rewrite weights before editing. "
                     "Check the EasyEdit hparams rewrite_module_tmp/layers for this model."
                 )
+            if patch_mode == "series" and series_context is not None and series_context.initial_baseline_weights is None:
+                series_context.initial_baseline_weights = baseline_weights
 
             # EasyEdit restores singleton edits before returning when sequential_edit=False.
             # We keep the edited weights briefly, save our delta, then restore the baseline
@@ -189,42 +236,101 @@ def run_easyedit(
             }
             if spec.get("requires_subject", False):
                 edit_args["subject"] = subjects
+            # Keep this stable marker in the captured job log. It separates
+            # setup (hparams, snapshots, and runtime wiring) from EasyEdit's
+            # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
             metrics, edited_model, _ = editor.edit(**edit_args)
-            patch_id = patch_service.new_patch_id()
-            tensor_delta_paths = _save_weight_deltas(edited_model, baseline_weights, patch_id)
+            patch_id = (
+                series_context.patch_id
+                if patch_mode == "series" and series_context is not None and series_context.patch_id
+                else patch_service.new_patch_id()
+            )
+            if patch_mode == "series" and series_context is not None:
+                series_context.patch_id = patch_id
+            delta_baseline_weights = (
+                series_context.initial_baseline_weights
+                if patch_mode == "series" and series_context is not None
+                else baseline_weights
+            )
+            tensor_delta_paths = _save_weight_deltas(edited_model, delta_baseline_weights, patch_id)
             if not tensor_delta_paths:
                 raise EasyEditRuntimeError(
                     "EasyEdit completed, but no changed tensor weights were captured. "
                     "No patch was created because generation/evaluation would stay unchanged."
                 )
-            _restore_weights(edited_model, baseline_weights)
-            weights_restored = True
-            patch = patch_service.create_patch(
-                model_id=model_id,
-                method=method_key,
-                edits=edits,
-                modified_layers=effective_layers,
-                metrics=_jsonable(metrics),
-                delta_paths=tensor_delta_paths,
-                runtime="easyedit",
-                extra_metadata={
+            json_metrics = _jsonable(metrics)
+            if patch_mode == "series" and series_context is not None:
+                series_context.completed_edits.extend(edits)
+                series_context.metrics_by_edit.append(json_metrics)
+                series_metadata = {
                     "easyedit_hparams": str(hparams_path),
                     "hf_model": model["hf_id"],
-                    "sequential_edit": sequential_edit,
-                    "parent_patch_ids": active_patch_ids if sequential_edit else [],
+                    "sequential_edit": True,
+                    "series_edit": True,
+                    "series_fact_count": len(series_context.completed_edits),
+                    "series_metrics": series_context.metrics_by_edit,
+                    "parent_patch_ids": series_context.parent_patch_ids or [],
                     "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
                     "mom2_adjustment": bool(getattr(hparams, "mom2_adjustment", False)),
                     "used_loaded_runtime": used_loaded_runtime,
-                },
-                patch_id=patch_id,
-            )
-            patch_service.activate_patch(patch_id, append=sequential_edit)
-            if used_loaded_runtime:
-                patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+                }
+                if series_context.patch_created:
+                    patch = patch_service.update_patch(
+                        patch_id,
+                        edits=series_context.completed_edits,
+                        modified_layers=effective_layers,
+                        metrics=json_metrics,
+                        delta_paths=tensor_delta_paths,
+                        extra_metadata=series_metadata,
+                    )
+                else:
+                    patch = patch_service.create_patch(
+                        model_id=model_id,
+                        method=method_key,
+                        edits=series_context.completed_edits,
+                        modified_layers=effective_layers,
+                        metrics=json_metrics,
+                        delta_paths=tensor_delta_paths,
+                        runtime="easyedit",
+                        extra_metadata=series_metadata,
+                        patch_id=patch_id,
+                    )
+                    series_context.patch_created = True
+                    patch_service.activate_patch(patch_id, append=True)
+                    if used_loaded_runtime:
+                        patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+                # Keep the newly edited weights for the next fact. On failure,
+                # the finally block restores that call's local pre-edit state.
+                weights_restored = True
+            else:
+                _restore_weights(edited_model, baseline_weights)
+                weights_restored = True
+                patch = patch_service.create_patch(
+                    model_id=model_id,
+                    method=method_key,
+                    edits=edits,
+                    modified_layers=effective_layers,
+                    metrics=json_metrics,
+                    delta_paths=tensor_delta_paths,
+                    runtime="easyedit",
+                    extra_metadata={
+                        "easyedit_hparams": str(hparams_path),
+                        "hf_model": model["hf_id"],
+                        "sequential_edit": sequential_edit,
+                        "parent_patch_ids": active_patch_ids if sequential_edit else [],
+                        "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
+                        "mom2_adjustment": bool(getattr(hparams, "mom2_adjustment", False)),
+                        "used_loaded_runtime": used_loaded_runtime,
+                    },
+                    patch_id=patch_id,
+                )
+                patch_service.activate_patch(patch_id, append=sequential_edit)
+                if used_loaded_runtime:
+                    patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
             local_store.write_json(
                 f"patches/{patch['patch_id']}/easyedit_metrics.json",
-                {"metrics": _jsonable(metrics)},
+                {"metrics": json_metrics},
             )
             return {
                 "patch_id": patch["patch_id"],
@@ -628,6 +734,7 @@ def run_easyedit_kn(
                 )
 
             snapshots = _snapshot_kn_neuron_vectors(kn, refined_neurons)
+            print("Starting EasyEdit algorithm.")
             metrics, _ = kn.edit_knowledge(
                 prompt,
                 target=str(edit["new_object"]),
@@ -1447,7 +1554,17 @@ def _save_weight_deltas(edited_model: Any, baseline_weights: Any, patch_id: str)
 
     patch_dir = patch_service.patch_dir(patch_id)
     path = patch_dir / "weight_deltas.safetensors"
-    save_file(deltas, str(path), metadata={"format": "easyedit_delta"})
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".weight_deltas-",
+        suffix=".safetensors",
+        dir=patch_dir,
+    )
+    os.close(file_descriptor)
+    try:
+        save_file(deltas, temporary_path, metadata={"format": "easyedit_delta"})
+        Path(temporary_path).replace(path)
+    finally:
+        Path(temporary_path).unlink(missing_ok=True)
     return [str(path)]
 
 

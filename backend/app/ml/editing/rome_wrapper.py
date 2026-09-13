@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
+from app.ml.editing.easyedit_runtime import EasyEditSeriesContext, evaluate_post_edit_reliability, run_easyedit
 from app.ml.editing.patch_format import edit_to_patch_entry
 from app.services.model_registry import model_registry
 
@@ -20,6 +20,8 @@ def run_rome_edit(
     mom2_adjustment: bool,
     source_metadata: dict | None = None,
     generate_evaluation: bool = True,
+    patch_mode: str = "individual",
+    series_context: EasyEditSeriesContext | None = None,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -70,6 +72,8 @@ def run_rome_edit(
         sequential_edit=sequential_edit,
         layer_source=layer_source,
         mom2_adjustment=mom2_adjustment,
+        patch_mode=patch_mode,
+        series_context=series_context,
     )
     if generate_evaluation:
         result.update(evaluate_post_edit_reliability(model_id, "rome", [edit]))
@@ -82,6 +86,7 @@ def run_rome_sequential_edits(
     target_layer: int,
     evaluation_prompts: list[str],
     mom2_adjustment: bool,
+    sequential_edit: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -94,6 +99,7 @@ def run_rome_sequential_edits(
                 "target_layer": target_layer,
                 "evaluation_prompts": evaluation_prompts,
                 "mom2_adjustment": mom2_adjustment,
+                "sequential_edit": sequential_edit,
             },
             timeout=7200.0,
         )
@@ -101,6 +107,7 @@ def run_rome_sequential_edits(
     if not edits:
         raise ValueError("ROME sequential series needs at least one fact.")
 
+    series_context = EasyEditSeriesContext(continue_from_active_patches=sequential_edit)
     patch_results: list[dict] = []
     for index, raw_edit in enumerate(edits, start=1):
         edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
@@ -127,15 +134,19 @@ def run_rome_sequential_edits(
             mom2_adjustment=mom2_adjustment,
             source_metadata=edit.get("source_metadata") if isinstance(edit.get("source_metadata"), dict) else None,
             generate_evaluation=False,
+            patch_mode="series",
+            series_context=series_context,
         )
         patch_results.append(result)
         print(f"Created ROME sequential edit {index}/{len(edits)}.")
+        print(f"Updated cumulative patch {result['patch_id']}.")
 
     final_patch_id = patch_results[-1]["patch_id"]
     result = {
         "patch_id": final_patch_id,
-        "patch_ids": [result["patch_id"] for result in patch_results],
-        "patch_count": len(patch_results),
+        "patch_ids": [final_patch_id],
+        "patch_count": 1,
+        "completed_fact_count": len(patch_results),
         "sequential_edit": True,
     }
     result.update(evaluate_post_edit_reliability(model_id, "rome", edits))

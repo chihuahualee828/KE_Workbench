@@ -27,7 +27,7 @@ from app.ml.editing.easyedit_runtime import (
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
-from app.ml.editing.r_rome_wrapper import run_r_rome_edit
+from app.ml.editing.r_rome_wrapper import run_r_rome_edit, run_r_rome_sequential_edits
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 from app.services.patch_service import patch_service
@@ -88,9 +88,21 @@ def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
 def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer], request.mom2_adjustment)
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("rome_sequential_edits", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME sequential series", job["id"], run_rome_sequential_edits, request.model_dump())
+    return _job_response(job)
+
+
+@router.post("/edit/r-rome/sequential", response_model=JobResponse)
+def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    _require_mom2_statistics(request.model_id, "r_rome", [request.target_layer], request.mom2_adjustment)
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
+    experiment = experiment_service.create("r_rome_sequential_edits", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread("R-ROME sequential series", job["id"], run_r_rome_sequential_edits, request.model_dump())
     return _job_response(job)
 
 
