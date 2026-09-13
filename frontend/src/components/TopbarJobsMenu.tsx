@@ -7,10 +7,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
 import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
-import { listenForExperimentStarts } from "@/lib/experimentEvents";
+import { listenForExperimentCanceled, listenForExperimentStarts } from "@/lib/experimentEvents";
 import { applyDownloadJobToCache, listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
 import { applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses } from "@/lib/modelRuntimeEvents";
-import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
+import type { EditJob, Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
 
 const activeDownloadStates = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
 const activeRuntimeStates = ["queued", "loading"];
@@ -29,6 +29,8 @@ export function TopbarJobsMenu() {
   const [downloadDetails, setDownloadDetails] = useState<ModelDownloadJob | null>(null);
   const [confirmingClearDownloads, setConfirmingClearDownloads] = useState(false);
   const [clearingDownloads, setClearingDownloads] = useState(false);
+  const refreshing = useRef(false);
+  const refreshQueued = useRef(false);
 
   const activeDownloads = useMemo(
     () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
@@ -50,10 +52,19 @@ export function TopbarJobsMenu() {
     () => experiments.filter((item) => item.status === "running"),
     [experiments]
   );
+  const runningEditJobIds = useMemo(
+    () => runningExperiments.flatMap((experiment) => experiment.job?.id ? [experiment.job.id] : []).sort().join(","),
+    [runningExperiments]
+  );
   const activeCount = activeDownloads.length + activeRuntime.length + runningExperiments.length;
   const hasActiveWork = requiresTransferPolling || activeRuntime.length > 0 || runningExperiments.length > 0;
 
   async function refresh() {
+    if (refreshing.current) {
+      refreshQueued.current = true;
+      return;
+    }
+    refreshing.current = true;
     setError("");
     try {
       const [cacheResult, downloadJobResult, runtimeResult, experimentResult] = await Promise.all([
@@ -68,6 +79,12 @@ export function TopbarJobsMenu() {
       setExperiments(experimentResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      refreshing.current = false;
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     }
   }
 
@@ -135,6 +152,18 @@ export function TopbarJobsMenu() {
       markNewWork();
       void refresh();
     });
+    const stopListeningForCanceledExperiments = listenForExperimentCanceled(({ experimentId, jobId }) => {
+      setExperiments((current) => current.map((experiment) => {
+        if (experiment.id !== experimentId && experiment.job?.id !== jobId) return experiment;
+        return {
+          ...experiment,
+          status: "canceled",
+          error_message: "",
+          job: experiment.job ? { ...experiment.job, status: "canceled", progress: 1 } : experiment.job
+        };
+      }));
+      markNewWork();
+    });
     const stopListeningForRuntimeLoads = listenForModelRuntimeLoads((job) => {
       setRuntime((current) => applyRuntimeJobToRuntime(current, job));
       if (activeRuntimeStates.includes(job.status)) {
@@ -147,10 +176,28 @@ export function TopbarJobsMenu() {
     });
     return () => {
       stopListeningForExperiments();
+      stopListeningForCanceledExperiments();
       stopListeningForRuntimeLoads();
       stopListeningForRuntimeStatuses();
     };
   }, []);
+
+  useEffect(() => {
+    if (!runningEditJobIds) return;
+    const stopSubscriptions = runningEditJobIds.split(",").map((jobId) => api.subscribeToEvents(`/api/edit/jobs/${jobId}/events`, {
+      onEvent: (event, data) => {
+        if (event !== "job") return;
+        try {
+          const job = JSON.parse(data) as EditJob;
+          setExperiments((current) => applyEditJobUpdate(current, job));
+          if (job.status !== "running") markNewWork();
+        } catch {
+          // The next server event remains authoritative if a malformed event is received.
+        }
+      }
+    }));
+    return () => stopSubscriptions.forEach((stop) => stop());
+  }, [runningEditJobIds]);
 
   useEffect(() => {
     if (!open) return;
@@ -301,6 +348,27 @@ export function TopbarJobsMenu() {
       {downloadDetails ? <DownloadDetailsDialog job={downloadJobs.find((job) => job.job_id === downloadDetails.job_id) ?? downloadDetails} status={downloadJobCache(downloadJobs.find((job) => job.job_id === downloadDetails.job_id) ?? downloadDetails, cache)} onClose={() => setDownloadDetails(null)} /> : null}
     </div>
   );
+}
+
+function applyEditJobUpdate(experiments: Experiment[], job: EditJob): Experiment[] {
+  return experiments.map((experiment) => {
+    if (experiment.id !== job.experiment_id) return experiment;
+    const previousJob = experiment.job;
+    return {
+      ...experiment,
+      status: job.status,
+      job: {
+        id: job.job_id,
+        experiment_id: job.experiment_id,
+        status: job.status,
+        progress: job.progress,
+        progress_current: job.progress_current,
+        progress_total: job.progress_total,
+        created_at: previousJob?.created_at ?? experiment.created_at,
+        updated_at: previousJob?.updated_at ?? experiment.updated_at ?? experiment.created_at
+      }
+    };
+  });
 }
 
 function Progress({ downloadedBytes, totalBytes, active, complete }: { downloadedBytes: number; totalBytes?: number | null; active: boolean; complete: boolean }) {

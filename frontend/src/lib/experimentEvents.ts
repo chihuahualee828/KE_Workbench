@@ -1,4 +1,5 @@
 const eventName = "kew:experiment-started";
+const cancelEventName = "kew:edit-job-canceling";
 const canceledEventName = "kew:experiment-canceled";
 
 export type ExperimentCanceledEvent = {
@@ -16,6 +17,18 @@ export function listenForExperimentStarts(callback: (experimentId: string) => vo
   }
   window.addEventListener(eventName, handle);
   return () => window.removeEventListener(eventName, handle);
+}
+
+export function announceEditJobCanceling(jobId: string) {
+  window.dispatchEvent(new CustomEvent<string>(cancelEventName, { detail: jobId }));
+}
+
+export function listenForEditJobCanceling(callback: (jobId: string) => void) {
+  function handle(event: Event) {
+    callback((event as CustomEvent<string>).detail);
+  }
+  window.addEventListener(cancelEventName, handle);
+  return () => window.removeEventListener(cancelEventName, handle);
 }
 
 export function announceExperimentCanceled(detail: ExperimentCanceledEvent) {

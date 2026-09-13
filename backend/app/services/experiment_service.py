@@ -59,8 +59,14 @@ class ExperimentService:
         return experiment
 
     def list_experiments(self) -> list[dict[str, Any]]:
+        records = local_store.list_json("experiments")
+        jobs = {str(item.get("experiment_id")): _job_summary(item) for item in records if item.get("id", "").startswith("job_")}
         experiments = [
-            item for item in local_store.list_json("experiments")
+            {
+                **_experiment_list_summary(item),
+                **({"job": jobs[item["id"]]} if item.get("id") in jobs else {}),
+            }
+            for item in records
             if item.get("id", "").startswith("exp_")
         ]
         return sorted(experiments, key=lambda item: str(item.get("created_at") or ""), reverse=True)
@@ -493,3 +499,25 @@ def _append_job_logs(job: dict[str, Any], lines: list[str]) -> None:
     previous_count = _job_log_count(job)
     job["logs"] = [*job.get("logs", []), *lines][-_MAX_JOB_LOG_LINES:]
     job["log_count"] = previous_count + len(lines)
+
+
+def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    return {key: job.get(key) for key in ("id", "experiment_id", "status", "progress", "progress_current", "progress_total", "created_at", "updated_at")}
+
+
+def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:
+    """Return the compact form used by frequently-polled experiment lists."""
+    summary = {
+        key: experiment.get(key)
+        for key in ("id", "type", "model_id", "status", "created_at", "updated_at", "result_path", "error_message")
+    }
+    raw_input = experiment.get("input_json")
+    if isinstance(raw_input, dict):
+        compact_input = {
+            key: raw_input[key]
+            for key in ("source", "model_id", "method", "active_patch_ids", "evaluation_modes", "edit_count")
+            if key in raw_input
+        }
+        if compact_input:
+            summary["input_json"] = compact_input
+    return summary

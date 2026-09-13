@@ -430,6 +430,10 @@ export const api = {
   editJob: (jobId: string) => request<EditJob>(`/api/edit/jobs/${jobId}`),
   waitEditJob: (jobId: string, afterLogCount = 0, timeoutSeconds = 30) =>
     request<EditJob>(`/api/edit/jobs/${jobId}/wait?after_log_count=${afterLogCount}&timeout=${timeoutSeconds}`),
+  cancelEditJob: (jobId: string) =>
+    request<EditJob>(`/api/edit/jobs/${jobId}/cancel`, {
+      method: "POST"
+    }),
   evaluate: (body: { model_id: string; patch_id: string; prompts: string[] }) =>
     request<{ job_id: string; experiment_id: string; status: string; result: Record<string, unknown> }>("/api/evaluate", {
       method: "POST",
