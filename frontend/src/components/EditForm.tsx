@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { api } from "@/lib/api";
 import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { isModelRuntimeConnected, listenForModelRuntimeConnection } from "@/lib/modelRuntimeEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, ReliabilityTestResultItem, ReliabilityTestResultPage, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -18,6 +19,12 @@ import { useWorkbenchSession } from "./WorkbenchSession";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
+
+function useRuntimeConnection() {
+  const [connected, setConnected] = useState(() => isModelRuntimeConnected());
+  useEffect(() => listenForModelRuntimeConnection(setConnected), []);
+  return connected;
+}
 
 type FactEditDraft = {
   subject: string;
@@ -307,6 +314,7 @@ function RomeForm({
   const targetLayerNumber = parseLayer(targetLayer, maxLayer);
   const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const runtimeConnected = useRuntimeConnection();
   const seriesEditDrafts = useMemo(() => parseFactEditDrafts(seriesEdits), [seriesEdits]);
   const isSeriesEdit = supportsSeries && editMode === "series";
   const evaluationPrompts = useMemo(
@@ -533,7 +541,7 @@ function RomeForm({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
-            <span>EasyEdit default: {easyEditDefaultLayer ?? "Loading..."}</span>
+            <span>EasyEdit default: {runtimeConnected ? easyEditDefaultLayer ?? "Loading..." : "Unknown"}</span>
           </div>
           {isSeriesEdit ? <span className="text-xs text-ink/60">Each fact in this series uses the selected layer.</span> : null}
           {layerNotice ? <span className="text-xs text-cyan">{layerNotice}</span> : null}
@@ -724,6 +732,7 @@ function MemitForm({
   const selectedLayers = parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const runtimeConnected = useRuntimeConnection();
   const editDrafts = useMemo(() => parseFactEditDrafts(edits), [edits]);
   const evaluationPrompts = useMemo(
     () => buildFactEvaluationPrompts(editDrafts ?? []),
@@ -979,7 +988,7 @@ function MemitForm({
           />
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
-            <span>EasyEdit default: {easyEditDefaultLayerValues?.join(",") ?? "Loading..."}</span>
+            <span>EasyEdit default: {runtimeConnected ? easyEditDefaultLayerValues?.join(",") ?? "Loading..." : "Unknown"}</span>
           </div>
         </label>
         <DerivedEvaluationPrompts

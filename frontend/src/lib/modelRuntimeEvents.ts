@@ -1,3 +1,4 @@
+import { getModelRuntimeSnapshot, setModelRuntimeSnapshot, setUnloadingModelSnapshot } from "./modelStatusCache";
 import type { ModelRuntimeJob, ModelRuntimeStatus } from "./types";
 import { api } from "./api";
 
@@ -20,6 +21,7 @@ const waiters = new Map<string, Promise<ModelRuntimeJob>>();
 let runtimeConnected = true;
 
 export function announceModelRuntimeLoad(job: ModelRuntimeJob) {
+  setModelRuntimeSnapshot(applyRuntimeJobToRuntime(getModelRuntimeSnapshot(), job));
   // Select the requested model as soon as its load job starts. The worker may
   // still be transferring weights, but every tool should already target the
   // same model the user chose to load.
@@ -38,6 +40,7 @@ export function listenForModelRuntimeLoads(callback: (job: ModelRuntimeJob) => v
 }
 
 export function announceModelRuntimeStatus(status: ModelRuntimeStatus) {
+  setModelRuntimeSnapshot(applyRuntimeStatusToRuntime(getModelRuntimeSnapshot(), status));
   if (status.loaded) announceActiveRuntimeModel(status.model_id);
   window.dispatchEvent(new CustomEvent<ModelRuntimeStatus>(statusEventName, { detail: status }));
 }
@@ -56,6 +59,7 @@ function announceActiveRuntimeModel(modelId: string) {
 }
 
 export function announceModelRuntimeStatuses(statuses: ModelRuntimeStatus[]) {
+  setModelRuntimeSnapshot(statuses);
   statuses.forEach(announceModelRuntimeStatus);
 }
 
@@ -90,6 +94,7 @@ export function listenForModelRuntimeConnection(callback: (connected: boolean) =
 }
 
 export function announceModelRuntimeUnloading(modelId: string, unloading: boolean) {
+  setUnloadingModelSnapshot(unloading ? modelId : null);
   window.dispatchEvent(
     new CustomEvent<{ modelId: string; unloading: boolean }>(unloadEventName, {
       detail: { modelId, unloading }

@@ -1,6 +1,8 @@
 import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
+import { setModelCacheSnapshot, setModelRuntimeSnapshot } from "./modelStatusCache";
+
 type EventStreamHandlers = {
   onOpen?: () => void;
   onEvent: (event: string, data: string) => void;
@@ -195,7 +197,11 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify(body)
     }),
-  modelCache: () => request<ModelCacheStatus[]>("/api/models/cache"),
+  modelCache: async () => {
+    const statuses = await request<ModelCacheStatus[]>("/api/models/cache");
+    setModelCacheSnapshot(statuses);
+    return statuses;
+  },
   downloadModel: (body: { model_id: string }) =>
     request<ModelDownloadJob>("/api/models/cache/download", {
       method: "POST",
@@ -215,7 +221,11 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify(body)
     }),
-  modelRuntime: () => request<ModelRuntimeStatus[]>("/api/models/runtime"),
+  modelRuntime: async () => {
+    const statuses = await request<ModelRuntimeStatus[]>("/api/models/runtime");
+    setModelRuntimeSnapshot(statuses);
+    return statuses;
+  },
   loadModelRuntime: (body: { model_id: string }) =>
     request<ModelRuntimeJob>("/api/models/runtime/load", {
       method: "POST",
