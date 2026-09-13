@@ -134,7 +134,7 @@ def run_rome_sequential_edits(
             generate_evaluation=False,
         )
         patch_results.append(result)
-        print(f"Created patch {result['patch_id']} for ROME sequential edit {index}/{len(edits)}.")
+        print(f"Created ROME sequential edit {index}/{len(edits)}.")
 
     final_patch_id = patch_results[-1]["patch_id"]
     return {

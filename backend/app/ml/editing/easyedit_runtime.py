@@ -189,6 +189,7 @@ def run_easyedit(
             }
             if spec.get("requires_subject", False):
                 edit_args["subject"] = subjects
+            print("Starting EasyEdit algorithm.")
             metrics, edited_model, _ = editor.edit(**edit_args)
             patch_id = patch_service.new_patch_id()
             tensor_delta_paths = _save_weight_deltas(edited_model, baseline_weights, patch_id)

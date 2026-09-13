@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sys
 import threading
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.config import settings
 from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
@@ -123,7 +126,20 @@ def wait_edit_job(
     job = experiment_service.wait_job(job_id, after_log_count=after_log_count, timeout=timeout)
     if job is None:
         raise HTTPException(status_code=404, detail="Edit job not found")
-    return _job_response(job)
+    return _job_response(job, after_log_count=after_log_count)
+
+
+@router.get("/edit/jobs/{job_id}/events")
+def stream_edit_job(job_id: str) -> StreamingResponse:
+    def events():
+        after_log_count = 0
+        for job in experiment_service.job_events(job_id):
+            response = _job_response(job, after_log_count=after_log_count)
+            after_log_count = response.log_count
+            yield f"event: job\ndata: {response.model_dump_json()}\n\n"
+        yield "event: complete\ndata: {}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/edit/mom2/status")
@@ -223,6 +239,7 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
         experiment_service.append_job_log(job_id, "Waiting for active edit job to finish")
     try:
         with _edit_job_lock:
+            experiment_service.set_job_progress(job_id, 0.05)
             with _capture_job_output(job_id):
                 result = runner(**payload)
     except EasyEditUnsupportedError as exc:
@@ -233,8 +250,6 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
         experiment_service.fail_job(job_id, str(exc))
     else:
         experiment_service.complete_job(job_id, result)
-
-
 @contextlib.contextmanager
 def _capture_job_output(job_id: str):
     stdout = _JobLogStream(job_id, sys.stdout)
@@ -248,14 +263,17 @@ def _capture_job_output(job_id: str):
 
 
 class _JobLogStream:
-    def __init__(self, job_id: str, original) -> None:
+    """Capture third-party edit output for the job record without terminal teeing."""
+
+    def __init__(self, job_id: str, terminal_stream) -> None:
         self.job_id = job_id
-        self.original = original
+        self.terminal_stream = terminal_stream
         self.buffer = ""
 
     def write(self, text: str) -> int:
-        self.original.write(text)
-        self.original.flush()
+        if settings.edit_log_to_terminal:
+            self.terminal_stream.write(text)
+            self.terminal_stream.flush()
         self.buffer += text.replace("\r", "\n")
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
@@ -263,29 +281,63 @@ class _JobLogStream:
         return len(text)
 
     def flush(self) -> None:
-        self.original.flush()
+        if settings.edit_log_to_terminal:
+            self.terminal_stream.flush()
         if self.buffer.strip():
             self._emit(self.buffer)
             self.buffer = ""
 
     def isatty(self) -> bool:
-        return bool(getattr(self.original, "isatty", lambda: False)())
+        return settings.edit_log_to_terminal and bool(getattr(self.terminal_stream, "isatty", lambda: False)())
 
     def _emit(self, line: str) -> None:
         clean = line.strip()
         if clean:
-            experiment_service.append_job_log(self.job_id, clean)
+            series_progress = _sequential_edit_progress(clean)
+            completed, total = series_progress if series_progress is not None else (None, None)
+            edit_started = _easyedit_edit_started(clean)
+            experiment_service.append_job_log(
+                self.job_id,
+                clean,
+                progress=(completed / total if completed is not None and total else 0.1 if edit_started else None),
+                progress_current=completed,
+                progress_total=total,
+            )
 
 
-def _job_response(job: dict) -> JobResponse:
+def _job_response(job: dict, after_log_count: int | None = None) -> JobResponse:
+    total_log_count = int(job.get("log_count", len(job.get("logs", []))))
+    retained_logs = job.get("logs", [])
+    retained_start = total_log_count - len(retained_logs)
+    logs = retained_logs
+    log_start_count = retained_start
+    if after_log_count is not None:
+        log_start_count = max(min(after_log_count, total_log_count), retained_start)
+        logs = retained_logs[log_start_count - retained_start :]
     return JobResponse(
         job_id=job["id"],
         experiment_id=job["experiment_id"],
         status=job["status"],
         progress=job.get("progress", 0.0),
-        logs=job.get("logs", []),
+        progress_current=job.get("progress_current"),
+        progress_total=job.get("progress_total"),
+        logs=logs,
+        log_count=total_log_count,
+        log_start_count=log_start_count,
         result=_job_result(job),
     )
+
+
+def _sequential_edit_progress(log_line: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"Created (?:R-)?ROME sequential edit (\d+)/(\d+)\.", log_line)
+    if match is None:
+        return None
+    completed, total = (int(value) for value in match.groups())
+    return (completed, total) if total else None
+
+
+def _easyedit_edit_started(log_line: str) -> bool:
+    return log_line == "Starting EasyEdit algorithm."
 
 
 def _job_result(job: dict) -> dict | None:

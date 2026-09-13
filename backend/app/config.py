@@ -52,6 +52,13 @@ def _resolve_data_dir() -> Path:
     return path.resolve() if path.is_absolute() else (_backend_root / path).resolve()
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
@@ -60,6 +67,7 @@ class Settings:
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     easyedit_root: Path = _resolve_existing_path(os.getenv("EASYEDIT_ROOT", "./EasyEdit"), marker="easyeditor")
     editing_runtime: str = os.getenv("EDITING_RUNTIME", "easyedit")
+    edit_log_to_terminal: bool = _env_flag("EDIT_LOG_TO_TERMINAL")
 
 
 settings = Settings()
