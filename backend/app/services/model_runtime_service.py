@@ -144,6 +144,10 @@ class ModelRuntimeService:
             _release_cuda_allocator()
         self._publish_runtime_update()
 
+    def cancel_active_operation(self, _reason: str) -> dict[str, Any]:
+        """The in-process runtime cannot safely interrupt arbitrary PyTorch work."""
+        return {"worker_stopped": False}
+
     def runtime_status_events(self):
         """Yield state changes and keepalives for SSE runtime-status subscribers."""
         observed_version = -1
@@ -480,6 +484,7 @@ class HardUnloadModelRuntimeService:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._worker_lock = threading.RLock()
+        self._termination_lock = threading.Lock()
         self._runtime_version = 0
         self._process: Any | None = None
         self._connection: Any | None = None
@@ -573,6 +578,49 @@ class HardUnloadModelRuntimeService:
             self._stop_worker_locked("Application is shutting down.")
         self._publish_runtime_update()
 
+    def cancel_active_operation(self, reason: str) -> dict[str, Any]:
+        """Terminate a busy model worker without waiting for its command lock.
+
+        Editing runs in the disposable worker, so process termination is the only
+        dependable way to interrupt third-party CUDA/PyTorch code mid-operation.
+        The loaded model and its active runtime patch stack are consequently
+        released along with that process.
+        """
+        with self._termination_lock:
+            with self._lock:
+                process = self._process
+                connection = self._connection
+                loaded_model_id = self._loaded_model_id
+                self._process = None
+                self._connection = None
+                self._loaded_model_id = None
+                self._loaded_device = "not_loaded"
+                self._model_vram_bytes = 0
+            if process is None:
+                return {"worker_stopped": False}
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+            process.join(timeout=0.2)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+            discarded_patches: dict[str, list[str]] = {}
+            if loaded_model_id:
+                from app.services.patch_service import patch_service
+
+                discarded_patches = {
+                    loaded_model_id: patch_service.deactivate_runtime_patches_for_model(loaded_model_id)
+                }
+            self._publish_runtime_update()
+            print(f"Model worker stopped: {reason}")
+            return {"worker_stopped": True, "discarded_patches_by_model": discarded_patches}
+
     def shutdown(self) -> None:
         self.unload_all()
 
@@ -660,6 +708,10 @@ class HardUnloadModelRuntimeService:
             model_id = job["model_id"]
 
         try:
+            # A canceled edit may still be terminating its isolated CUDA
+            # process. Do not start another worker until that teardown ends.
+            with self._termination_lock:
+                pass
             with self._worker_lock:
                 self._stop_worker_locked("Replacing loaded model.")
                 self._start_worker_locked()

@@ -34,6 +34,8 @@ from app.services.patch_service import patch_service
 
 router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
+_active_edit_job_id: str | None = None
+_active_edit_job_lock = threading.Lock()
 
 
 class PatchExportRequest(BaseModel):
@@ -142,6 +144,28 @@ def stream_edit_job(job_id: str) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.post("/edit/jobs/{job_id}/cancel", response_model=JobResponse)
+def cancel_edit_job(job_id: str) -> JobResponse:
+    current_job = experiment_service.get_job(job_id)
+    was_running = current_job is not None and current_job.get("status") == "running"
+    job = experiment_service.cancel_job(job_id, "Edit canceled by user. The loaded model was unloaded.")
+    if job is None:
+        raise HTTPException(status_code=404, detail="Edit job not found")
+    with _active_edit_job_lock:
+        is_active = _active_edit_job_id == job_id
+    if was_running and job.get("status") == "canceled" and is_active:
+        threading.Thread(target=_stop_canceled_edit_worker, args=(job_id,), daemon=True).start()
+    return _job_response(job)
+
+
+def _stop_canceled_edit_worker(job_id: str) -> None:
+    """Release the worker after responding to a cancellation request."""
+    try:
+        model_runtime_service.cancel_active_operation("Edit canceled by user.")
+    except Exception as exc:
+        experiment_service.append_job_log(job_id, f"Model-worker shutdown warning: {exc}")
+
+
 @router.post("/edit/mom2/status")
 def mom2_statistics_status(request: Mom2StatisticsRequest) -> dict:
     try:
@@ -234,22 +258,30 @@ def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) ->
 
 
 def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None:
-    experiment_service.append_job_log(job_id, f"Starting {method_label} edit")
-    if _edit_job_lock.locked():
-        experiment_service.append_job_log(job_id, "Waiting for active edit job to finish")
+    global _active_edit_job_id
     try:
         with _edit_job_lock:
+            current_job = experiment_service.get_job(job_id)
+            if current_job is None or current_job.get("status") != "running":
+                return
+            experiment_service.append_job_log(job_id, f"Starting {method_label} edit")
             experiment_service.set_job_progress(job_id, 0.05)
-            with _capture_job_output(job_id):
-                result = runner(**payload)
+            with _active_edit_job_lock:
+                _active_edit_job_id = job_id
+            try:
+                with _capture_job_output(job_id):
+                    result = runner(**payload)
+                experiment_service.complete_job(job_id, result)
+            finally:
+                with _active_edit_job_lock:
+                    if _active_edit_job_id == job_id:
+                        _active_edit_job_id = None
     except EasyEditUnsupportedError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except EasyEditRuntimeError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except Exception as exc:
         experiment_service.fail_job(job_id, str(exc))
-    else:
-        experiment_service.complete_job(job_id, result)
 @contextlib.contextmanager
 def _capture_job_output(job_id: str):
     stdout = _JobLogStream(job_id, sys.stdout)
