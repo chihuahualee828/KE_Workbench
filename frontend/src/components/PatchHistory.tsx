@@ -21,6 +21,7 @@ export function PatchHistory({
   const [busyPatchId, setBusyPatchId] = useState("");
   const [savingPatchId, setSavingPatchId] = useState("");
   const [loadingPatchId, setLoadingPatchId] = useState("");
+  const [loadedPatchModelId, setLoadedPatchModelId] = useState("");
   const [deletingPatchId, setDeletingPatchId] = useState("");
   const [message, setMessage] = useState("");
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
@@ -63,6 +64,12 @@ export function PatchHistory({
     [models]
   );
   const modelLabel = (modelId: string) => modelLabels.get(modelId) ?? modelId;
+
+  useEffect(() => {
+    if (!loadedPatchModelId || loadedModelIds.has(loadedPatchModelId)) return;
+    setLoadedPatchModelId("");
+    setMessage("");
+  }, [loadedModelIds, loadedPatchModelId]);
 
   async function discardPatch(patchId: string) {
     setBusyPatchId(patchId);
@@ -114,9 +121,10 @@ export function PatchHistory({
     setError("");
     try {
       await api.loadPatch(patch.patch_id);
-      setSelectedPatch(null);
-      setMessage(`Loaded ${patch.patch_id} into ${patch.base_model}.`);
       await onPatchesChanged?.();
+      setSelectedPatch(null);
+      setLoadedPatchModelId(patch.base_model);
+      setMessage(`Loaded ${patch.patch_id} into ${patch.base_model}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

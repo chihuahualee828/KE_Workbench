@@ -4,6 +4,7 @@ import { Download, HardDrive, Loader2, Upload, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
+import { getModelCacheSnapshot, getModelRuntimeSnapshot, getUnloadingModelSnapshot } from "@/lib/modelStatusCache";
 import { announceModelDownload, applyCacheStatusToCache, applyDownloadJobToCache, listenForModelCacheStatuses, listenForModelDownloads } from "@/lib/modelDownloadEvents";
 import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
 import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
@@ -25,11 +26,11 @@ export function ModelSelector({
   showCacheControls?: boolean;
   refreshKey?: number;
 }) {
-  const [cache, setCache] = useState<ModelCacheStatus[]>([]);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
-  const [job, setJob] = useState<ModelDownloadJob | null>(null);
-  const [runtimeJob, setRuntimeJob] = useState<ModelRuntimeJob | null>(null);
-  const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
+  const [cache, setCache] = useState<ModelCacheStatus[]>(getModelCacheSnapshot);
+  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>(getModelRuntimeSnapshot);
+  const [job, setJob] = useState<ModelDownloadJob | null>(() => getModelCacheSnapshot().find((status) => status.model_id === value)?.active_job ?? null);
+  const [runtimeJob, setRuntimeJob] = useState<ModelRuntimeJob | null>(() => getModelRuntimeSnapshot().find((status) => status.model_id === value)?.active_job ?? null);
+  const [unloadingModelId, setUnloadingModelId] = useState<string | null>(getUnloadingModelSnapshot);
   const [error, setError] = useState("");
   const [runtimeConnected, setRuntimeConnected] = useState(isModelRuntimeConnected);
 
@@ -41,7 +42,9 @@ export function ModelSelector({
     () => models.find((model) => model.id === value),
     [models, value]
   );
-  const selectedLocal = selectedModel?.source === "local" || selectedCache?.is_local;
+  const modelCatalogReady = Boolean(selectedModel);
+  const modelStatusReady = runtimeConnected && modelCatalogReady;
+  const selectedLocal = modelCatalogReady && (selectedModel?.source === "local" || selectedCache?.is_local);
   const selectedJobActive = job?.model_id === value && activeDownloadStatuses.includes(job.status);
   const selectedRuntime = useMemo(
     () => runtime.find((item) => item.model_id === value),
@@ -51,6 +54,11 @@ export function ModelSelector({
   const selectedRuntimeUnloading = unloadingModelId === value;
   const hubModels = models.filter((model) => model.source !== "local");
   const importedModels = models.filter((model) => model.source === "local");
+  const cacheSummary = !modelStatusReady
+    ? "Unknown (Unknown)"
+    : selectedCache?.cached
+      ? `Cached (${formatBytes(selectedCache.size_bytes)})`
+      : `${formatCacheState(selectedCache)} (${formatExpectedSize(selectedCache)})`;
 
   useEffect(() => {
     if (models.length && !models.some((model) => model.id === value)) {
@@ -61,8 +69,7 @@ export function ModelSelector({
   async function refreshCache() {
     if (!runtimeConnected) return;
     try {
-      const result = await api.modelCache();
-      const runtimeResult = await api.modelRuntime();
+      const [result, runtimeResult] = await Promise.all([api.modelCache(), api.modelRuntime()]);
       setCache(result);
       setRuntime(runtimeResult);
       const activeSelectedJob = result.find((item) => item.model_id === value)?.active_job;
@@ -241,10 +248,10 @@ export function ModelSelector({
           <div className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-sm">
             <span className="inline-flex items-center gap-2">
               <HardDrive size={15} />
-              {selectedCache?.cached ? `Cached (${formatBytes(selectedCache.size_bytes)})` : `${formatCacheState(selectedCache)} (${formatExpectedSize(selectedCache)})`}
+              {cacheSummary}
             </span>
-            {!selectedCache?.cached && !selectedLocal ? (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={startDownload} disabled={!runtimeConnected || !selectedModel || selectedJobActive} title={!runtimeConnected ? "API is offline" : selectedJobActive ? "Open Jobs to monitor or cancel this download" : "Download model into Hugging Face cache"}>
+            {modelCatalogReady && !selectedCache?.cached && !selectedLocal ? (
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={startDownload} disabled={!modelStatusReady || selectedJobActive} title={!runtimeConnected ? "API is offline" : selectedJobActive ? "Open Jobs to monitor or cancel this download" : "Download model into Hugging Face cache"}>
                 {selectedJobActive ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
                 {job?.status === "canceling" ? "Canceling" : selectedJobActive ? "Downloading" : "Download"}
               </button>
@@ -252,20 +259,20 @@ export function ModelSelector({
           </div>
           <div className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-sm">
             <span>
-              {selectedRuntime?.loaded ? (
+              {modelStatusReady && selectedRuntime?.loaded ? (
                 <span>
                   <span>{`Loaded · ${selectedRuntime.device ?? "cpu"}`}</span>
                   <span className="mt-1 block font-mono text-[10px] text-ink/50">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} VRAM</span>
                 </span>
-              ) : selectedRuntimeUnloading ? "Unloading model" : selectedRuntimeActive ? "Loading weights" : runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
+              ) : modelStatusReady && selectedRuntimeUnloading ? "Unloading model" : modelStatusReady && selectedRuntimeActive ? "Loading weights" : modelStatusReady && runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
             </span>
-            {selectedRuntime?.loaded || selectedRuntimeUnloading ? (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={unloadRuntime} disabled={!runtimeConnected || selectedRuntimeActive || Boolean(unloadingModelId)} title={!runtimeConnected ? "API is offline" : selectedRuntimeUnloading ? "Waiting for the model worker to exit" : "Unload model from backend memory"}>
+            {modelStatusReady && (selectedRuntime?.loaded || selectedRuntimeUnloading) ? (
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={unloadRuntime} disabled={selectedRuntimeActive || Boolean(unloadingModelId)} title={selectedRuntimeUnloading ? "Waiting for the model worker to exit" : "Unload model from backend memory"}>
                 {selectedRuntimeUnloading ? <Loader2 className="animate-spin" size={15} /> : <XCircle size={15} />}
                 {selectedRuntimeUnloading ? "Unloading" : "Unload"}
               </button>
             ) : (
-              <button className="ghost-button min-h-8 px-2 py-1" onClick={loadRuntime} disabled={!runtimeConnected || !selectedCache?.cached || selectedRuntimeActive || Boolean(unloadingModelId)} title={!runtimeConnected ? "API is offline" : unloadingModelId ? "Wait for the current model unload to finish" : selectedCache?.cached ? "Load model weights into backend memory" : "Download model before loading"}>
+              <button className="ghost-button min-h-8 px-2 py-1" onClick={loadRuntime} disabled={!modelStatusReady || !selectedCache?.cached || selectedRuntimeActive || Boolean(unloadingModelId)} title={!runtimeConnected ? "API is offline" : !modelCatalogReady ? "Waiting for the model catalog" : unloadingModelId ? "Wait for the current model unload to finish" : selectedCache?.cached ? "Load model weights into backend memory" : "Download model before loading"}>
                 {selectedRuntimeActive ? <Loader2 className="animate-spin" size={15} /> : <Upload size={15} />}
                 {selectedRuntimeActive ? "Loading" : "Load"}
               </button>

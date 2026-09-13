@@ -1,9 +1,11 @@
+import { getModelCacheSnapshot, setModelCacheSnapshot } from "./modelStatusCache";
 import type { ModelCacheStatus, ModelDownloadJob } from "./types";
 
 const eventName = "kew:model-download-started";
 const cacheStatusEventName = "kew:model-cache-status-changed";
 
 export function announceModelDownload(job: ModelDownloadJob) {
+  setModelCacheSnapshot(applyDownloadJobToCache(getModelCacheSnapshot(), job));
   window.dispatchEvent(new CustomEvent<ModelDownloadJob>(eventName, { detail: job }));
 }
 
@@ -16,6 +18,7 @@ export function listenForModelDownloads(callback: (job: ModelDownloadJob) => voi
 }
 
 export function announceModelCacheStatus(status: ModelCacheStatus) {
+  setModelCacheSnapshot(applyCacheStatusToCache(getModelCacheSnapshot(), status));
   window.dispatchEvent(new CustomEvent<ModelCacheStatus>(cacheStatusEventName, { detail: status }));
 }
 

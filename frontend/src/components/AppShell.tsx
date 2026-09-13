@@ -22,7 +22,9 @@ const navigation = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const current = navigation.find((item) => item.href === pathname);
-  const { runtime } = useWorkbenchData();
+  const { runtime, backend } = useWorkbenchData();
+  const hostname = new URL(backend.baseUrl).hostname;
+  const backendLabel = hostname === "localhost" || hostname === "127.0.0.1" ? "LOCAL" : "REMOTE";
 
   return (
     <div className="app-shell">
@@ -56,7 +58,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="hidden text-ink/45 sm:inline">Workspace</span><ChevronRight size={14} className="hidden text-ink/30 sm:block" />
             <span className="truncate font-medium">{current?.label ?? "Workbench"}</span>
           </div>
-          <div className="flex shrink-0 items-center gap-3"><span className="hidden rounded-md border border-line bg-panel px-2 py-1 text-[10px] font-semibold tracking-widest text-ink/50 sm:inline">LOCAL</span><TopbarJobsMenu /></div>
+          <div className="flex shrink-0 items-center gap-3"><span className="hidden rounded-md border border-line bg-panel px-2 py-1 text-[10px] font-semibold tracking-widest text-ink/50 sm:inline" title={backend.baseUrl}>{backendLabel}</span><TopbarJobsMenu /></div>
         </header>
         <nav aria-label="Mobile navigation" className="mobile-navigation">
           {navigation.map((item) => <Link key={item.href} href={item.href} aria-current={pathname === item.href ? "page" : undefined} className={`mobile-nav-link ${pathname === item.href ? "mobile-nav-link-active" : ""}`}><item.icon size={15} />{item.label}</Link>)}
