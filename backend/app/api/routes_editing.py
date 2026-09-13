@@ -61,6 +61,7 @@ def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
 def rome_edit(request: RomeEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer] if request.target_layer is not None else None, request.mom2_adjustment)
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
@@ -76,6 +77,7 @@ def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
         [request.target_layer] if request.target_layer is not None else None,
         request.mom2_adjustment,
     )
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("r_rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("R-ROME", job["id"], run_r_rome_edit, request.model_dump())
@@ -95,6 +97,7 @@ def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
 @router.post("/edit/kn", response_model=JobResponse)
 def kn_edit(request: KnEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("kn_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("KN", job["id"], run_kn_edit, request.model_dump())
@@ -105,6 +108,7 @@ def kn_edit(request: KnEditRequest) -> JobResponse:
 def memit_edit(request: MemitEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "memit", request.layers, request.mom2_adjustment)
+    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("memit_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("MEMIT", job["id"], run_memit_edit, request.model_dump())
@@ -246,6 +250,27 @@ def _require_mom2_statistics(model_id: str, method: str, layers: list[int] | Non
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EasyEditRuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _prepare_edit_patch_stack(model_id: str, continue_from_active_patches: bool) -> None:
+    """Synchronously reset reloadable patches before a fresh edit job starts."""
+    if continue_from_active_patches:
+        return
+
+    previous_active_state = patch_service.active_patches_by_model()
+    patch_service.deactivate_runtime_patches_for_model(model_id)
+    try:
+        model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+    except Exception as exc:
+        patch_service.restore_active_patches(previous_active_state)
+        try:
+            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reset active patches before starting the edit.",
+        ) from exc
 
 
 def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) -> None:

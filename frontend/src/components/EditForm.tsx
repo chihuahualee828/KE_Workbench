@@ -188,6 +188,7 @@ function KnForm({
         evaluation_prompts: evaluationPrompts,
         sequential_edit: sequentialEdit
       });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
@@ -257,8 +258,8 @@ function KnForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>Sequential edit</span>
-          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded} title={modelLoaded ? "Identify knowledge neurons and apply the KN edit" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
@@ -486,6 +487,7 @@ function RomeForm({
             sequential_edit: sequentialEdit,
             mom2_adjustment: mom2Adjustment
           });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
@@ -644,8 +646,8 @@ function RomeForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>{isSeriesEdit ? "Sequential edit" : "Sequential edit"}</span>
-          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
@@ -895,6 +897,7 @@ function MemitForm({
         sequential_edit: sequentialEdit,
         mom2_adjustment: mom2Adjustment
       });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       setResult(completed.result ?? null);
       await onPatchesChanged?.();
@@ -1089,8 +1092,8 @@ function MemitForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length || !editDrafts?.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>Sequential edit</span>
-          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
