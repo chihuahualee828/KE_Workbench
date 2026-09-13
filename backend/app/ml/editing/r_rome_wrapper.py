@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import run_easyedit
+from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
 from app.ml.editing.patch_format import edit_to_patch_entry
-from app.ml.inference.generate import generate_text
 from app.services.model_registry import model_registry
 
 
@@ -64,17 +63,5 @@ def run_r_rome_edit(
         layer_source="request" if target_layer is not None else "easyedit_hparams",
         mom2_adjustment=mom2_adjustment,
     )
-    result["generations"] = [
-        {
-            "prompt": prompt,
-            "text": generate_text(
-                model_id=model_id,
-                prompt=prompt,
-                max_new_tokens=32,
-                decoding_strategy="greedy",
-                patch_id=result["patch_id"],
-            )["text"],
-        }
-        for prompt in evaluation_prompts
-    ]
+    result.update(evaluate_post_edit_reliability(model_id, "r_rome", [edit]))
     return result

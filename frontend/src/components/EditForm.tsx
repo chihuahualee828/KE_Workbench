@@ -190,7 +190,9 @@ function KnForm({
       });
       if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -489,7 +491,9 @@ function RomeForm({
           });
       if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -899,7 +903,9 @@ function MemitForm({
       });
       if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1805,6 +1811,13 @@ function parseGenerations(result: Record<string, unknown> | null) {
       };
     })
     .filter((item): item is { prompt: string; text: string; targetNew: string } => Boolean(item?.text));
+}
+
+function reliabilityFromEditResult(result: Record<string, unknown> | null) {
+  const value = result?.reliability;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function HighlightedGeneration({ text, target }: { text: string; target: string }) {
