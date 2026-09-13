@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 
@@ -37,7 +38,12 @@ def model_worker_entry(connection: Any) -> None:
                 with contextlib.redirect_stdout(_WorkerLogStream(connection)), contextlib.redirect_stderr(
                     _WorkerLogStream(connection)
                 ):
-                    result = _dispatch(runtime, action, command.get("payload") or {})
+                    result = _dispatch(
+                        runtime,
+                        action,
+                        command.get("payload") or {},
+                        progress_callback=lambda progress: connection.send({"type": "progress", "progress": progress}),
+                    )
             except Exception as exc:
                 connection.send(
                     {
@@ -55,7 +61,12 @@ def model_worker_entry(connection: Any) -> None:
         connection.close()
 
 
-def _dispatch(runtime: Any, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _dispatch(
+    runtime: Any,
+    action: str,
+    payload: dict[str, Any],
+    progress_callback: Callable[[dict[str, int]], None] | None = None,
+) -> dict[str, Any]:
     if action == "load":
         job = runtime.start_load(payload["model_id"])
         completed = job
@@ -88,6 +99,17 @@ def _dispatch(runtime: Any, action: str, payload: dict[str, Any]) -> dict[str, A
         from app.ml.tracing.causal_trace import run_causal_trace
 
         return run_causal_trace(**payload)
+    if action in {"easyedit_edit_quality", "easyedit_reliability"}:
+        # Keep the former action name as a worker compatibility alias for an
+        # operation already dispatched before a development-server restart.
+        from app.ml.editing.easyedit_runtime import evaluate_easyedit_quality
+
+        return evaluate_easyedit_quality(
+            **payload,
+            progress_callback=(
+                lambda current, total: progress_callback({"current": current, "total": total})
+            ) if progress_callback is not None else None,
+        )
     if action == "rome_edit":
         from app.ml.editing.rome_wrapper import run_rome_edit
 

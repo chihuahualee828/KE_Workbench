@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -244,6 +245,317 @@ def run_easyedit(
             baseline_weights = None
             metrics = None
             _collect_runtime_memory()
+
+
+def evaluate_easyedit_quality(
+    model_id: str,
+    method: str,
+    edits: list[dict[str, Any]],
+    include_generations: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_job_id: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate EasyEdit rewrite, rephrase, and locality quality on active weights.
+
+    This deliberately bypasses ``BaseEditor.edit``: it reads the currently loaded
+    model (including its active workbench patches) and performs no weight update.
+    A record can include both ``rephrase_prompt`` and a ``locality`` payload, so
+    EasyEdit computes rewrite/rephrase/locality outputs as one per-fact quality
+    evaluation.  Locality additionally needs an unpatched baseline output; we
+    collect that under the same runtime lock and let EasyEdit's locality
+    finalizer calculate its normal pre/post preservation accuracy.  A job ID is
+    checked between facts so canceling an evaluation does not terminate the
+    model-owning worker or unload its model.
+    """
+    method_key = method.lower()
+    spec = METHODS.get(method_key)
+    if spec is None:
+        raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
+
+    model_info = model_registry.get(model_id)
+    if not model_info.get(spec["support_key"], False):
+        raise EasyEditUnsupportedError(f"{model_id} is not configured for {method_key.upper()}.")
+    if not edits:
+        raise ValueError("Provide at least one edit fact to test reliability.")
+
+    _, hparams_cls = _load_easyedit(spec["hparams_class"])
+    hparams = hparams_cls.from_hparams(str(_resolve_hparams_path(model_info, spec["hparams_key"])))
+    _override_model_name(hparams, model_info)
+    model_name = str(model_info.get("local_path") or model_info["hf_id"])
+
+    with model_runtime_service.exclusive_runtime_access():
+        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+        _configure_loaded_tokenizer(runtime_bundle["tokenizer"], model_name, method_key)
+        _override_easyedit_device(hparams, runtime_bundle.get("device"))
+
+        try:
+            evaluation_module = importlib.import_module("easyeditor.evaluate")
+            compute_edit_quality = evaluation_module.compute_edit_quality
+            editor_module = importlib.import_module("easyeditor.editors.editor")
+            finalize_locality_metrics = editor_module.finalize_locality_metrics
+        except (ImportError, AttributeError) as exc:
+            raise EasyEditRuntimeError(
+                "Installed EasyEdit does not expose its edit-quality evaluator."
+            ) from exc
+
+        prepared_edits: list[tuple[dict[str, Any], str | None]] = []
+        for raw_edit in edits:
+            edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
+            subject = str(edit.get("subject") or "").strip()
+            relation_prompt = str(edit.get("relation_prompt") or "").strip()
+            target_new = str(edit.get("new_object") or "").strip()
+            if not subject or not relation_prompt or not target_new:
+                raise ValueError("Each reliability test fact needs a subject, relation prompt, and new object.")
+            prompt = build_prompt(subject, relation_prompt)
+            record: dict[str, Any] = {
+                "prompt": prompt,
+                "target_new": target_new,
+                "ground_truth": str(edit.get("ground_truth") or ""),
+            }
+            rephrase_prompts = [str(value).strip() for value in edit.get("rephrase_prompts") or [] if str(value).strip()]
+            rephrase_prompt = rephrase_prompts[0] if rephrase_prompts else None
+            if rephrase_prompt:
+                # ``compute_edit_quality`` evaluates one edit record at a time.
+                # Its rephrase path likewise expects one prompt aligned to this
+                # record, rather than a list of prompts.
+                record["rephrase_prompt"] = rephrase_prompt
+
+            source_metadata = edit.get("source_metadata")
+            if not isinstance(source_metadata, dict):
+                source_metadata = {}
+            locality_prompt = str(edit.get("locality_prompt") or source_metadata.get("locality_prompt") or "").strip()
+            locality_ground_truth = str(
+                edit.get("locality_ground_truth") or source_metadata.get("locality_ground_truth") or ""
+            ).strip()
+            if locality_prompt and locality_ground_truth:
+                # This is the same per-record shape BaseEditor._prepare_requests
+                # gives compute_edit_quality for EasyEdit locality evaluation.
+                record["locality"] = {
+                    "neighborhood": {
+                        "prompt": locality_prompt,
+                        "ground_truth": locality_ground_truth,
+                    }
+                }
+            prepared_edits.append((record, rephrase_prompt))
+
+        locality_baselines: list[dict[str, Any] | None] = [None] * len(prepared_edits)
+        if any("locality" in record for record, _ in prepared_edits):
+            # EasyEdit locality is not target accuracy.  It compares the active
+            # model's output against the same model before the edit.  Temporarily
+            # replaying an empty patch stack gives that clean baseline without
+            # creating another model instance.
+            patch_service.sync_patch_stack_to_model(runtime_bundle["model"], model_id, [])
+            try:
+                for index, (record, _) in enumerate(prepared_edits):
+                    if "locality" not in record:
+                        continue
+                    _ensure_evaluation_job_running(cancel_job_id)
+                    locality_baselines[index] = compute_edit_quality(
+                        runtime_bundle["model"],
+                        model_name,
+                        hparams,
+                        runtime_bundle["tokenizer"],
+                        record,
+                        hparams.device,
+                    )
+            finally:
+                patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+
+        cases = []
+        sample_generations: list[dict[str, str]] = []
+        sample_rephrase_generations: list[dict[str, str]] = []
+        sample_locality_generations: list[dict[str, str] | None] = []
+        if include_generations:
+            from app.ml.inference.generate import generate_text
+
+            def generate_sample(prompt: str) -> dict[str, str]:
+                return {
+                    "prompt": prompt,
+                    "clean_model": generate_text(
+                        model_id,
+                        prompt,
+                        max_new_tokens=32,
+                        patch_id=None,
+                        use_active_patches=False,
+                    )["text"],
+                    "active_model": generate_text(
+                        model_id,
+                        prompt,
+                        max_new_tokens=32,
+                        patch_id=None,
+                        use_active_patches=True,
+                    )["text"],
+                }
+
+        total_edits = len(prepared_edits)
+        for index, (record, rephrase_prompt) in enumerate(prepared_edits, start=1):
+            _ensure_evaluation_job_running(cancel_job_id)
+            metrics = compute_edit_quality(
+                runtime_bundle["model"],
+                model_name,
+                hparams,
+                runtime_bundle["tokenizer"],
+                record,
+                hparams.device,
+            )
+            locality_baseline = locality_baselines[index - 1]
+            if locality_baseline is not None:
+                # Keep EasyEdit's metric name, scoring semantics, and metric
+                # metadata instead of inventing a workbench-specific locality
+                # score from the raw token IDs.
+                finalize_locality_metrics(
+                    {"pre": locality_baseline, "post": metrics},
+                    record,
+                    hparams,
+                    model_name,
+                )
+            metrics = _jsonable(metrics)
+            cases.append(
+                {
+                    "prompt": record["prompt"],
+                    "target_new": record["target_new"],
+                    "reliability_score": _rewrite_accuracy_score(metrics),
+                    "generalization_score": _rephrase_accuracy_score(metrics),
+                    "locality_score": _locality_accuracy_score(metrics),
+                    "rephrase_prompt": rephrase_prompt,
+                    "locality_prompt": (
+                        str(record["locality"]["neighborhood"]["prompt"])
+                        if "locality" in record else None
+                    ),
+                    "metrics": metrics,
+                }
+            )
+            if include_generations:
+                sample_generations.append(generate_sample(record["prompt"]))
+                if rephrase_prompt:
+                    sample_rephrase_generations.append(generate_sample(rephrase_prompt))
+                locality = record.get("locality")
+                locality_prompt = (
+                    str(locality["neighborhood"]["prompt"])
+                    if isinstance(locality, dict)
+                    and isinstance(locality.get("neighborhood"), dict)
+                    and locality["neighborhood"].get("prompt")
+                    else None
+                )
+                sample_locality_generations.append(
+                    generate_sample(locality_prompt) if locality_prompt else None
+                )
+            if progress_callback is not None:
+                progress_callback(index, total_edits)
+
+    result = {
+        "model_id": model_id,
+        "method": method_key,
+        "active_patch_ids": patch_service.active_patches_for_model(model_id),
+        "metric_name": "rewrite_acc",
+        "mean_reliability": _mean_case_score(cases, "reliability_score"),
+        "mean_generalization": _mean_case_score(cases, "generalization_score"),
+        "mean_locality": _mean_case_score(cases, "locality_score"),
+        "cases": cases,
+    }
+    if include_generations:
+        result["sample_generations"] = sample_generations
+        if len(sample_rephrase_generations) == len(cases):
+            result["sample_rephrase_generations"] = sample_rephrase_generations
+        if any(sample is not None for sample in sample_locality_generations):
+            # Keep positions aligned with ``cases``: facts without a locality
+            # prompt intentionally have ``None`` rather than a shifted sample.
+            result["sample_locality_generations"] = sample_locality_generations
+    return result
+
+
+def _ensure_evaluation_job_running(job_id: str | None) -> None:
+    """Stop at a fact boundary without disrupting the loaded model worker."""
+    if job_id is None:
+        return
+
+    # Import lazily: this evaluator is also imported from the model worker,
+    # whose runtime service imports the editing runtime during command dispatch.
+    from app.services.experiment_service import experiment_service
+
+    job = experiment_service.get_job(job_id)
+    if job is None or job.get("status") != "running":
+        raise EasyEditRuntimeError("Evaluation canceled.")
+
+
+def evaluate_post_edit_reliability(
+    model_id: str,
+    method: str,
+    edits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run one post-edit reliability pass and expose its active-model samples."""
+    reliability = evaluate_easyedit_quality(
+        model_id=model_id,
+        method=method,
+        edits=edits,
+        include_generations=True,
+    )
+    targets = []
+    for raw_edit in edits:
+        edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
+        targets.append(str(edit.get("new_object") or ""))
+
+    generations = []
+    samples = reliability.get("sample_generations")
+    if isinstance(samples, list):
+        for index, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                continue
+            prompt = sample.get("prompt")
+            active_model = sample.get("active_model")
+            if not isinstance(prompt, str) or not isinstance(active_model, str):
+                continue
+            generations.append(
+                {
+                    "prompt": prompt,
+                    "text": active_model,
+                    "target_new": targets[index] if index < len(targets) else "",
+                }
+            )
+    return {"reliability": reliability, "generations": generations}
+
+
+def _rewrite_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    """Reduce EasyEdit's scalar or per-target-token rewrite accuracy to one score."""
+    value = metrics.get("rewrite_acc")
+    values = _numeric_values(value)
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _rephrase_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    """Reduce EasyEdit's scalar or token-level rephrase accuracy to one score."""
+    values = _numeric_values(metrics.get("rephrase_acc"))
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _locality_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    """Reduce EasyEdit's per-locality pre/post preservation accuracies."""
+    locality = metrics.get("locality")
+    if not isinstance(locality, dict):
+        return None
+    values = [
+        number
+        for key, value in locality.items()
+        if key.endswith("_acc")
+        for number in _numeric_values(value)
+    ]
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _mean_case_score(cases: list[dict[str, Any]], key: str) -> float | None:
+    scores = [float(case[key]) for case in cases if isinstance(case.get(key), (int, float))]
+    return round(sum(scores) / len(scores), 4) if scores else None
+
+
+def _numeric_values(value: Any) -> list[float]:
+    if isinstance(value, bool):
+        return [float(value)]
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, list):
+        return [number for item in value for number in _numeric_values(item)]
+    return []
 
 
 def run_easyedit_kn(

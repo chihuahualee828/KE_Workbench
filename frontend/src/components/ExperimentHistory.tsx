@@ -215,6 +215,9 @@ function ExperimentHistoryCard({
 
 function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDetails; onClose: () => void }) {
   if (typeof document === "undefined") return null;
+  const evaluationMetrics = Array.isArray(details.input_json?.evaluation_modes)
+    ? details.input_json.evaluation_modes.filter((metric): metric is string => typeof metric === "string")
+    : [];
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center"
@@ -242,6 +245,7 @@ function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDeta
             <Detail label="Model" value={details.model_id} />
             <Detail label="Created" value={formatTimestamp(details.created_at)} />
             <Detail label="Updated" value={formatTimestamp(details.updated_at ?? details.created_at)} />
+            {evaluationMetrics.length ? <Detail label="Metrics" value={evaluationMetrics.map((metric) => metric[0].toUpperCase() + metric.slice(1)).join(", ")} /> : null}
             {details.job ? <Detail label="Job" value={`${details.job.id} · ${details.job.status}`} /> : null}
             {details.error_message ? <Detail label="Error" value={details.error_message} /> : null}
           </dl>
@@ -283,6 +287,7 @@ function ExperimentStatusIcon({ status }: { status: Experiment["status"] }) {
 }
 
 function formatExperimentType(value: string) {
+  if (value === "easyedit_reliability" || value.startsWith("evaluation_")) return "Evaluation";
   return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 

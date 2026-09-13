@@ -35,19 +35,33 @@ export type Experiment = {
   id: string;
   type: string;
   model_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   created_at: string;
   updated_at?: string;
   input_json?: Record<string, unknown>;
   result_path?: string | null;
   error_message?: string | null;
+  job?: ExperimentJobSummary;
+};
+
+export type ExperimentJobSummary = {
+  id: string;
+  experiment_id: string;
+  status: "running" | "completed" | "failed" | "canceled";
+  progress: number;
+  progress_current?: number | null;
+  progress_total?: number | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ExperimentJob = {
   id: string;
   experiment_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   progress: number;
+  progress_current?: number | null;
+  progress_total?: number | null;
   logs: string[];
   created_at: string;
   updated_at: string;
@@ -179,10 +193,92 @@ export type ModelRuntimeJob = {
 export type EditJob = {
   job_id: string;
   experiment_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   progress: number;
+  progress_current?: number | null;
+  progress_total?: number | null;
   logs: string[];
+  log_count: number;
+  log_start_count: number;
+  result_item_count?: number;
+  result_page_size?: number | null;
   result?: Record<string, unknown> | null;
+};
+
+export type ReliabilityTestResultItem = {
+  index: number;
+  generation?: {
+    prompt: string;
+    active_model: string;
+  } | null;
+  case?: {
+    prompt: string;
+    target_new: string;
+    reliability_score?: number | null;
+  } | null;
+};
+
+export type ReliabilityTestResultPage = {
+  offset: number;
+  limit: number;
+  total: number;
+  items: ReliabilityTestResultItem[];
+};
+
+export type EvaluationFact = {
+  key: string;
+  subject: string;
+  relation_prompt: string;
+  prompt: string;
+  new_object: string;
+  ground_truth: string;
+  rephrase_prompt: string;
+  locality_prompt: string;
+  locality_ground_truth: string;
+  portability_prompt: string;
+  portability_ground_truth: string;
+};
+
+export type ActiveEvaluationFacts = {
+  model_id: string;
+  active_patch_ids: string[];
+  method: string;
+  total: number;
+  facts: EvaluationFact[];
+};
+
+export type EvaluationResultOverview = {
+  model_id: string;
+  method: string;
+  active_patch_ids: string[];
+  metrics: Record<string, unknown>;
+  evaluation_modes: Array<"reliability" | "generalization" | "locality" | "portability">;
+  total: number;
+  available_generation_metrics: Array<"reliability" | "generalization" | "locality">;
+};
+
+export type EvaluationGeneration = {
+  prompt: string;
+  clean_model: string;
+  active_model: string;
+};
+
+export type EvaluationResultItem = {
+  index: number;
+  fact: EvaluationFact;
+  reliability_generation: EvaluationGeneration | null;
+  generalization_generation: EvaluationGeneration | null;
+  locality_generation: EvaluationGeneration | null;
+  reliability_score: number | null;
+  generalization_score: number | null;
+  locality_score: number | null;
+};
+
+export type EvaluationResultPage = {
+  offset: number;
+  limit: number;
+  total: number;
+  items: EvaluationResultItem[];
 };
 
 export type HfTokenStatus = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -106,7 +107,9 @@ def test_r_rome_is_registered_as_an_easyedit_method() -> None:
     }
 
 
-def test_reliability_evaluation_uses_active_runtime_without_editing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_easyedit_quality_evaluation_uses_active_runtime_without_editing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.ml.inference import generate as generation_module
+
     model = {
         "id": "demo",
         "hf_id": "example/demo",
@@ -116,14 +119,19 @@ def test_reliability_evaluation_uses_active_runtime_without_editing(monkeypatch:
     hparams = SimpleNamespace(model_name="example/demo", device=0, alg_name="ROME")
     runtime_model = object()
     runtime_tokenizer = SimpleNamespace(pad_token_id=0, eos_token_id=0)
-    calls: list[dict[str, str]] = []
+    calls: list[dict[str, object]] = []
+    progress: list[tuple[int, int]] = []
 
     def compute_edit_quality(_model, _name, _hparams, _tokenizer, record, _device):
         calls.append(record)
         return {
             "rewrite_acc": 1.0 if record["target_new"] == "Paris" else 0.0,
             "rephrase_acc": 0.75 if record.get("rephrase_prompt") else None,
+            "locality": {"neighborhood_output": [[1, 2]]} if record.get("locality") else {},
         }
+
+    def finalize_locality_metrics(metric, _record, _hparams, _model_name):
+        metric["post"]["locality"]["neighborhood_acc"] = [1.0]
 
     monkeypatch.setattr(easyedit_runtime.model_registry, "get", lambda _: model)
     monkeypatch.setattr(easyedit_runtime, "_load_easyedit", lambda _: (None, SimpleNamespace(from_hparams=lambda _: hparams)))
@@ -143,14 +151,23 @@ def test_reliability_evaluation_uses_active_runtime_without_editing(monkeypatch:
     monkeypatch.setattr(easyedit_runtime.patch_service, "active_patches_for_model", lambda _: ["patch_demo"])
     monkeypatch.setattr(easyedit_runtime.patch_service, "sync_active_patches_to_model", lambda *_: None)
     monkeypatch.setattr(
+        generation_module,
+        "generate_text",
+        lambda _model_id, prompt, *, use_active_patches, **_: {
+            "text": f"{'edited' if use_active_patches else 'original'}: {prompt}"
+        },
+    )
+    monkeypatch.setattr(
         easyedit_runtime.importlib,
         "import_module",
         lambda name: SimpleNamespace(
             compute_edit_quality=compute_edit_quality
-        ) if name == "easyeditor.evaluate" else None,
+        ) if name == "easyeditor.evaluate" else SimpleNamespace(
+            finalize_locality_metrics=finalize_locality_metrics
+        ) if name == "easyeditor.editors.editor" else None,
     )
 
-    result = easyedit_runtime.evaluate_easyedit_reliability(
+    result = easyedit_runtime.evaluate_easyedit_quality(
         model_id="demo",
         method="rome",
         edits=[
@@ -159,24 +176,74 @@ def test_reliability_evaluation_uses_active_runtime_without_editing(monkeypatch:
                 "relation_prompt": "{} is in",
                 "new_object": "Paris",
                 "rephrase_prompts": ["The Space Needle can be found in"],
+                "locality_prompt": "The Eiffel Tower is in",
+                "locality_ground_truth": "Paris",
             },
             {"subject": "The Eiffel Tower", "relation_prompt": "{} is in", "new_object": "Rome"},
         ],
+        include_generations=True,
+        progress_callback=lambda current, total: progress.append((current, total)),
     )
 
-    assert calls == [
-        {
-            "prompt": "The Space Needle is in",
-            "target_new": "Paris",
-            "ground_truth": "",
-            "rephrase_prompt": "The Space Needle can be found in",
+    locality_record = {
+        "prompt": "The Space Needle is in",
+        "target_new": "Paris",
+        "ground_truth": "",
+        "rephrase_prompt": "The Space Needle can be found in",
+        "locality": {
+            "neighborhood": {
+                "prompt": "The Eiffel Tower is in",
+                "ground_truth": "Paris",
+            },
         },
+    }
+    # Locality is calculated with EasyEdit's normal pre/post protocol: one
+    # unpatched baseline call, then the active-model composite call.
+    assert calls == [
+        locality_record,
+        locality_record,
         {"prompt": "The Eiffel Tower is in", "target_new": "Rome", "ground_truth": ""},
     ]
     assert result["active_patch_ids"] == ["patch_demo"]
     assert result["mean_reliability"] == 0.5
     assert result["mean_generalization"] == 0.75
+    assert result["mean_locality"] == 1.0
     assert result["cases"][0]["reliability_score"] == 1.0
     assert result["cases"][1]["reliability_score"] == 0.0
     assert result["cases"][0]["generalization_score"] == 0.75
     assert result["cases"][1]["generalization_score"] is None
+    assert result["cases"][0]["locality_score"] == 1.0
+    assert result["cases"][1]["locality_score"] is None
+    assert result["sample_locality_generations"] == [
+        {
+            "prompt": "The Eiffel Tower is in",
+            "clean_model": "original: The Eiffel Tower is in",
+            "active_model": "edited: The Eiffel Tower is in",
+        },
+        None,
+    ]
+    assert progress == [(1, 2), (2, 2)]
+
+
+def test_post_edit_reliability_reuses_active_model_generation_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        easyedit_runtime,
+        "evaluate_easyedit_quality",
+        lambda **_: {
+            "mean_reliability": 1.0,
+            "sample_generations": [
+                {"prompt": "The Space Needle is in", "clean_model": "Seattle", "active_model": "Paris"},
+            ],
+        },
+    )
+
+    result = easyedit_runtime.evaluate_post_edit_reliability(
+        model_id="demo",
+        method="rome",
+        edits=[{"subject": "The Space Needle", "relation_prompt": "{} is in", "new_object": "Paris"}],
+    )
+
+    assert result["reliability"]["mean_reliability"] == 1.0
+    assert result["generations"] == [
+        {"prompt": "The Space Needle is in", "text": "Paris", "target_new": "Paris"},
+    ]

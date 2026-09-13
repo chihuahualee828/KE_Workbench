@@ -5,12 +5,18 @@ import { useWorkbenchData } from "@/components/DataState";
 import { EvaluationDashboard } from "@/components/EvaluationDashboard";
 
 export default function EvaluatePage() {
-  const { models, patches, runtime, status } = useWorkbenchData();
+  const { models, patches, runtime, status, refresh } = useWorkbenchData();
   return (
     <div>
       <PageHeader eyebrow="Experiment" title="Evaluation" description="Understand an edit’s impact on accuracy, generalization, and unrelated knowledge." status={status} />
       <section className="section">
-        <EvaluationDashboard models={models} patches={patches} runtime={runtime} />
+        <EvaluationDashboard
+          models={models}
+          patches={patches}
+          runtime={runtime}
+          apiStatus={status}
+          onPatchesChanged={refresh}
+        />
       </section>
     </div>
   );

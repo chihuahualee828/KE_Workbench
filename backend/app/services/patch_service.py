@@ -18,6 +18,7 @@ class PatchService:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._active_evaluation_fact_cache: dict[str, tuple[tuple[str, ...], list[dict[str, Any]]]] = {}
 
     def new_patch_id(self) -> str:
         return f"patch_{uuid4().hex[:10]}"
@@ -81,6 +82,80 @@ class PatchService:
 
     def active_patches_for_model(self, model_id: str) -> list[str]:
         return self.active_patches_by_model().get(model_id, [])
+
+    def active_evaluation_facts(self, model_id: str) -> list[dict[str, Any]]:
+        """Return de-duplicated edit facts for the currently active patch stack.
+
+        The final patch is shown first, matching the evaluation page's previous
+        ordering.  A fact's key is stable for the lifetime of its patch metadata
+        and identifies the exact patch/edit pair, rather than just its prompt.
+        """
+        active_patch_ids = self.active_patches_for_model(model_id)
+        signature = tuple(active_patch_ids)
+        cached = self._active_evaluation_fact_cache.get(model_id)
+        optional_prompt_fields = {
+            "rephrase_prompt",
+            "locality_prompt",
+            "locality_ground_truth",
+            "portability_prompt",
+            "portability_ground_truth",
+        }
+        if cached and cached[0] == signature and all(optional_prompt_fields.issubset(fact) for fact in cached[1]):
+            return cached[1]
+
+        facts: list[dict[str, Any]] = []
+        identities: set[tuple[str, str]] = set()
+        for patch_id in reversed(active_patch_ids):
+            patch = self.get_patch(patch_id)
+            for index, raw_edit in enumerate(patch.get("edits", [])):
+                if not isinstance(raw_edit, dict):
+                    continue
+                subject = str(raw_edit.get("subject") or "").strip()
+                relation_prompt = str(raw_edit.get("relation_prompt") or "").strip()
+                new_object = str(raw_edit.get("new_object") or "").strip()
+                if not subject or not relation_prompt or not new_object:
+                    continue
+                prompt = relation_prompt.replace("{}", subject) if "{}" in relation_prompt else f"{subject} {relation_prompt}".strip()
+                identity = (prompt, new_object)
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                source_metadata = raw_edit.get("source_metadata")
+                if not isinstance(source_metadata, dict):
+                    source_metadata = {}
+
+                def optional_prompt(field: str, *, allow_list: bool = False) -> str:
+                    """Read an imported prompt whether it was stored directly or as metadata."""
+                    values: list[Any] = [raw_edit.get(field), source_metadata.get(field)]
+                    if allow_list:
+                        values.extend([raw_edit.get(f"{field}s"), source_metadata.get(f"{field}s")])
+                    for value in values:
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                        if allow_list and isinstance(value, list):
+                            first = next((item.strip() for item in value if isinstance(item, str) and item.strip()), "")
+                            if first:
+                                return first
+                    return ""
+
+                facts.append(
+                    {
+                        "key": f"{patch_id}:{index}",
+                        "subject": subject,
+                        "relation_prompt": relation_prompt,
+                        "prompt": prompt,
+                        "new_object": new_object,
+                        "ground_truth": str(raw_edit.get("ground_truth") or "").strip(),
+                        "rephrase_prompt": optional_prompt("rephrase_prompt", allow_list=True),
+                        "locality_prompt": optional_prompt("locality_prompt"),
+                        "locality_ground_truth": optional_prompt("locality_ground_truth"),
+                        "portability_prompt": optional_prompt("portability_prompt"),
+                        "portability_ground_truth": optional_prompt("portability_ground_truth"),
+                    }
+                )
+
+        self._active_evaluation_fact_cache[model_id] = (signature, facts)
+        return facts
 
     def active_patches_by_model(self) -> dict[str, list[str]]:
         try:
@@ -469,6 +544,7 @@ class PatchService:
         setattr(model, "_kew_active_patch_ids", desired)
 
     def _write_active_patches(self, active_by_model: dict[str, list[str]]) -> None:
+        self._active_evaluation_fact_cache.clear()
         local_store.write_json(
             "model_state/active_patches.json",
             {

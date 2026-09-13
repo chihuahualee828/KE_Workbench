@@ -93,6 +93,7 @@ class EditSpec(BaseModel):
     new_object: str
     ground_truth: str | None = None
     rephrase_prompts: list[str] = Field(default_factory=list)
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RomeSequentialEditsRequest(BaseModel):
@@ -126,12 +127,43 @@ class EvaluationRequest(BaseModel):
     prompts: list[str] = Field(default_factory=list)
 
 
+class ReliabilityEvaluationRequest(BaseModel):
+    """Evaluate edit quality on the current active model without editing it."""
+
+    model_id: str = "gpt2-xl"
+    method: Literal["rome", "r_rome", "memit", "kn"]
+    edits: list[EditSpec] = Field(min_length=1)
+    include_generations: bool = False
+    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+
+
+class ActiveModelEvaluationRequest(BaseModel):
+    """Evaluate the edit facts currently active for a model.
+
+    Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive
+    the full edit list from the browser.  The server resolves that list from the
+    active patch stack so a large evaluation does not require the page to have
+    loaded every fact first.
+    """
+
+    model_id: str = "gpt2-xl"
+    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    rephrase_overrides: dict[str, str] = Field(default_factory=dict)
+    include_generations: bool = True
+
+
 class JobResponse(BaseModel):
     job_id: str
     experiment_id: str
     status: str
     progress: float = 0.0
+    progress_current: int | None = None
+    progress_total: int | None = None
     logs: list[str] = Field(default_factory=list)
+    log_count: int = 0
+    log_start_count: int = 0
+    result_item_count: int = 0
+    result_page_size: int | None = None
     result: dict[str, Any] | None = None
 
 

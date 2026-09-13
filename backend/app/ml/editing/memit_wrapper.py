@@ -60,7 +60,7 @@ def _single_rephrase_per_edit(edits: list[dict]) -> list[str] | None:
     """EasyEdit aligns rephrase prompts positionally with edit requests."""
     values: list[str] = []
     for edit in edits:
-        prompts = edit.pop("rephrase_prompts", [])
+        prompts = edit.get("rephrase_prompts", [])
         if not prompts:
             return None
         values.append(str(prompts[0]))
