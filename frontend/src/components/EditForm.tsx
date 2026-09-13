@@ -6,13 +6,14 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { api } from "@/lib/api";
 import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
-import type { EditJob, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import type { EditJob, ModelRuntimeStatus, Patch, ReliabilityTestResultItem, ReliabilityTestResultPage, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
 import { PatchHistory } from "./PatchHistory";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
+import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -1254,6 +1255,72 @@ function reliabilityTestJobProgress(job: EditJob): ReliabilityTestProgress {
     : null;
 }
 
+const RELIABILITY_TEST_PAGE_SIZE = 25;
+
+function useReliabilityTestResultPages(
+  jobId: string | null,
+  itemCount: number,
+  configuredPageSize: number | null,
+  refreshKey: number
+) {
+  const pageSize = configuredPageSize && configuredPageSize > 0 ? configuredPageSize : RELIABILITY_TEST_PAGE_SIZE;
+  const [pages, setPages] = useState<Record<number, ReliabilityTestResultPage>>({});
+  const requestKeys = useRef(new Set<string>());
+  const wantedOffsets = useRef(new Set<number>());
+  const generation = useRef(0);
+
+  useEffect(() => {
+    generation.current += 1;
+    requestKeys.current.clear();
+    wantedOffsets.current.clear();
+    setPages({});
+  }, [jobId]);
+
+  const ensureRange = useCallback((start: number, end: number) => {
+    if (!jobId || itemCount <= 0 || end < start) return;
+    const firstVisiblePage = Math.floor(Math.max(0, start) / pageSize) * pageSize;
+    const lastVisiblePage = Math.floor(Math.min(itemCount - 1, Math.max(start, end)) / pageSize) * pageSize;
+    const firstWantedPage = Math.max(0, firstVisiblePage - pageSize);
+    const lastWantedPage = Math.min(
+      Math.floor((itemCount - 1) / pageSize) * pageSize,
+      lastVisiblePage + pageSize
+    );
+    const nextOffsets = new Set<number>();
+    for (let offset = firstWantedPage; offset <= lastWantedPage; offset += pageSize) nextOffsets.add(offset);
+    wantedOffsets.current = nextOffsets;
+
+    setPages((current) => Object.fromEntries(
+      Object.entries(current).filter(([offset]) => nextOffsets.has(Number(offset)))
+    ));
+
+    const currentGeneration = generation.current;
+    for (const offset of nextOffsets) {
+      const requestKey = `${jobId}:${offset}`;
+      if (requestKeys.current.has(requestKey)) continue;
+      requestKeys.current.add(requestKey);
+      void api.easyEditReliabilityPage(jobId, offset)
+        .then((page) => {
+          if (generation.current !== currentGeneration || !wantedOffsets.current.has(offset)) return;
+          setPages((current) => {
+            const retained = Object.fromEntries(
+              Object.entries(current).filter(([currentOffset]) => wantedOffsets.current.has(Number(currentOffset)))
+            );
+            return { ...retained, [offset]: page };
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => requestKeys.current.delete(requestKey));
+    }
+  }, [itemCount, jobId, pageSize, refreshKey]);
+
+  const getItem = useCallback((index: number) => {
+    const page = pages[Math.floor(index / pageSize) * pageSize];
+    return page?.items.find((item) => item.index === index);
+  }, [pageSize, pages]);
+
+  return { ensureRange, getItem };
+}
+
 function DerivedEvaluationPrompts({
   prompts,
   onTest,
@@ -1448,6 +1515,26 @@ function TextInput({ label, value, onChange }: { label: string; value: string; o
 function ResultPanel({ result, job }: { result: Record<string, unknown> | null; job: EditJob | null }) {
   const logsRef = useRef<HTMLPreElement | null>(null);
   const generations = useMemo(() => parseGenerations(result), [result]);
+  const reliabilityTestJobId = typeof result?.reliability_test_job_id === "string"
+    ? result.reliability_test_job_id
+    : null;
+  const reliabilityTestItemCount = typeof result?.reliability_test_item_count === "number"
+    ? result.reliability_test_item_count
+    : 0;
+  const reliabilityTestPageSize = typeof result?.reliability_test_page_size === "number"
+    ? result.reliability_test_page_size
+    : null;
+  const reliabilitySummary = result?.reliability;
+  const completedFactCount = reliabilitySummary && typeof reliabilitySummary === "object"
+    ? (reliabilitySummary as Record<string, unknown>).completed_fact_count
+    : undefined;
+  const reliabilityTestCompletedCount = typeof completedFactCount === "number" ? completedFactCount : 0;
+  const reliabilityTestPages = useReliabilityTestResultPages(
+    reliabilityTestJobId,
+    reliabilityTestItemCount,
+    reliabilityTestPageSize,
+    reliabilityTestCompletedCount
+  );
 
   useEffect(() => {
     if (!logsRef.current) return;
@@ -1469,8 +1556,21 @@ function ResultPanel({ result, job }: { result: Record<string, unknown> | null; 
         <Save size={16} />
         <span className="label">Generations</span>
       </div>
-      <div className="min-h-96 rounded-md border border-line bg-panel p-4">
-        {generations.length ? (
+      <div className={reliabilityTestJobId ? "rounded-md border border-line bg-panel p-1" : "min-h-96 rounded-md border border-line bg-panel p-4"}>
+        {reliabilityTestJobId ? (
+          reliabilityTestItemCount > 0 ? (
+            <VirtualizedList
+              className="h-[32rem] overflow-y-auto overscroll-contain p-3"
+              estimatedItemHeight={150}
+              getItem={reliabilityTestPages.getItem}
+              itemCount={reliabilityTestItemCount}
+              onVisibleRangeChange={reliabilityTestPages.ensureRange}
+              renderItem={(item) => <ReliabilityTestGenerationCard item={item} />}
+            />
+          ) : (
+            <div className="min-h-40 p-3 text-sm text-ink/60">Waiting for the first generation…</div>
+          )
+        ) : generations.length ? (
           <div className="grid gap-3">
             {generations.map((generation, index) => (
               <div key={`${generation.prompt}-${index}`} className="grid gap-2 border-b border-line pb-3 last:border-b-0 last:pb-0">
@@ -1486,6 +1586,30 @@ function ResultPanel({ result, job }: { result: Record<string, unknown> | null; 
         )}
       </div>
     </section>
+  );
+}
+
+function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultItem }) {
+  const prompt = item.generation?.prompt ?? item.case?.prompt ?? "";
+  const generation = item.generation?.active_model ?? "";
+  const target = item.case?.target_new ?? "";
+  const score = item.case?.reliability_score;
+
+  return (
+    <div className="grid gap-2 rounded-md border border-line bg-surface p-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="font-mono text-xs text-ink/50">Fact {item.index + 1}</span>
+        {typeof score === "number" ? <span className="shrink-0 font-mono text-xs text-cyan">rewrite_acc {formatReliabilityScore(score)}</span> : <span className="shrink-0 font-mono text-xs text-ink/45">Evaluating…</span>}
+      </div>
+      <div className="font-mono text-xs text-ink/50">{prompt}</div>
+      {generation ? (
+        <div className="whitespace-pre-wrap break-words text-sm leading-6 text-ink">
+          <HighlightedGeneration text={generation} target={target} />
+        </div>
+      ) : (
+        <div className="h-6 animate-pulse rounded bg-line/60" />
+      )}
+    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, SupportedModel, TraceCell } from "./types";
+import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -371,7 +371,7 @@ export const api = {
   easyEditReliabilityJob: (jobId: string) =>
     request<EditJob>(`/api/evaluate/reliability/jobs/${encodeURIComponent(jobId)}`),
   easyEditReliabilityPage: (jobId: string, offset: number) =>
-    request<{ offset: number; limit: number; total: number; items: Array<Record<string, unknown>> }>(`/api/evaluate/reliability/jobs/${encodeURIComponent(jobId)}/page?offset=${Math.max(0, Math.floor(offset))}`),
+    request<ReliabilityTestResultPage>(`/api/evaluate/reliability/jobs/${encodeURIComponent(jobId)}/page?offset=${Math.max(0, Math.floor(offset))}`),
   cancelEvaluationJob: (jobId: string) =>
     request<EditJob>(`/api/evaluate/jobs/${encodeURIComponent(jobId)}/cancel`, {
       method: "POST"
