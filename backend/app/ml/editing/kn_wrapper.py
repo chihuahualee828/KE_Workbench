@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import run_easyedit_kn
+from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit_kn
 from app.ml.editing.patch_format import edit_to_patch_entry
-from app.ml.inference.generate import generate_text
 
 
 def run_kn_edit(
@@ -37,23 +36,5 @@ def run_kn_edit(
         edit=edit,
         sequential_edit=sequential_edit,
     )
-    result["generations"] = _generate_evaluation_outputs(
-        model_id=model_id,
-        patch_id=result["patch_id"],
-        prompts=evaluation_prompts,
-    )
+    result.update(evaluate_post_edit_reliability(model_id, "kn", [edit]))
     return result
-
-
-def _generate_evaluation_outputs(model_id: str, patch_id: str, prompts: list[str]) -> list[dict]:
-    outputs = []
-    for prompt in prompts:
-        generated = generate_text(
-            model_id=model_id,
-            prompt=prompt,
-            max_new_tokens=32,
-            decoding_strategy="greedy",
-            patch_id=patch_id,
-        )
-        outputs.append({"prompt": prompt, "text": generated["text"]})
-    return outputs

@@ -1,11 +1,11 @@
 "use client";
 
-import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import { isModelRuntimeConnected, listenForModelRuntimeConnection } from "@/lib/modelRuntimeEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, ReliabilityTestResultItem, ReliabilityTestResultPage, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
@@ -17,8 +17,8 @@ import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
+const ACTIVE_EDIT_JOB_STORAGE_KEY = "kew:edit:activeJob";
 
 function useRuntimeConnection() {
   const [connected, setConnected] = useState(() => isModelRuntimeConnected());
@@ -40,8 +40,49 @@ type ReliabilityTestProgress = { completed: number; total: number } | null;
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
-  const setResult = (result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result }));
-  const setJob = (job: EditJob | null) => setEdit((current) => ({ ...current, job }));
+  const setResult = useCallback((result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result })), [setEdit]);
+  const setJob = useCallback((job: EditJob | null) => setEdit((current) => ({ ...current, job })), [setEdit]);
+  const resumeAttempted = useRef(false);
+  const resumeAbortController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (resumeAttempted.current || edit.job) return;
+    const jobId = readActiveEditJobId();
+    if (!jobId) return;
+    resumeAttempted.current = true;
+    const controller = new AbortController();
+    resumeAbortController.current = controller;
+
+    async function resume() {
+      try {
+        const current = await api.editJob(jobId);
+        if (controller.signal.aborted) return;
+        setJob(current);
+        if (current.status !== "running") {
+          clearActiveEditJob();
+          setResult(current.result ?? null);
+          await onPatchesChanged?.();
+          return;
+        }
+        const completed = await watchEditJob(current, setJob, { announceStart: false, signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setResult(completed.result ?? null);
+        await onPatchesChanged?.();
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.warn("Unable to reattach to the active edit job.", error);
+        resumeAttempted.current = false;
+      }
+    }
+
+    void resume();
+  }, [edit.job, onPatchesChanged, setJob, setResult]);
+
+  useEffect(() => () => {
+    resumeAbortController.current?.abort();
+    resumeAbortController.current = null;
+    resumeAttempted.current = false;
+  }, []);
 
   return (
     <div className="grid gap-4">
@@ -71,7 +112,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
           <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
           <div className="min-w-0">
-            <ResultPanel result={edit.result} job={edit.job} />
+            <ResultPanel result={edit.result} job={edit.job} onPatchesChanged={onPatchesChanged} />
           </div>
         </div>
       ) : null}
@@ -147,8 +188,11 @@ function KnForm({
         evaluation_prompts: evaluationPrompts,
         sequential_edit: sequentialEdit
       });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -216,8 +260,8 @@ function KnForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>Sequential edit</span>
-          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded} title={modelLoaded ? "Identify knowledge neurons and apply the KN edit" : "Load the selected model before editing"}>
           <FlaskConical size={16} />
@@ -226,40 +270,85 @@ function KnForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} />
+      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
 
-async function watchEditJob(initial: EditJob, onUpdate: (job: EditJob) => void) {
-  announceExperimentStarted(initial.experiment_id);
-  let current = initial;
-  onUpdate(current);
-  while (current.status === "running") {
-    current = await waitEditJob(current.job_id, current.logs.length, 60);
-    onUpdate(current);
-  }
-  if (current.status === "failed") {
-    throw new Error(current.logs[current.logs.length - 1] ?? "Edit job failed");
-  }
-  return current;
+async function watchEditJob(
+  initial: EditJob,
+  onUpdate: (job: EditJob) => void,
+  options: { announceStart?: boolean; signal?: AbortSignal } = {}
+) {
+  if (options.announceStart !== false) announceExperimentStarted(initial.experiment_id);
+  persistActiveEditJob(initial.job_id);
+  onUpdate(initial);
+  return new Promise<EditJob>((resolve, reject) => {
+    let current = initial;
+    let settled = false;
+    let stopSubscription = () => undefined;
+    const finish = () => {
+      stopSubscription();
+      options.signal?.removeEventListener("abort", stop);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      reject(error);
+    };
+    const succeed = (job: EditJob) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      resolve(job);
+    };
+    const stop = () => fail(new DOMException("Edit job watcher stopped.", "AbortError"));
+    if (options.signal?.aborted) {
+      stop();
+      return;
+    }
+    options.signal?.addEventListener("abort", stop, { once: true });
+    stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${initial.job_id}/events`, {
+      onEvent: (event, data) => {
+        if (event === "job") {
+          try {
+            current = mergeEditJobLogs(current, JSON.parse(data) as EditJob);
+            onUpdate(current);
+            if (current.status === "running") return;
+            clearActiveEditJob();
+            if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Edit job failed"));
+            else succeed(current);
+          } catch (error) {
+            fail(error instanceof Error ? error : new Error(String(error)));
+          }
+        }
+        if (event === "complete" && current.status === "running") {
+          fail(new Error("Edit job stream closed before the job completed."));
+        }
+      }
+    });
+  });
 }
 
-async function waitEditJob(jobId: string, afterLogCount: number, timeoutSeconds: number) {
-  const response = await fetch(`${API_BASE}/api/edit/jobs/${jobId}/wait?after_log_count=${afterLogCount}&timeout=${timeoutSeconds}`, {
-    cache: "no-store"
-  });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = await response.json();
-      detail = payload.detail ?? detail;
-    } catch {
-      detail = response.statusText;
-    }
-    throw new Error(`${response.status} ${detail}`);
-  }
-  return response.json() as Promise<EditJob>;
+function persistActiveEditJob(jobId: string) {
+  window.sessionStorage.setItem(ACTIVE_EDIT_JOB_STORAGE_KEY, jobId);
+}
+
+function readActiveEditJobId() {
+  return window.sessionStorage.getItem(ACTIVE_EDIT_JOB_STORAGE_KEY)?.trim() || null;
+}
+
+function clearActiveEditJob() {
+  window.sessionStorage.removeItem(ACTIVE_EDIT_JOB_STORAGE_KEY);
+}
+
+function mergeEditJobLogs(current: EditJob, update: EditJob): EditJob {
+  const expectedStart = current.log_count ?? current.logs.length;
+  const logs = update.log_start_count === expectedStart
+    ? [...current.logs, ...update.logs].slice(-500)
+    : update.logs.slice(-500);
+  return { ...update, logs };
 }
 
 function RomeForm({
@@ -400,8 +489,11 @@ function RomeForm({
             sequential_edit: sequentialEdit,
             mom2_adjustment: mom2Adjustment
           });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -558,8 +650,8 @@ function RomeForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>{isSeriesEdit ? "Sequential edit" : "Sequential edit"}</span>
-          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
@@ -579,7 +671,7 @@ function RomeForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} />
+      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -809,8 +901,11 @@ function MemitForm({
         sequential_edit: sequentialEdit,
         mom2_adjustment: mom2Adjustment
       });
+      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
-      setResult(completed.result ?? null);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
       await onPatchesChanged?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1003,8 +1098,8 @@ function MemitForm({
           testDisabled={busy || !modelLoaded || !evaluationPrompts.length || !editDrafts?.length}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
-          <span>Sequential edit</span>
-          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} />
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
@@ -1024,7 +1119,7 @@ function MemitForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} />
+      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -1521,7 +1616,15 @@ function TextInput({ label, value, onChange }: { label: string; value: string; o
   );
 }
 
-function ResultPanel({ result, job }: { result: Record<string, unknown> | null; job: EditJob | null }) {
+function ResultPanel({
+  result,
+  job,
+  onPatchesChanged
+}: {
+  result: Record<string, unknown> | null;
+  job: EditJob | null;
+  onPatchesChanged?: () => void | Promise<void>;
+}) {
   const logsRef = useRef<HTMLPreElement | null>(null);
   const generations = useMemo(() => parseGenerations(result), [result]);
   const reliabilityTestJobId = typeof result?.reliability_test_job_id === "string"
@@ -1544,19 +1647,59 @@ function ResultPanel({ result, job }: { result: Record<string, unknown> | null; 
     reliabilityTestPageSize,
     reliabilityTestCompletedCount
   );
+  const [canceling, setCanceling] = useState(false);
 
   useEffect(() => {
     if (!logsRef.current) return;
     logsRef.current.scrollTop = logsRef.current.scrollHeight;
   }, [job?.logs]);
 
+  useEffect(() => {
+    if (!job?.job_id) return;
+    return listenForEditJobCanceling((jobId) => {
+      if (jobId === job.job_id) setCanceling(true);
+    });
+  }, [job?.job_id]);
+
+  useEffect(() => {
+    if (job?.status !== "running") setCanceling(false);
+  }, [job?.status]);
+
+  async function cancel() {
+    if (!job || job.status !== "running" || canceling) return;
+    setCanceling(true);
+    announceEditJobCanceling(job.job_id);
+    let cancelAccepted = false;
+    try {
+      const canceledJob = await api.cancelEditJob(job.job_id);
+      if (canceledJob.status !== "canceled") {
+        throw new Error("This edit is no longer running.");
+      }
+      announceExperimentCanceled({ experimentId: canceledJob.experiment_id, jobId: canceledJob.job_id });
+      cancelAccepted = true;
+      clearActiveEditJob();
+      void Promise.resolve(onPatchesChanged?.()).catch(() => undefined);
+    } finally {
+      if (!cancelAccepted) setCanceling(false);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="mb-4">
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="label">Edit Logs</span>
-          <span className="font-mono text-xs text-ink/50">{job?.status ?? "idle"}</span>
+          <div className="flex items-center gap-2">
+            {job?.status === "running" ? (
+              <button className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={() => void cancel()} title="Stop this edit and unload the active model" type="button">
+                {canceling ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
+                {canceling ? "Canceling" : "Cancel edit"}
+              </button>
+            ) : null}
+            <span className="font-mono text-xs text-ink/50">{job?.status ?? "idle"}</span>
+          </div>
         </div>
+        <EditJobProgress job={job} />
         <pre ref={logsRef} className="max-h-72 min-h-40 overflow-auto rounded-md border border-line bg-ink p-3 text-xs leading-5 text-white">
           {job?.logs.length ? job.logs.join("\n") : "No edit job is running."}
         </pre>
@@ -1622,6 +1765,24 @@ function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultIt
   );
 }
 
+function EditJobProgress({ job }: { job: EditJob | null }) {
+  if (!job || job.status !== "running") return null;
+  const completed = job.progress_current ?? 0;
+  const total = job.progress_total ?? 0;
+  const determinate = total > 0;
+  const percent = Math.max(0, Math.min(100, Math.round((determinate ? completed / total : job.progress) * 100)));
+  const phase = job.progress >= 0.1 ? "Editing" : "Preparing";
+
+  return (
+    <div className="mb-2 grid gap-1.5" aria-label={determinate ? `${completed} of ${total} sequential edits complete` : `${phase} edit`} role="status">
+      <div className="h-1.5 overflow-hidden rounded-full bg-line">
+        <div className={determinate ? "h-full bg-cyan transition-[width] duration-300" : "edit-progress-indeterminate h-full bg-cyan"} style={determinate ? { width: `${percent}%` } : undefined} />
+      </div>
+      <span className="font-mono text-xs text-ink/60">{determinate ? `${completed} / ${total} facts (${percent}%)` : phase}</span>
+    </div>
+  );
+}
+
 function parseGenerations(result: Record<string, unknown> | null) {
   const value = result?.generations;
   if (!Array.isArray(value)) return [];
@@ -1650,6 +1811,13 @@ function parseGenerations(result: Record<string, unknown> | null) {
       };
     })
     .filter((item): item is { prompt: string; text: string; targetNew: string } => Boolean(item?.text));
+}
+
+function reliabilityFromEditResult(result: Record<string, unknown> | null) {
+  const value = result?.reliability;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function HighlightedGeneration({ text, target }: { text: string; target: string }) {

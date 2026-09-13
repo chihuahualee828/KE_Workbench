@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import run_easyedit
-from app.ml.inference.generate import generate_text
+from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
 
 
 def run_memit_edit(
@@ -48,11 +47,7 @@ def run_memit_edit(
         mom2_adjustment=mom2_adjustment,
     )
     result["edited_facts"] = len(normalized_edits)
-    result["generations"] = _generate_evaluation_outputs(
-        model_id=model_id,
-        patch_id=result["patch_id"],
-        prompts=evaluation_prompts,
-    )
+    result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits))
     return result
 
 
@@ -65,17 +60,3 @@ def _single_rephrase_per_edit(edits: list[dict]) -> list[str] | None:
             return None
         values.append(str(prompts[0]))
     return values
-
-
-def _generate_evaluation_outputs(model_id: str, patch_id: str, prompts: list[str]) -> list[dict]:
-    outputs = []
-    for prompt in prompts:
-        generated = generate_text(
-            model_id=model_id,
-            prompt=prompt,
-            max_new_tokens=32,
-            decoding_strategy="greedy",
-            patch_id=patch_id,
-        )
-        outputs.append({"prompt": prompt, "text": generated["text"]})
-    return outputs

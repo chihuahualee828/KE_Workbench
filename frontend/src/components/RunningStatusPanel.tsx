@@ -2,11 +2,12 @@
 
 import { Activity, CheckCircle2, CircleAlert, Clock3, Download, Loader2, RefreshCw, Server, Trash2, X, XCircle } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ExperimentHistory } from "@/components/ExperimentHistory";
 import { api } from "@/lib/api";
 import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
+import { listenForExperimentCanceled } from "@/lib/experimentEvents";
 import { listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
 import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
 
@@ -23,6 +24,7 @@ export function RunningStatusPanel() {
   const [details, setDetails] = useState<ModelDownloadJob | null>(null);
   const [confirmingClearDownloads, setConfirmingClearDownloads] = useState(false);
   const [clearingDownloads, setClearingDownloads] = useState(false);
+  const refreshing = useRef(false);
 
   const activeDownloads = useMemo(
     () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
@@ -43,6 +45,8 @@ export function RunningStatusPanel() {
   const hasFinishedDownloads = downloadJobs.some((job) => !activeDownloadStates.includes(job.status));
 
   async function refresh() {
+    if (refreshing.current) return;
+    refreshing.current = true;
     setError("");
     try {
       const [cacheResult, downloadJobResult, runtimeResult, experimentResult] = await Promise.all([
@@ -57,6 +61,8 @@ export function RunningStatusPanel() {
       setExperiments(experimentResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      refreshing.current = false;
     }
   }
 
@@ -90,6 +96,18 @@ export function RunningStatusPanel() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => listenForExperimentCanceled(({ experimentId, jobId }) => {
+    setExperiments((current) => current.map((experiment) => {
+      if (experiment.id !== experimentId && experiment.job?.id !== jobId) return experiment;
+      return {
+        ...experiment,
+        status: "canceled",
+        error_message: "",
+        job: experiment.job ? { ...experiment.job, status: "canceled", progress: 1 } : experiment.job
+      };
+    }));
+  }), []);
 
   useEffect(() => {
     return listenForModelDownloads((job) => {

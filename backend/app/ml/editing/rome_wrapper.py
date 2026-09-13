@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import run_easyedit
+from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
 from app.ml.editing.patch_format import edit_to_patch_entry
-from app.ml.inference.generate import generate_text
 from app.services.model_registry import model_registry
 
 
@@ -73,11 +72,7 @@ def run_rome_edit(
         mom2_adjustment=mom2_adjustment,
     )
     if generate_evaluation:
-        result["generations"] = _generate_evaluation_outputs(
-            model_id=model_id,
-            patch_id=result["patch_id"],
-            prompts=evaluation_prompts,
-        )
+        result.update(evaluate_post_edit_reliability(model_id, "rome", [edit]))
     return result
 
 
@@ -134,31 +129,14 @@ def run_rome_sequential_edits(
             generate_evaluation=False,
         )
         patch_results.append(result)
-        print(f"Created patch {result['patch_id']} for ROME sequential edit {index}/{len(edits)}.")
+        print(f"Created ROME sequential edit {index}/{len(edits)}.")
 
     final_patch_id = patch_results[-1]["patch_id"]
-    return {
+    result = {
         "patch_id": final_patch_id,
         "patch_ids": [result["patch_id"] for result in patch_results],
         "patch_count": len(patch_results),
         "sequential_edit": True,
-        "generations": _generate_evaluation_outputs(
-            model_id=model_id,
-            patch_id=final_patch_id,
-            prompts=evaluation_prompts,
-        ),
     }
-
-
-def _generate_evaluation_outputs(model_id: str, patch_id: str, prompts: list[str]) -> list[dict]:
-    outputs = []
-    for prompt in prompts:
-        generated = generate_text(
-            model_id=model_id,
-            prompt=prompt,
-            max_new_tokens=32,
-            decoding_strategy="greedy",
-            patch_id=patch_id,
-        )
-        outputs.append({"prompt": prompt, "text": generated["text"]})
-    return outputs
+    result.update(evaluate_post_edit_reliability(model_id, "rome", edits))
+    return result

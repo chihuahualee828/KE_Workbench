@@ -2,10 +2,22 @@
 
 import { CheckCircle2, CircleAlert, Clock3, Loader2, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { type PointerEvent, useMemo, useRef, useState } from "react";
+import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { announceEditJobCanceling, announceExperimentCanceled, listenForEditJobCanceling, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import type { Experiment, ExperimentDetails } from "@/lib/types";
+import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
+
+const CANCELABLE_EDIT_EXPERIMENT_TYPES = new Set([
+  "rome_edit",
+  "rome_sequential_edits",
+  "r_rome_edit",
+  "r_rome_sequential_edits",
+  "memit_edit",
+  "kn_edit",
+  "prepare_mom2_statistics"
+]);
 
 export function ExperimentHistory({
   experiments,
@@ -24,6 +36,8 @@ export function ExperimentHistory({
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [deletingExperimentId, setDeletingExperimentId] = useState("");
+  const [cancelingExperimentId, setCancelingExperimentId] = useState("");
+  const [canceledExperimentIds, setCanceledExperimentIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
   const sortedExperiments = useMemo(
     () => [...experiments].sort((left, right) => right.created_at.localeCompare(left.created_at)),
@@ -31,6 +45,24 @@ export function ExperimentHistory({
   );
   const displayedExperiments = limit === undefined ? sortedExperiments : sortedExperiments.slice(0, limit);
   const hasRunningExperiment = experiments.some((experiment) => experiment.status === "running");
+
+  useEffect(() => listenForEditJobCanceling((jobId) => {
+    const experiment = experiments.find((item) => item.job?.id === jobId);
+    if (experiment?.status === "running") setCancelingExperimentId(experiment.id);
+  }), [experiments]);
+
+  useEffect(() => listenForExperimentCanceled(({ experimentId, jobId }) => {
+    const experiment = experiments.find((item) => item.id === experimentId || item.job?.id === jobId);
+    if (!experiment) return;
+    setCanceledExperimentIds((current) => new Set(current).add(experiment.id));
+    setCancelingExperimentId((current) => current === experiment.id ? "" : current);
+  }), [experiments]);
+
+  useEffect(() => {
+    if (!cancelingExperimentId) return;
+    const experiment = experiments.find((item) => item.id === cancelingExperimentId);
+    if (!experiment || experiment.status !== "running") setCancelingExperimentId("");
+  }, [cancelingExperimentId, experiments]);
 
   async function openDetails(experiment: Experiment) {
     setError("");
@@ -70,6 +102,31 @@ export function ExperimentHistory({
     }
   }
 
+  async function cancelExperiment(experiment: Experiment) {
+    if (!experiment.job?.id || !canCancelEditExperiment(experiment)) return;
+    setCancelingExperimentId(experiment.id);
+    announceEditJobCanceling(experiment.job.id);
+    setError("");
+    let cancelAccepted = false;
+    try {
+      const canceledJob = await api.cancelEditJob(experiment.job.id);
+      if (canceledJob.status !== "canceled") {
+        throw new Error("This edit is no longer running.");
+      }
+      setCanceledExperimentIds((current) => new Set(current).add(experiment.id));
+      setCancelingExperimentId("");
+      announceExperimentCanceled({ experimentId: canceledJob.experiment_id, jobId: canceledJob.job_id });
+      cancelAccepted = true;
+      void Promise.resolve(onChanged()).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!cancelAccepted) setCancelingExperimentId("");
+    }
+  }
+
   return (
     <section className="grid gap-2">
       {showControls ? (
@@ -104,10 +161,14 @@ export function ExperimentHistory({
       <div className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
         {displayedExperiments.map((experiment) => (
           <ExperimentHistoryCard
+            canceling={cancelingExperimentId === experiment.id}
+            canCancel={canCancelEditExperiment(experiment) && !canceledExperimentIds.has(experiment.id)}
             deleting={deletingExperimentId === experiment.id}
             experiment={experiment}
             key={experiment.id}
-            swipeToDelete={experiment.status !== "running"}
+            status={canceledExperimentIds.has(experiment.id) ? "canceled" : experiment.status}
+            swipeToDelete={(canceledExperimentIds.has(experiment.id) ? "canceled" : experiment.status) !== "running"}
+            onCancel={() => void cancelExperiment(experiment)}
             onDelete={() => void deleteExperiment(experiment)}
             onOpen={() => void openDetails(experiment)}
           />
@@ -124,19 +185,30 @@ export function ExperimentHistory({
 function ExperimentHistoryCard({
   experiment,
   deleting,
+  canceling,
+  canCancel,
+  status,
   swipeToDelete,
+  onCancel,
   onDelete,
   onOpen
 }: {
   experiment: Experiment;
   deleting: boolean;
+  canceling: boolean;
+  canCancel: boolean;
+  status: Experiment["status"];
   swipeToDelete: boolean;
+  onCancel: () => void;
   onDelete: () => void;
   onOpen: () => void;
 }) {
   const [deleteRevealed, setDeleteRevealed] = useState(false);
   const pointerStartX = useRef<number | null>(null);
   const suppressNextOpen = useRef(false);
+  const progressTotal = experiment.job?.progress_total ?? 0;
+  const progressCurrent = experiment.job?.progress_current ?? 0;
+  const running = status === "running";
 
   function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
     if (!swipeToDelete) return;
@@ -164,26 +236,32 @@ function ExperimentHistoryCard({
     onOpen();
   }
 
-  const content = (
-    <>
-      <span className="min-w-0">
-        <span className="flex items-center gap-2 font-medium">
-          <ExperimentStatusIcon status={experiment.status} />
-          <span className="truncate">{formatExperimentType(experiment.type)}</span>
-        </span>
-        <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
+  const detailsContent = (
+    <span className="min-w-0">
+      <span className="flex items-center gap-2 font-medium">
+        <ExperimentStatusIcon status={status} />
+        <span className="truncate">{formatExperimentType(experiment.type)}</span>
       </span>
-      <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(experiment.status)}`}>
-        {experiment.status}
-      </span>
-    </>
+      <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
+      {running ? <EvaluationProgressIndicator className="mt-2" current={progressCurrent} multiFactLabel="Running evaluation…" singleFactLabel="Evaluating fact…" total={progressTotal} /> : null}
+    </span>
   );
+  const statusBadge = <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(status)}`}>{canceling ? "canceling" : status}</span>;
 
   if (!swipeToDelete) {
     return (
-      <button className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left text-sm transition hover:bg-panel" onClick={onOpen} type="button">
-        {content}
-      </button>
+      <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-sm transition hover:bg-panel">
+        <button className="min-w-0 text-left" onClick={onOpen} type="button">{detailsContent}</button>
+        <div className="flex shrink-0 items-center gap-2">
+          {statusBadge}
+          {canCancel ? (
+            <button aria-label="Cancel edit" className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={onCancel} title="Cancel this edit and unload its model" type="button">
+              {canceling ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
+              {canceling ? "Canceling" : "Cancel"}
+            </button>
+          ) : null}
+        </div>
+      </div>
     );
   }
 
@@ -207,7 +285,8 @@ function ExperimentHistoryCard({
         style={{ transform: deleteRevealed ? "translateX(-80px)" : undefined }}
         type="button"
       >
-        {content}
+        {detailsContent}
+        {statusBadge}
       </button>
     </div>
   );
@@ -282,7 +361,7 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
 
 function ExperimentStatusIcon({ status }: { status: Experiment["status"] }) {
   if (status === "completed") return <CheckCircle2 className="text-cyan" size={15} />;
-  if (status === "failed") return <CircleAlert className="text-rust" size={15} />;
+  if (status === "failed" || status === "canceled") return <CircleAlert className="text-rust" size={15} />;
   return <Clock3 className="text-ink/60" size={15} />;
 }
 
@@ -297,6 +376,11 @@ function formatTimestamp(value: string) {
 
 function statusClassName(status: Experiment["status"]) {
   if (status === "completed") return "border-cyan/30 bg-cyan/10 text-cyan";
-  if (status === "failed") return "border-rust/40 bg-rust/10 text-rust";
+  if (status === "failed" || status === "canceled") return "border-rust/40 bg-rust/10 text-rust";
   return "border-line bg-panel text-ink/70";
+}
+
+function canCancelEditExperiment(experiment: Experiment) {
+  if (experiment.status !== "running" || !experiment.job?.id) return false;
+  return CANCELABLE_EDIT_EXPERIMENT_TYPES.has(experiment.type);
 }

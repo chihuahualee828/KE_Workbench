@@ -59,11 +59,30 @@ class ExperimentService:
         return experiment
 
     def list_experiments(self) -> list[dict[str, Any]]:
+        records = local_store.list_json("experiments")
+        jobs = {str(item.get("experiment_id")): _job_summary(item) for item in records if item.get("id", "").startswith("job_")}
         experiments = [
-            item for item in local_store.list_json("experiments")
+            {
+                **_experiment_list_summary(item),
+                **({"job": jobs[item["id"]]} if item.get("id") in jobs else {}),
+            }
+            for item in records
             if item.get("id", "").startswith("exp_")
         ]
         return sorted(experiments, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    def job_events(self, job_id: str):
+        cursor = 0
+        updated_at: str | None = None
+        while True:
+            job = self.wait_job(job_id, after_log_count=cursor, after_updated_at=updated_at, timeout=15.0)
+            if job is None:
+                return
+            cursor = _job_log_count(job)
+            updated_at = str(job.get("updated_at") or "")
+            yield job
+            if job.get("status") != "running":
+                return
 
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         try:
@@ -147,7 +166,7 @@ class ExperimentService:
                 if job.get("id", "").startswith("job_") and job.get("experiment_id") in interrupted_ids and job.get("status") == "running":
                     job["status"] = "failed"
                     job["progress"] = 1.0
-                    job["logs"] = [*job.get("logs", []), interruption_message][-500:]
+                    _append_job_logs(job, [interruption_message])
                     job["updated_at"] = _now()
                     local_store.write_json(f"experiments/{job['id']}.json", job)
 
@@ -384,7 +403,13 @@ class ExperimentService:
         except FileNotFoundError:
             return None
 
-    def wait_job(self, job_id: str, after_log_count: int = 0, timeout: float = 30.0) -> dict[str, Any] | None:
+    def wait_job(
+        self,
+        job_id: str,
+        after_log_count: int = 0,
+        after_updated_at: str | None = None,
+        timeout: float = 30.0,
+    ) -> dict[str, Any] | None:
         timeout = min(max(timeout, 1.0), 120.0)
         deadline = time.monotonic() + timeout
         with self._condition:
@@ -393,7 +418,11 @@ class ExperimentService:
                     job = local_store.read_json(f"experiments/{job_id}.json")
                 except FileNotFoundError:
                     return None
-                if job["status"] != "running" or len(job.get("logs", [])) > after_log_count:
+                if (
+                    job["status"] != "running"
+                    or _job_log_count(job) > after_log_count
+                    or (after_updated_at is not None and str(job.get("updated_at") or "") != after_updated_at)
+                ):
                     return job
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -470,3 +499,25 @@ def _append_job_logs(job: dict[str, Any], lines: list[str]) -> None:
     previous_count = _job_log_count(job)
     job["logs"] = [*job.get("logs", []), *lines][-_MAX_JOB_LOG_LINES:]
     job["log_count"] = previous_count + len(lines)
+
+
+def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    return {key: job.get(key) for key in ("id", "experiment_id", "status", "progress", "progress_current", "progress_total", "created_at", "updated_at")}
+
+
+def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:
+    """Return the compact form used by frequently-polled experiment lists."""
+    summary = {
+        key: experiment.get(key)
+        for key in ("id", "type", "model_id", "status", "created_at", "updated_at", "result_path", "error_message")
+    }
+    raw_input = experiment.get("input_json")
+    if isinstance(raw_input, dict):
+        compact_input = {
+            key: raw_input[key]
+            for key in ("source", "model_id", "method", "active_patch_ids", "evaluation_modes", "edit_count")
+            if key in raw_input
+        }
+        if compact_input:
+            summary["input_json"] = compact_input
+    return summary
