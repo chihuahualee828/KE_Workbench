@@ -1,15 +1,25 @@
 import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
+import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+type EventStreamHandlers = {
+  onOpen?: () => void;
+  onEvent: (event: string, data: string) => void;
+  onError?: (error: Error) => void;
+};
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+function requestHeaders(init?: RequestInit) {
   const headers = new Headers(init?.headers);
+  Object.entries(backendAuthorizationHeaders()).forEach(([name, value]) => headers.set(name, value));
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(`${API_BASE}${path}`, {
+  return headers;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(backendUrl(path), {
     ...init,
-    headers,
+    headers: requestHeaders(init),
     cache: "no-store"
   });
   if (!response.ok) {
@@ -26,13 +36,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function download(path: string, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(backendUrl(path), {
     ...init,
-    headers,
+    headers: requestHeaders(init),
     cache: "no-store"
   });
   if (!response.ok) {
@@ -49,7 +55,12 @@ async function download(path: string, init?: RequestInit): Promise<Response> {
 }
 
 async function upload<T>(path: string, body: FormData): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { method: "POST", body, cache: "no-store" });
+  const response = await fetch(backendUrl(path), {
+    method: "POST",
+    body,
+    headers: requestHeaders(),
+    cache: "no-store"
+  });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -63,7 +74,70 @@ async function upload<T>(path: string, body: FormData): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function parseEventBlock(block: string, handlers: EventStreamHandlers) {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    const value = (separator === -1 ? "" : line.slice(separator + 1)).replace(/^ /, "");
+    if (field === "event") event = value;
+    if (field === "data") data.push(value);
+  }
+  if (data.length) handlers.onEvent(event, data.join("\n"));
+}
+
+function subscribeToEvents(path: string, handlers: EventStreamHandlers) {
+  let closed = false;
+  let controller: AbortController | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = async () => {
+    while (!closed) {
+      controller = new AbortController();
+      try {
+        const response = await fetch(backendUrl(path), {
+          headers: requestHeaders({ headers: { Accept: "text/event-stream" } }),
+          cache: "no-store",
+          signal: controller.signal
+        });
+        if (!response.ok || !response.body) throw new Error(`Unable to open event stream: ${response.status} ${response.statusText}`);
+        handlers.onOpen?.();
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!closed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split(/\r?\n\r?\n/);
+          buffer = blocks.pop() ?? "";
+          blocks.forEach((block) => parseEventBlock(block, handlers));
+        }
+      } catch (error) {
+        if (!closed) handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+      if (closed) break;
+      await new Promise<void>((resolve) => {
+        retryTimer = setTimeout(resolve, 1000);
+      });
+      retryTimer = null;
+    }
+  };
+
+  void connect();
+  return () => {
+    closed = true;
+    controller?.abort();
+    if (retryTimer) clearTimeout(retryTimer);
+  };
+}
+
 export const api = {
+  url: backendUrl,
+  subscribeToEvents,
   health: () => request<{ status: string }>("/api/health"),
   settings: () => request<AppSettings>("/api/settings"),
   models: () => request<SupportedModel[]>("/api/models"),

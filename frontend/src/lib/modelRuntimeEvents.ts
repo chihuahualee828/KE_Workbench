@@ -1,7 +1,6 @@
 import type { ModelRuntimeJob, ModelRuntimeStatus } from "./types";
 import { api } from "./api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const eventName = "kew:model-runtime-load-started";
 const statusEventName = "kew:model-runtime-status-changed";
 const connectionEventName = "kew:model-runtime-connection-changed";
@@ -110,25 +109,25 @@ export function listenForModelRuntimeUnloading(
 
 export function listenForModelRuntimeStream(
   callback: (statuses: ModelRuntimeStatus[]) => void,
-  onDisconnected?: () => void
+  onDisconnected?: () => void,
+  onConnected?: () => void
 ) {
-  const source = new EventSource(`${API_BASE}/api/models/runtime/events`);
   let closed = false;
-  const handleRuntime = (event: Event) => {
-    try {
-      const statuses = JSON.parse((event as MessageEvent<string>).data) as ModelRuntimeStatus[];
-      callback(statuses);
-    } catch {
-      // Ignore a malformed transient event; EventSource will keep the stream alive.
-    }
-  };
-  source.addEventListener("runtime", handleRuntime);
-  source.onerror = () => {
-    if (!closed) onDisconnected?.();
-  };
+  const stopStream = api.subscribeToEvents("/api/models/runtime/events", {
+    onOpen: () => { if (!closed) onConnected?.(); },
+    onEvent: (event, data) => {
+      if (event !== "runtime") return;
+      try {
+        callback(JSON.parse(data) as ModelRuntimeStatus[]);
+      } catch {
+        // Ignore a malformed transient event; the subscription will remain open.
+      }
+    },
+    onError: () => { if (!closed) onDisconnected?.(); }
+  });
   return () => {
     closed = true;
-    source.close();
+    stopStream();
   };
 }
 

@@ -4,19 +4,41 @@ import { Database, KeyRound, Loader2, RefreshCw, Settings, Upload } from "lucide
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { getDefaultBackendUrl, type BackendConnection } from "@/lib/backendConnection";
 import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { AppSettings, EditJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { AccentThemeSettings } from "./AccentTheme";
+import { ApiStatus } from "./DataState";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 
-export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; runtime: ModelRuntimeStatus[] }) {
+export function SettingsPanel({
+  models,
+  runtime,
+  backend,
+  apiStatus,
+  onBackendChanged
+}: {
+  models: SupportedModel[];
+  runtime: ModelRuntimeStatus[];
+  backend: BackendConnection;
+  apiStatus: "loading" | "ready" | "offline";
+  onBackendChanged: (connection: BackendConnection) => Promise<void>;
+}) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [hfToken, setHfToken] = useState("");
+  const [backendUrl, setBackendUrl] = useState(backend.baseUrl);
+  const [backendToken, setBackendToken] = useState(backend.token);
   const [modelExportPath, setModelExportPath] = usePersistentState("kew:settings:modelExportPath", "");
   const [busy, setBusy] = useState(false);
+  const [backendBusy, setBackendBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setBackendUrl(backend.baseUrl);
+    setBackendToken(backend.token);
+  }, [backend]);
 
   async function refresh() {
     setError("");
@@ -55,6 +77,33 @@ export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; r
     }
   }
 
+  async function saveBackend() {
+    setError("");
+    setBackendBusy(true);
+    try {
+      await onBackendChanged({ baseUrl: backendUrl, token: backendToken });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBackendBusy(false);
+    }
+  }
+
+  async function useDefaultBackend() {
+    setBackendUrl(getDefaultBackendUrl());
+    setError("");
+    setBackendBusy(true);
+    try {
+      await onBackendChanged({ baseUrl: "", token: backendToken });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBackendBusy(false);
+    }
+  }
+
   useEffect(() => {
     refresh();
   }, []);
@@ -62,6 +111,49 @@ export function SettingsPanel({ models, runtime }: { models: SupportedModel[]; r
   return (
     <div className="grid gap-4">
       <AccentThemeSettings />
+      <section className="panel grid gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Settings size={17} />
+            <h2 className="text-base font-semibold">Backend Connection</h2>
+          </div>
+          <ApiStatus status={apiStatus} />
+        </div>
+        <p className="text-xs leading-5 text-ink/60">Choose the backend used by every workspace request. Changes take effect immediately; no frontend rebuild is required.</p>
+        <label className="grid gap-1">
+          <span className="label">Backend URL</span>
+          <input
+            className="control"
+            type="url"
+            inputMode="url"
+            autoComplete="url"
+            value={backendUrl}
+            placeholder="http://localhost:8000"
+            onChange={(event) => setBackendUrl(event.target.value)}
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="label">API Token <span className="normal-case text-ink/45">(optional)</span></span>
+          <input
+            className="control"
+            type="password"
+            autoComplete="off"
+            value={backendToken}
+            placeholder="Sent as Authorization: Bearer …"
+            onChange={(event) => setBackendToken(event.target.value)}
+          />
+        </label>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button className="ghost-button min-h-9 px-3 py-1" type="button" onClick={useDefaultBackend} disabled={backendBusy} title="Use the NEXT_PUBLIC_API_BASE fallback">
+            Use build default
+          </button>
+          <button className="tool-button min-h-9 px-3 py-1" type="button" onClick={saveBackend} disabled={backendBusy}>
+            {backendBusy ? <Loader2 className="animate-spin" size={16} /> : <Settings size={16} />}
+            Connect
+          </button>
+        </div>
+        <p className="font-mono text-[11px] text-ink/50">Active backend: {backend.baseUrl}</p>
+      </section>
       <section className="panel">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">

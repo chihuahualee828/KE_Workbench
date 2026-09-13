@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { ReactNode } from "react";
 
 import { api } from "@/lib/api";
+import { getBackendConnection, saveBackendConnection, type BackendConnection } from "@/lib/backendConnection";
 import { announceModelRuntimeConnected, announceModelRuntimeDisconnected, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeStream } from "@/lib/modelRuntimeEvents";
 import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 
@@ -28,6 +29,8 @@ function useWorkbenchDataStore() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
+  const [backend, setBackend] = useState<BackendConnection>(() => getBackendConnection());
+  const [backendHydrated, setBackendHydrated] = useState(false);
   const reconnecting = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -50,11 +53,32 @@ function useWorkbenchDataStore() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh().catch(() => undefined);
+  const changeBackend = useCallback(async (connection: BackendConnection) => {
+    const saved = saveBackendConnection(connection);
+    setBackend(saved);
+    setStatus("loading");
+    setModels([]);
+    setPatches([]);
+    setExperiments([]);
+    setRuntime([]);
+    announceModelRuntimeDisconnected();
+    await refresh();
   }, [refresh]);
 
   useEffect(() => {
+    // Read persisted browser-only settings after hydration so a saved remote
+    // backend replaces the build-time fallback before the first connection check.
+    setBackend(getBackendConnection());
+    setBackendHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!backendHydrated) return;
+    void refresh().catch(() => undefined);
+  }, [backendHydrated, refresh]);
+
+  useEffect(() => {
+    if (!backendHydrated) return;
     const stopListeningForLoads = listenForModelRuntimeLoads((job) => {
       setRuntime((current) => applyRuntimeJobToRuntime(current, job));
       if (job.status === "completed") {
@@ -66,15 +90,10 @@ function useWorkbenchDataStore() {
     });
     const stopListeningForRuntimeStream = listenForModelRuntimeStream(
       (statuses) => {
-        const shouldRefresh = reconnecting.current;
-        reconnecting.current = false;
         announceModelRuntimeConnected();
         announceModelRuntimeStatuses(statuses);
         setRuntime(statuses);
         setStatus("ready");
-        if (shouldRefresh) {
-          void refresh().catch(() => undefined);
-        }
       },
       () => {
         reconnecting.current = true;
@@ -84,6 +103,11 @@ function useWorkbenchDataStore() {
         setExperiments([]);
         setRuntime([]);
         setStatus("offline");
+      },
+      () => {
+        if (!reconnecting.current) return;
+        reconnecting.current = false;
+        void refresh().catch(() => undefined);
       }
     );
     return () => {
@@ -91,9 +115,9 @@ function useWorkbenchDataStore() {
       stopListeningForStatuses();
       stopListeningForRuntimeStream();
     };
-  }, [refresh]);
+  }, [backend.baseUrl, backend.token, backendHydrated, refresh]);
 
-  return { models, patches, experiments, runtime, status, refresh };
+  return { models, patches, experiments, runtime, status, backend, changeBackend, refresh };
 }
 
 export function ApiStatus({ status }: { status: "loading" | "ready" | "offline" }) {
