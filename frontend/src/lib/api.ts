@@ -394,9 +394,22 @@ export const api = {
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
     target_layer: number;
     evaluation_prompts: string[];
+    sequential_edit?: boolean;
     mom2_adjustment?: boolean;
   }) =>
     request<EditJob>("/api/edit/rome/sequential", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  rRomeSequentialEdits: (body: {
+    model_id: string;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
+    target_layer: number;
+    evaluation_prompts: string[];
+    sequential_edit?: boolean;
+    mom2_adjustment?: boolean;
+  }) =>
+    request<EditJob>("/api/edit/r-rome/sequential", {
       method: "POST",
       body: JSON.stringify(body)
     }),

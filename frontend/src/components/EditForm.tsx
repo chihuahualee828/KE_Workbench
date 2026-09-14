@@ -372,7 +372,7 @@ function RomeForm({
 }) {
   const isRRome = method === "r_rome";
   const methodLabel = isRRome ? "R-ROME" : "ROME";
-  const supportsSeries = !isRRome;
+  const supportsSeries = true;
   const romeModels = useMemo(() => models.filter((model) => isRRome ? model.supports_r_rome : model.supports_rome), [isRRome, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, romeModels[0]?.id ?? "gpt2-xl");
   const [subject, setSubject] = usePersistentState(`kew:edit:${method}:subject`, "The Space Needle");
@@ -385,6 +385,7 @@ function RomeForm({
   const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>(`kew:edit:${method}:targetLayers`, EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
   const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
+  const [seriesContinuationConfigured, setSeriesContinuationConfigured] = usePersistentState(`kew:edit:${method}:seriesContinuationConfigured`, false);
   const [mom2Adjustment, setMom2Adjustment] = usePersistentState(`kew:edit:${method}:mom2Adjustment`, false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -422,6 +423,12 @@ function RomeForm({
   );
 
   useLoadedModelSelection(romeModels, runtime, setModelId);
+
+  useEffect(() => {
+    if (!isSeriesEdit || seriesContinuationConfigured) return;
+    setSequentialEdit(true);
+    setSeriesContinuationConfigured(true);
+  }, [isSeriesEdit, seriesContinuationConfigured, setSequentialEdit, setSeriesContinuationConfigured]);
 
   useEffect(() => {
     if (romeModels.length === 0) return;
@@ -474,8 +481,10 @@ function RomeForm({
       const response = isSeriesEdit
         ? await startRomeSequentialSeries(seriesEditDrafts, {
             modelId,
+            method,
             targetLayer: targetLayerNumber,
             evaluationPrompts,
+            sequentialEdit,
             mom2Adjustment
           })
         : await (isRRome ? api.rRomeEdit : api.romeEdit)({
@@ -584,7 +593,7 @@ function RomeForm({
           <span className="label">Edit Mode</span>
           <div className="inline-flex w-fit rounded-md border border-line bg-white p-1">
             <button aria-pressed={!isSeriesEdit} className={`rounded px-2 py-1 text-xs ${!isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("single")} type="button">Single fact</button>
-            <button aria-pressed={isSeriesEdit} className={`rounded px-2 py-1 text-xs ${isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setEditMode("series")} type="button">Sequential series</button>
+            <button aria-pressed={isSeriesEdit} className={`rounded px-2 py-1 text-xs ${isSeriesEdit ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => { if (!isSeriesEdit) { setSequentialEdit(true); setSeriesContinuationConfigured(true); } setEditMode("series"); }} type="button">Sequential series</button>
           </div>
         </div> : null}
         {isSeriesEdit ? (
@@ -651,7 +660,7 @@ function RomeForm({
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
-          <input type="checkbox" checked={isSeriesEdit || sequentialEdit} disabled={isSeriesEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
@@ -664,9 +673,9 @@ function RomeForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? "Apply each fact as an ordered ROME edit at the selected layer" : `Apply ${methodLabel} edit at the selected layer` : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? `Apply each fact as an ordered ${methodLabel} edit at the selected layer` : `Apply ${methodLabel} edit at the selected layer` : "Load the selected model before editing"}>
           <FlaskConical size={16} />
-          {busy ? "Editing" : isSeriesEdit ? "Apply ROME Series" : `Apply ${methodLabel}`}
+          {busy ? "Editing" : isSeriesEdit ? `Apply ${methodLabel} Series` : `Apply ${methodLabel}`}
         </button>
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
@@ -1515,30 +1524,34 @@ async function startRomeSequentialSeries(
   drafts: FactEditDraft[] | null,
   {
     modelId,
+    method,
     targetLayer,
     evaluationPrompts,
+    sequentialEdit,
     mom2Adjustment
   }: {
     modelId: string;
+    method: "rome" | "r_rome";
     targetLayer: number;
     evaluationPrompts: string[];
+    sequentialEdit: boolean;
     mom2Adjustment: boolean;
   }
 ) {
   if (!drafts) {
-    throw new Error("Sequential Facts JSON is invalid. Use a JSON array of ROME fact objects.");
+    throw new Error("Sequential Facts JSON is invalid. Use a JSON array of fact objects.");
   }
   if (!drafts.length) {
-    throw new Error("Sequential Facts JSON must include at least one ROME fact.");
+    throw new Error("Sequential Facts JSON must include at least one fact.");
   }
   if (drafts.length > 100) {
-    throw new Error("ROME sequential series supports at most 100 facts at once.");
+    throw new Error("Sequential series supports at most 100 facts at once.");
   }
   const invalidEdit = drafts.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
   if (invalidEdit >= 0) {
     throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
   }
-  return api.romeSequentialEdits({
+  const request = {
     model_id: modelId,
     edits: drafts.map((edit) => ({
       ...edit,
@@ -1546,8 +1559,10 @@ async function startRomeSequentialSeries(
     })),
     target_layer: targetLayer,
     evaluation_prompts: evaluationPrompts,
+    sequential_edit: sequentialEdit,
     mom2_adjustment: mom2Adjustment
-  });
+  };
+  return method === "r_rome" ? api.rRomeSequentialEdits(request) : api.romeSequentialEdits(request);
 }
 
 type ModelArchiveWritable = WritableStream<Uint8Array> & {
