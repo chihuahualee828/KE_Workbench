@@ -34,7 +34,17 @@ function useRuntimeConnection() {
 }
 
 type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type FactImportOptionalField = "rephrase_prompt" | "locality_prompt" | "locality_ground_truth" | "portability_prompt" | "portability_ground_truth";
+type FactImportField = FactEditableField | FactImportOptionalField;
+type FactImportFieldMapping = Record<FactImportField, string>;
 type ReliabilityTestProgress = { completed: number; total: number } | null;
+const REQUIRED_FACT_IMPORT_FIELDS: FactEditableField[] = ["subject", "relation_prompt", "new_object", "ground_truth"];
+const OPTIONAL_FACT_IMPORT_FIELDS: FactImportOptionalField[] = ["rephrase_prompt", "locality_prompt", "locality_ground_truth", "portability_prompt", "portability_ground_truth"];
+const FACT_IMPORT_FIELDS: FactImportField[] = [...REQUIRED_FACT_IMPORT_FIELDS, ...OPTIONAL_FACT_IMPORT_FIELDS];
+type PendingFactImport = {
+  records: Record<string, unknown>[];
+  mapping: FactImportFieldMapping;
+};
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
@@ -710,6 +720,7 @@ function FactDatasetEditor({
   const [jsonValue, setJsonValue] = useState<string | null>(null);
   const [loadingJson, setLoadingJson] = useState(false);
   const [savingJson, setSavingJson] = useState(false);
+  const [pendingImport, setPendingImport] = useState<PendingFactImport | null>(null);
 
   useEffect(() => {
     if (editorMode !== "json") {
@@ -756,10 +767,22 @@ function FactDatasetEditor({
   async function uploadJson(file: File | null) {
     if (!file) return;
     try {
-      const drafts = parseFactEditDrafts(await file.text());
-      if (!drafts) throw new Error(`${label} JSON must be an array of fact objects.`);
-      if (!drafts.length) throw new Error(`${label} JSON must include at least one fact.`);
+      const records = parseFactImportRecords(await file.text());
+      if (!records) throw new Error(`${label} JSON must be a fact object or an array of fact objects.`);
+      if (!records.length) throw new Error(`${label} JSON must include at least one fact.`);
+      setPendingImport({ records, mapping: detectFactImportMapping(records) });
+      onError("");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function commitImport(mapping: FactImportFieldMapping) {
+    if (!pendingImport) return;
+    try {
+      const drafts = pendingImport.records.map((record, index) => normalizeImportedFactDraft(record, mapping, index));
       await dataset.replace(drafts);
+      setPendingImport(null);
       onEditorModeChange("form");
       onError("");
     } catch (reason) {
@@ -780,13 +803,14 @@ function FactDatasetEditor({
 
   function formatJson() {
     if (jsonValue === null) return;
-    const drafts = parseFactEditDrafts(jsonValue);
-    if (!drafts) {
-      onError(`${label} JSON must be an array of fact objects.`);
-      return;
+    try {
+      const drafts = parseFactEditDrafts(jsonValue);
+      if (!drafts) throw new Error(`${label} JSON must be an array of fact objects.`);
+      setJsonValue(JSON.stringify(drafts, null, 2));
+      onError("");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
     }
-    setJsonValue(JSON.stringify(drafts, null, 2));
-    onError("");
   }
 
   return (
@@ -820,6 +844,72 @@ function FactDatasetEditor({
             <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={savingJson || jsonValue === null} onClick={formatJson} type="button">Format JSON</button></div>
             <textarea className="control min-h-64 font-mono text-xs" value={jsonValue ?? ""} onChange={(event) => setJsonValue(event.target.value)} />
           </>}
+      {pendingImport ? <FactImportMappingDialog label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
+    </div>
+  );
+}
+
+function FactImportMappingDialog({
+  label,
+  mapping: initialMapping,
+  records,
+  onClose,
+  onConfirm
+}: {
+  label: string;
+  mapping: FactImportFieldMapping;
+  records: Record<string, unknown>[];
+  onClose: () => void;
+  onConfirm: (mapping: FactImportFieldMapping) => void;
+}) {
+  const [mapping, setMapping] = useState(initialMapping);
+  const [error, setError] = useState("");
+  const keys = useMemo(() => Array.from(new Set(records.flatMap((record) => Object.keys(record)))).sort((left, right) => left.localeCompare(right)), [records]);
+
+  function confirm() {
+    const missing = REQUIRED_FACT_IMPORT_FIELDS.find((field) => !mapping[field].trim());
+    if (missing) {
+      setError(`Choose a JSON attribute for ${factImportFieldLabel(missing)}.`);
+      return;
+    }
+    const unavailable = Object.entries(mapping).find(([, value]) => value.trim() && !keys.includes(value));
+    if (unavailable) {
+      setError(`JSON attribute \"${unavailable[1]}\" was not found in this file.`);
+      return;
+    }
+    onConfirm(mapping);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }} role="presentation">
+      <section aria-labelledby="fact-import-mapping-title" aria-modal="true" className="my-auto w-full max-w-xl rounded-md border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="fact-import-mapping-title" className="text-base font-semibold">Map Imported Facts</h2>
+            <p className="mt-1 text-sm text-ink/60">{records.length} {label.toLocaleLowerCase()} detected. Common aliases were selected automatically.</p>
+          </div>
+          <button aria-label="Close import mapping" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
+        </div>
+        <div className="mt-5 grid gap-3">
+          {FACT_IMPORT_FIELDS.map((field) => (
+            <label className="grid gap-1" key={field}>
+              <span className="label">{factImportFieldLabel(field)}</span>
+              <input className="control font-mono text-sm" list={`fact-import-keys-${field}`} value={mapping[field]} onChange={(event) => setMapping((current) => ({ ...current, [field]: event.target.value }))} />
+              <datalist id={`fact-import-keys-${field}`}>
+                {keys.map((key) => <option key={key} value={key} />)}
+              </datalist>
+            </label>
+          ))}
+        </div>
+        <p className="mt-4 text-xs leading-5 text-ink/60">Only the first four fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
+        {error ? <div className="mt-4 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="ghost-button min-h-9 px-3 py-1 text-sm" onClick={onClose} type="button">Cancel</button>
+          <button className="tool-button min-h-9 px-3 py-1 text-sm" onClick={confirm} type="button">Import facts</button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1633,30 +1723,31 @@ function emptyFactEditDraft(): FactEditDraft {
 }
 
 function parseFactEditDrafts(value: string): FactEditDraft[] | null {
+  const records = parseFactImportRecords(value);
+  if (!records) return null;
+  const mapping = detectFactImportMapping(records);
+  try {
+    return records.map((record, index) => normalizeImportedFactDraft(record, mapping, index));
+  } catch {
+    return null;
+  }
+}
+
+function parseFactImportRecords(value: string): Record<string, unknown>[] | null {
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return null;
-    return parsed.map((item) => {
-      if (!item || typeof item !== "object") return emptyFactEditDraft();
-      const edit = item as Record<string, unknown>;
-      return {
-        subject: typeof edit.subject === "string" ? edit.subject : "",
-        relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
-        ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
-        new_object: typeof edit.new_object === "string" ? edit.new_object : "",
-        rephrase_prompts: Array.isArray(edit.rephrase_prompts)
-          ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
-          : undefined
-      };
-    });
+    const records = Array.isArray(parsed) ? parsed : [parsed];
+    if (!records.every(isFactImportRecord)) return null;
+    return records;
   } catch {
     return null;
   }
 }
 
 function normalizeFactEditDraft(value: unknown): FactEditDraft {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyFactEditDraft();
-  const edit = value as Record<string, unknown>;
+  if (!isFactImportRecord(value)) return emptyFactEditDraft();
+  const edit = value;
+  const sourceMetadata = isFactImportRecord(edit.source_metadata) ? edit.source_metadata : undefined;
   return {
     subject: typeof edit.subject === "string" ? edit.subject : "",
     relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
@@ -1664,8 +1755,106 @@ function normalizeFactEditDraft(value: unknown): FactEditDraft {
     new_object: typeof edit.new_object === "string" ? edit.new_object : "",
     rephrase_prompts: Array.isArray(edit.rephrase_prompts)
       ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
-      : undefined
+      : undefined,
+    source_metadata: sourceMetadata
   };
+}
+
+function detectFactImportMapping(records: Record<string, unknown>[]): FactImportFieldMapping {
+  const keys = new Map<string, string>();
+  for (const record of records) {
+    for (const key of Object.keys(record)) {
+      const normalized = normalizeImportKey(key);
+      if (!keys.has(normalized)) keys.set(normalized, key);
+    }
+  }
+  return {
+    subject: findImportKey(keys, ["subject", "entity", "entityname", "name"]),
+    relation_prompt: findImportKey(keys, ["relationprompt", "prompt", "relation", "template"]),
+    new_object: findImportKey(keys, ["newobject", "targetnew", "newtarget", "target"]),
+    ground_truth: findImportKey(keys, ["groundtruth", "targettrue", "targetold", "originalobject"]),
+    rephrase_prompt: findImportKey(keys, ["rephraseprompt", "rephraseprompts"]),
+    locality_prompt: findImportKey(keys, ["localityprompt"]),
+    locality_ground_truth: findImportKey(keys, ["localitygroundtruth"]),
+    portability_prompt: findImportKey(keys, ["portabilityprompt"]),
+    portability_ground_truth: findImportKey(keys, ["portabilitygroundtruth"])
+  };
+}
+
+function normalizeImportedFactDraft(record: Record<string, unknown>, mapping: FactImportFieldMapping, index: number): FactEditDraft {
+  const subject = stringImportValue(record, mapping.subject);
+  const sourcePrompt = stringImportValue(record, mapping.relation_prompt);
+  const newObject = stringImportValue(record, mapping.new_object);
+  const groundTruth = stringImportValue(record, mapping.ground_truth);
+  const missing = [
+    !subject && "subject",
+    !sourcePrompt && "relation prompt",
+    !newObject && "new object",
+    !groundTruth && "ground truth"
+  ].filter(Boolean);
+  if (missing.length) {
+    throw new Error(`Fact ${index + 1} is missing ${missing.join(", ")} for the selected mapping.`);
+  }
+  const sourceMetadata = isFactImportRecord(record.source_metadata) ? record.source_metadata : record;
+  const rephrasePrompts = readRephrasePrompts(record, sourceMetadata, mapping.rephrase_prompt);
+  return {
+    subject,
+    relation_prompt: relationPromptFromImportedValue(sourcePrompt, subject),
+    ground_truth: groundTruth,
+    new_object: newObject,
+    ...(rephrasePrompts.length ? { rephrase_prompts: rephrasePrompts } : {}),
+    source_metadata: sourceMetadata
+  };
+}
+
+function readRephrasePrompts(record: Record<string, unknown>, sourceMetadata: Record<string, unknown>, mappedKey: string) {
+  const candidate = (mappedKey ? record[mappedKey] : undefined)
+    ?? record.rephrase_prompts
+    ?? record.rephrase_prompt
+    ?? sourceMetadata.rephrase_prompts
+    ?? sourceMetadata.rephrase_prompt;
+  if (Array.isArray(candidate)) return candidate.filter((prompt): prompt is string => typeof prompt === "string" && prompt.trim().length > 0);
+  return typeof candidate === "string" && candidate.trim() ? [candidate] : [];
+}
+
+function relationPromptFromImportedValue(value: string, subject: string) {
+  if (value.includes("{}") || !subject) return value;
+  return value.includes(subject) ? value.replaceAll(subject, "{}") : value;
+}
+
+function findImportKey(keys: Map<string, string>, aliases: string[]) {
+  for (const alias of aliases) {
+    const key = keys.get(alias);
+    if (key) return key;
+  }
+  return "";
+}
+
+function normalizeImportKey(value: string) {
+  return value.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function stringImportValue(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : value === null || value === undefined ? "" : String(value).trim();
+}
+
+function isFactImportRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function factImportFieldLabel(field: FactImportField) {
+  return ({
+    subject: "Subject",
+    relation_prompt: "Relation Prompt",
+    new_object: "New Object",
+    ground_truth: "Ground Truth",
+    rephrase_prompt: "Rephrase Prompt",
+    locality_prompt: "Locality Prompt",
+    locality_ground_truth: "Locality Ground Truth",
+    portability_prompt: "Portability Prompt",
+    portability_ground_truth: "Portability Ground Truth"
+  } as const)[field];
 }
 
 function FactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

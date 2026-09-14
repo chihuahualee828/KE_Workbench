@@ -13,6 +13,8 @@ export type FactEditDraft = {
   ground_truth: string;
   new_object: string;
   rephrase_prompts?: string[];
+  /** Original imported values that are not edited in the compact fact form. */
+  source_metadata?: Record<string, unknown>;
 };
 
 type DatasetMeta = {

@@ -391,7 +391,7 @@ export const api = {
     }),
   romeSequentialEdits: (body: {
     model_id: string;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
     evaluation_prompts: string[];
     sequential_edit?: boolean;
@@ -403,7 +403,7 @@ export const api = {
     }),
   rRomeSequentialEdits: (body: {
     model_id: string;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
     evaluation_prompts: string[];
     sequential_edit?: boolean;
@@ -415,7 +415,7 @@ export const api = {
     }),
   memitEdit: (body: {
     model_id: string;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[] }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     layers?: number[] | null;
     evaluation_prompts: string[];
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
