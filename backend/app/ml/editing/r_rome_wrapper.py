@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
+from app.ml.editing.easyedit_runtime import EasyEditSeriesContext, evaluate_post_edit_reliability, run_easyedit
 from app.ml.editing.patch_format import edit_to_patch_entry
 from app.services.model_registry import model_registry
 
@@ -18,6 +18,10 @@ def run_r_rome_edit(
     portability_inputs: dict | None,
     sequential_edit: bool,
     mom2_adjustment: bool,
+    source_metadata: dict | None = None,
+    generate_evaluation: bool = True,
+    patch_mode: str = "individual",
+    series_context: EasyEditSeriesContext | None = None,
 ) -> dict:
     """Apply one EasyEdit R-ROME edit and persist its reversible weight delta."""
     from app.services.model_runtime_service import model_runtime_service
@@ -38,6 +42,8 @@ def run_r_rome_edit(
                 "portability_inputs": portability_inputs,
                 "sequential_edit": sequential_edit,
                 "mom2_adjustment": mom2_adjustment,
+                "source_metadata": source_metadata,
+                "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
         )
@@ -51,6 +57,8 @@ def run_r_rome_edit(
     edit = edit_to_patch_entry(subject, relation_prompt, new_object)
     if ground_truth is not None:
         edit["ground_truth"] = ground_truth
+    if source_metadata:
+        edit["source_metadata"] = source_metadata
     result = run_easyedit(
         method="r_rome",
         model_id=model_id,
@@ -62,6 +70,83 @@ def run_r_rome_edit(
         sequential_edit=sequential_edit,
         layer_source="request" if target_layer is not None else "easyedit_hparams",
         mom2_adjustment=mom2_adjustment,
+        patch_mode=patch_mode,
+        series_context=series_context,
     )
-    result.update(evaluate_post_edit_reliability(model_id, "r_rome", [edit]))
+    if generate_evaluation:
+        result.update(evaluate_post_edit_reliability(model_id, "r_rome", [edit]))
+    return result
+
+
+def run_r_rome_sequential_edits(
+    model_id: str,
+    edits: list[dict],
+    target_layer: int,
+    evaluation_prompts: list[str],
+    mom2_adjustment: bool,
+    sequential_edit: bool = True,
+) -> dict:
+    """Apply an ordered series of R-ROME edits into one cumulative patch."""
+    from app.services.model_runtime_service import model_runtime_service
+
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "r_rome_sequential_edits",
+            {
+                "model_id": model_id,
+                "edits": edits,
+                "target_layer": target_layer,
+                "evaluation_prompts": evaluation_prompts,
+                "mom2_adjustment": mom2_adjustment,
+                "sequential_edit": sequential_edit,
+            },
+            timeout=7200.0,
+        )
+
+    if not edits:
+        raise ValueError("R-ROME sequential series needs at least one fact.")
+
+    series_context = EasyEditSeriesContext(continue_from_active_patches=sequential_edit)
+    patch_results: list[dict] = []
+    for index, raw_edit in enumerate(edits, start=1):
+        edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
+        subject = str(edit.get("subject") or "").strip()
+        relation_prompt = str(edit.get("relation_prompt") or "").strip()
+        new_object = str(edit.get("new_object") or "").strip()
+        if not subject or not relation_prompt or not new_object:
+            raise ValueError(
+                f"R-ROME sequential series fact {index} needs a subject, relation prompt, and new object."
+            )
+        print(f"Applying R-ROME sequential edit {index}/{len(edits)}.")
+        result = run_r_rome_edit(
+            model_id=model_id,
+            subject=subject,
+            relation_prompt=relation_prompt,
+            new_object=new_object,
+            ground_truth=str(edit["ground_truth"]).strip() if edit.get("ground_truth") else None,
+            target_layer=target_layer,
+            evaluation_prompts=[],
+            rephrase_prompts=[str(prompt) for prompt in edit.get("rephrase_prompts", [])],
+            locality_inputs=None,
+            portability_inputs=None,
+            sequential_edit=True,
+            mom2_adjustment=mom2_adjustment,
+            source_metadata=edit.get("source_metadata") if isinstance(edit.get("source_metadata"), dict) else None,
+            generate_evaluation=False,
+            patch_mode="series",
+            series_context=series_context,
+        )
+        patch_results.append(result)
+        print(f"Created R-ROME sequential edit {index}/{len(edits)}.")
+        print(f"Updated cumulative patch {result['patch_id']}.")
+
+    final_patch_id = patch_results[-1]["patch_id"]
+    result = {
+        "patch_id": final_patch_id,
+        "patch_ids": [final_patch_id],
+        "patch_count": 1,
+        "completed_fact_count": len(patch_results),
+        "sequential_edit": True,
+    }
+    result.update(evaluate_post_edit_reliability(model_id, "r_rome", edits))
     return result

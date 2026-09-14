@@ -93,3 +93,17 @@ def test_cancel_active_edit_stops_the_model_worker(monkeypatch) -> None:
 
     assert response.status == "canceled"
     assert stopped == ["job_demo"]
+
+
+def test_easyedit_start_marker_advances_job_past_preparation(monkeypatch) -> None:
+    emitted: list[tuple[str, str, float | None]] = []
+    monkeypatch.setattr(
+        routes_editing.experiment_service,
+        "append_job_log",
+        lambda job_id, message, **kwargs: emitted.append((job_id, message, kwargs.get("progress"))),
+    )
+
+    stream = routes_editing._JobLogStream("job_demo", None)
+    stream._emit("Starting EasyEdit algorithm.")
+
+    assert emitted == [("job_demo", "Starting EasyEdit algorithm.", 0.1)]
