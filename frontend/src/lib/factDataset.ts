@@ -7,6 +7,14 @@ const DATABASE_VERSION = 1;
 const DATASET_STORE = "fact-datasets";
 const FACT_STORE = "fact-dataset-facts";
 
+export type FactEditDraft = {
+  subject: string;
+  relation_prompt: string;
+  ground_truth: string;
+  new_object: string;
+  rephrase_prompts?: string[];
+};
+
 type DatasetMeta = {
   id: string;
   count: number;
