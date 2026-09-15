@@ -1,4 +1,4 @@
-import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
+import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
 import { setModelCacheSnapshot, setModelRuntimeSnapshot } from "./modelStatusCache";
@@ -265,6 +265,8 @@ export const api = {
       method: "DELETE"
     }),
   patches: () => request<{ patches: Patch[] }>("/api/patches"),
+  patchEdits: (patchId: string, offset: number, limit: number) =>
+    request<PatchEditPage>(`/api/patches/${encodeURIComponent(patchId)}/edits?offset=${offset}&limit=${limit}`),
   loadPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/load`, {
       method: "POST"

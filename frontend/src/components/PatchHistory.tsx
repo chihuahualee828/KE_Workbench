@@ -1,11 +1,15 @@
 "use client";
 
 import { GitBranch, Layers, RotateCcw, Save, Trash2, X, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import type { ModelRuntimeStatus, Patch, PatchEditPage, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { VirtualizedList } from "./VirtualizedList";
+
+const PATCH_EDIT_PAGE_SIZE = 50;
+const PATCH_FACT_CARD_ESTIMATED_HEIGHT = 172;
 
 export function PatchHistory({
   patches,
@@ -385,7 +389,7 @@ function PatchTable({
                   <span className="block truncate" title={modelLabel(patch.base_model)}>{modelLabel(patch.base_model)}</span>
                 </td>
                 <td className="hidden py-3 pr-3 lg:table-cell">{patch.modified_layers.join(", ") || "-"}</td>
-                <td className="py-3 pr-3">{patch.edits.length}</td>
+                <td className="py-3 pr-3">{patch.edit_count ?? patch.edits.length}</td>
                 <td className="hidden py-3 pr-3 font-mono text-xs whitespace-nowrap lg:table-cell">{formatPatchDate(patch.created_at)}</td>
                 <td className="py-3 text-right">
                   <div className="ml-auto flex w-[7.25rem] justify-end gap-1">
@@ -592,6 +596,8 @@ function PatchDetailsDialog({
   const tensorDeltas = (patch.delta_paths ?? []).filter((path) => path.endsWith(".safetensors"));
   const bakedIntoModel = Boolean(patch.lineage_only || patch.baked_into_model);
   const canLoad = !patch.active && !bakedIntoModel && tensorDeltas.length > 0 && modelLoaded;
+  const editCount = patch.edit_count ?? patch.edits.length;
+  const editPages = usePatchEditPages(patch.patch_id, editCount);
   const loadTitle = patch.active
     ? "This patch is already part of the active model state"
     : bakedIntoModel
@@ -636,17 +642,29 @@ function PatchDetailsDialog({
         </dl>
 
         <section className="mt-5">
-          <h3 className="text-sm font-semibold">Edited Facts</h3>
-          <div className="mt-2 divide-y divide-line border-y border-line">
-            {patch.edits.map((edit, index) => (
-              <article className="grid gap-3 py-4" key={`${patch.patch_id}-${index}`}>
-                <div className="label">Edit {index + 1}</div>
-                <DetailItem label="Prompt" value={buildEditPrompt(edit.subject, edit.relation_prompt)} mono />
-                {edit.ground_truth ? <DetailItem label="Previous Value" value={edit.ground_truth} /> : null}
-                <DetailItem label="New Value" value={edit.new_object} />
-              </article>
-            ))}
+          <div className="flex items-baseline justify-between gap-3">
+            <h3 className="text-sm font-semibold">Edited Facts</h3>
+            <span className="label whitespace-nowrap">{editCount}</span>
           </div>
+          {editCount ? (
+            <VirtualizedList
+              key={patch.patch_id}
+              className="mt-2 max-h-[min(420px,45vh)] overflow-y-auto border-y border-line"
+              estimatedItemHeight={PATCH_FACT_CARD_ESTIMATED_HEIGHT}
+              getItem={editPages.getItem}
+              itemCount={editCount}
+              onVisibleRangeChange={editPages.ensureRange}
+              renderItem={(edit, index) => (
+                <article className="grid gap-3 border-b border-line py-4">
+                  <div className="label">Edit {index + 1}</div>
+                  <DetailItem label="Prompt" value={buildEditPrompt(edit.subject, edit.relation_prompt)} mono />
+                  {edit.ground_truth ? <DetailItem label="Previous Value" value={edit.ground_truth} /> : null}
+                  <DetailItem label="New Value" value={edit.new_object} />
+                </article>
+              )}
+            />
+          ) : <div className="mt-2 rounded-md border border-line bg-panel p-3 text-sm text-ink/60">No edit facts were saved with this patch.</div>}
+          {editPages.error ? <p className="mt-2 text-xs text-rust" role="alert">{editPages.error}</p> : null}
         </section>
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
@@ -659,6 +677,54 @@ function PatchDetailsDialog({
       </section>
     </div>
   );
+}
+
+function usePatchEditPages(patchId: string, total: number) {
+  const [pages, setPages] = useState<Record<number, PatchEditPage>>({});
+  const [error, setError] = useState("");
+  const requestKeyRef = useRef(patchId);
+  const pending = useRef(new Set<string>());
+
+  const loadPage = useCallback(async (offset: number, requestKey = patchId) => {
+    if (!patchId || offset >= total) return;
+    const pageKey = `${requestKey}:${offset}`;
+    if (pending.current.has(pageKey)) return;
+    pending.current.add(pageKey);
+    try {
+      const page = await api.patchEdits(patchId, offset, PATCH_EDIT_PAGE_SIZE);
+      if (requestKeyRef.current !== requestKey) return;
+      setPages((current) => ({ ...current, [offset]: page }));
+      setError("");
+    } catch (err) {
+      if (requestKeyRef.current === requestKey) {
+        setError(err instanceof Error ? err.message : "Could not load this patch's edit facts.");
+      }
+    } finally {
+      pending.current.delete(pageKey);
+    }
+  }, [patchId, total]);
+
+  useEffect(() => {
+    requestKeyRef.current = patchId;
+    setPages({});
+    setError("");
+    if (patchId && total) void loadPage(0, patchId);
+  }, [loadPage, patchId, total]);
+
+  const ensureRange = useCallback((start: number, end: number) => {
+    if (!patchId || end < start) return;
+    const firstOffset = Math.floor(start / PATCH_EDIT_PAGE_SIZE) * PATCH_EDIT_PAGE_SIZE;
+    for (let offset = firstOffset; offset <= end && offset < total; offset += PATCH_EDIT_PAGE_SIZE) {
+      if (!pages[offset]) void loadPage(offset, patchId);
+    }
+  }, [loadPage, pages, patchId, total]);
+
+  const getItem = useCallback(
+    (index: number) => pages[Math.floor(index / PATCH_EDIT_PAGE_SIZE) * PATCH_EDIT_PAGE_SIZE]?.items[index % PATCH_EDIT_PAGE_SIZE],
+    [pages],
+  );
+
+  return { ensureRange, error, getItem };
 }
 
 function ClearPatchHistoryDialog({

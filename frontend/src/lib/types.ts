@@ -72,17 +72,28 @@ export type ExperimentDetails = Experiment & {
   result?: Record<string, unknown> | null;
 };
 
+export type PatchEdit = {
+  subject: string;
+  relation_prompt: string;
+  new_object: string;
+  ground_truth?: string;
+  rephrase_prompts?: string[];
+};
+
+export type PatchEditPage = {
+  patch_id: string;
+  offset: number;
+  limit: number;
+  total: number;
+  items: PatchEdit[];
+};
+
 export type Patch = {
   patch_id: string;
   base_model: string;
   method: string;
-  edits: Array<{
-    subject: string;
-    relation_prompt: string;
-    new_object: string;
-    ground_truth?: string;
-    rephrase_prompts?: string[];
-  }>;
+  edits: PatchEdit[];
+  edit_count?: number;
   modified_layers: number[];
   created_at: string;
   metrics?: Record<string, unknown>;

@@ -102,6 +102,30 @@ class PatchService:
         patches.sort(key=lambda patch: str(patch.get("created_at") or ""), reverse=True)
         return patches
 
+    def list_patch_summaries(self) -> list[dict[str, Any]]:
+        """List patch metadata without copying every edit into the shared UI store."""
+        summaries = []
+        for patch in self.list_patches():
+            summary = {key: value for key, value in patch.items() if key != "edits"}
+            summary["edit_count"] = len(patch.get("edits", []))
+            summary["edits"] = []
+            summaries.append(summary)
+        return summaries
+
+    def get_patch_edits_page(self, patch_id: str, offset: int, limit: int) -> dict[str, Any]:
+        """Return a bounded edit-fact slice for the patch-details dialog."""
+        patch = self.get_patch(patch_id)
+        edits = patch.get("edits")
+        if not isinstance(edits, list):
+            edits = []
+        return {
+            "patch_id": patch_id,
+            "offset": offset,
+            "limit": limit,
+            "total": len(edits),
+            "items": edits[offset : offset + limit],
+        }
+
     def get_patch(self, patch_id: str) -> dict[str, Any]:
         self._migrate_flat_metadata(patch_id)
         return local_store.read_json(self._metadata_relative_path(patch_id))
