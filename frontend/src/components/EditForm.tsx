@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { api } from "@/lib/api";
 import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { type FactEditDraft, type IndexedFactDataset, useIndexedFactDataset } from "@/lib/factDataset";
 import { isModelRuntimeConnected, listenForModelRuntimeConnection } from "@/lib/modelRuntimeEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, ReliabilityTestResultItem, ReliabilityTestResultPage, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
@@ -18,6 +19,12 @@ import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
+const DEFAULT_FACT_EDIT_DRAFTS: FactEditDraft[] = [
+  { subject: "Michael Jordan", relation_prompt: "{} plays the sport of", ground_truth: "basketball", new_object: "baseball" },
+  { subject: "The Space Needle", relation_prompt: "{} is located in the city of", ground_truth: "Seattle", new_object: "Paris" }
+];
+const VIRTUAL_FACT_CARD_HEIGHT = 412;
+const VIRTUAL_FACT_OVERSCAN = 3;
 const ACTIVE_EDIT_JOB_STORAGE_KEY = "kew:edit:activeJob";
 
 function useRuntimeConnection() {
@@ -26,16 +33,18 @@ function useRuntimeConnection() {
   return connected;
 }
 
-type FactEditDraft = {
-  subject: string;
-  relation_prompt: string;
-  ground_truth: string;
-  new_object: string;
-  rephrase_prompts?: string[];
-};
-
 type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type FactImportOptionalField = "rephrase_prompt" | "locality_prompt" | "locality_ground_truth" | "portability_prompt" | "portability_ground_truth";
+type FactImportField = FactEditableField | FactImportOptionalField;
+type FactImportFieldMapping = Record<FactImportField, string>;
 type ReliabilityTestProgress = { completed: number; total: number } | null;
+const REQUIRED_FACT_IMPORT_FIELDS: FactEditableField[] = ["subject", "relation_prompt", "new_object", "ground_truth"];
+const OPTIONAL_FACT_IMPORT_FIELDS: FactImportOptionalField[] = ["rephrase_prompt", "locality_prompt", "locality_ground_truth", "portability_prompt", "portability_ground_truth"];
+const FACT_IMPORT_FIELDS: FactImportField[] = [...REQUIRED_FACT_IMPORT_FIELDS, ...OPTIONAL_FACT_IMPORT_FIELDS];
+type PendingFactImport = {
+  records: Record<string, unknown>[];
+  mapping: FactImportFieldMapping;
+};
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
   const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
@@ -380,7 +389,6 @@ function RomeForm({
   const [newObject, setNewObject] = usePersistentState(`kew:edit:${method}:newObject`, "Paris");
   const [groundTruth, setGroundTruth] = usePersistentState(`kew:edit:${method}:groundTruth`, "Seattle");
   const [editMode, setEditMode] = usePersistentState<"single" | "series">(`kew:edit:${method}:editMode`, "single");
-  const [seriesEdits, setSeriesEdits] = usePersistentState(`kew:edit:${method}:seriesEdits`, '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
   const [seriesEditorMode, setSeriesEditorMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:seriesEditorMode`, "form");
   const [targetLayers, setTargetLayers] = usePersistentState<Record<string, string>>(`kew:edit:${method}:targetLayers`, EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number>>({});
@@ -397,6 +405,12 @@ function RomeForm({
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const [layerNotice, setLayerNotice] = useState("");
+  const seriesDataset = useIndexedFactDataset({
+    datasetId: `kew:edit:${method}:sequential-facts`,
+    initialValues: DEFAULT_FACT_EDIT_DRAFTS,
+    legacyStorageKey: `kew:edit:${method}:seriesEdits`,
+    normalize: normalizeFactEditDraft
+  });
   const selectedModel = useMemo(() => romeModels.find((model) => model.id === modelId), [modelId, romeModels]);
   const selectedModelId = selectedModel?.id;
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
@@ -405,21 +419,15 @@ function RomeForm({
   const easyEditDefaultLayer = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
-  const seriesEditDrafts = useMemo(() => parseFactEditDrafts(seriesEdits), [seriesEdits]);
   const isSeriesEdit = supportsSeries && editMode === "series";
-  const evaluationPrompts = useMemo(
-    () => buildFactEvaluationPrompts(
-      isSeriesEdit
-        ? seriesEditDrafts ?? []
-        : [{ subject, relation_prompt: relationPrompt }]
-    ),
-    [isSeriesEdit, relationPrompt, seriesEditDrafts, subject]
+  const seriesPromptPreview = useFactEvaluationPromptPreview(seriesDataset, isSeriesEdit);
+  const singleFact = useMemo(
+    () => ({ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth }),
+    [groundTruth, newObject, relationPrompt, subject]
   );
-  const reliabilityEdits = useMemo(
-    () => isSeriesEdit
-      ? seriesEditDrafts ?? []
-      : [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth }],
-    [groundTruth, isSeriesEdit, newObject, relationPrompt, seriesEditDrafts, subject]
+  const evaluationPrompts = useMemo(
+    () => isSeriesEdit ? seriesPromptPreview : buildFactEvaluationPrompts([singleFact]),
+    [isSeriesEdit, seriesPromptPreview, singleFact]
   );
 
   useLoadedModelSelection(romeModels, runtime, setModelId);
@@ -439,7 +447,7 @@ function RomeForm({
 
   useEffect(() => {
     setReliabilityResult(null);
-  }, [modelId, reliabilityEdits]);
+  }, [isSeriesEdit, modelId, seriesDataset.revision, singleFact]);
 
   useEffect(() => {
     let active = true;
@@ -478,12 +486,16 @@ function RomeForm({
     setResult(null);
     setJob(null);
     try {
+      const seriesFacts = isSeriesEdit ? await seriesDataset.getAll() : null;
+      const fullEvaluationPrompts = isSeriesEdit
+        ? buildFactEvaluationPrompts(seriesFacts ?? [])
+        : evaluationPrompts;
       const response = isSeriesEdit
-        ? await startRomeSequentialSeries(seriesEditDrafts, {
+        ? await startRomeSequentialSeries(seriesFacts, {
             modelId,
             method,
             targetLayer: targetLayerNumber,
-            evaluationPrompts,
+            evaluationPrompts: fullEvaluationPrompts,
             sequentialEdit,
             mom2Adjustment
           })
@@ -494,7 +506,7 @@ function RomeForm({
             new_object: newObject,
             ground_truth: groundTruth || null,
             target_layer: targetLayerNumber,
-            evaluation_prompts: evaluationPrompts,
+            evaluation_prompts: fullEvaluationPrompts,
             sequential_edit: sequentialEdit,
             mom2_adjustment: mom2Adjustment
           });
@@ -525,10 +537,12 @@ function RomeForm({
     setReliabilityTestProgress(null);
     reliabilityTestCancellation.reset();
     try {
+      const facts = isSeriesEdit ? await seriesDataset.getAll() : [singleFact];
+      if (!facts.length) throw new Error("Add at least one fact before testing reliability.");
       const response = await api.easyEditReliability({
         model_id: modelId,
         method,
-        edits: reliabilityEdits.map((edit) => ({
+        edits: facts.map((edit) => ({
           subject: edit.subject,
           relation_prompt: edit.relation_prompt,
           new_object: edit.new_object,
@@ -597,13 +611,13 @@ function RomeForm({
           </div>
         </div> : null}
         {isSeriesEdit ? (
-          <RomeSeriesEditor
-            drafts={seriesEditDrafts}
+          <FactDatasetEditor
+            label="Sequential Facts"
+            dataset={seriesDataset}
             editorMode={seriesEditorMode}
-            value={seriesEdits}
-            onChange={setSeriesEdits}
             onEditorModeChange={setSeriesEditorMode}
             onError={setError}
+            uploadTitle={`${methodLabel} sequential facts JSON`}
           />
         ) : (
           <>
@@ -649,6 +663,7 @@ function RomeForm({
         </label>
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
+          totalPromptCount={isSeriesEdit ? seriesDataset.count : undefined}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
           reliabilityResult={reliabilityResult}
@@ -656,7 +671,7 @@ function RomeForm({
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
           testCanceling={reliabilityTestCancellation.canceling}
-          testDisabled={busy || !modelLoaded || !evaluationPrompts.length}
+          testDisabled={busy || !modelLoaded || (isSeriesEdit ? seriesDataset.status !== "ready" || seriesDataset.count === 0 : !evaluationPrompts.length)}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
@@ -673,7 +688,7 @@ function RomeForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded} title={modelLoaded ? isSeriesEdit ? `Apply each fact as an ordered ${methodLabel} edit at the selected layer` : `Apply ${methodLabel} edit at the selected layer` : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || locatingLayer || targetLayerNumber === null || !modelLoaded || (isSeriesEdit && seriesDataset.status !== "ready")} title={modelLoaded ? isSeriesEdit ? `Apply each fact as an ordered ${methodLabel} edit at the selected layer` : `Apply ${methodLabel} edit at the selected layer` : "Load the selected model before editing"}>
           <FlaskConical size={16} />
           {busy ? "Editing" : isSeriesEdit ? `Apply ${methodLabel} Series` : `Apply ${methodLabel}`}
         </button>
@@ -687,109 +702,318 @@ function RomeForm({
   );
 }
 
-function RomeSeriesEditor({
-  drafts,
+function FactDatasetEditor({
+  dataset,
   editorMode,
-  value,
-  onChange,
+  label,
   onEditorModeChange,
-  onError
+  onError,
+  uploadTitle
 }: {
-  drafts: FactEditDraft[] | null;
+  dataset: IndexedFactDataset<FactEditDraft>;
   editorMode: "form" | "json";
-  value: string;
-  onChange: (value: string) => void;
+  label: string;
   onEditorModeChange: (value: "form" | "json") => void;
   onError: (value: string) => void;
+  uploadTitle: string;
 }) {
-  function updateDraft(index: number, field: FactEditableField, fieldValue: string) {
-    if (!drafts) return;
-    onChange(JSON.stringify(drafts.map((edit, editIndex) => editIndex === index ? { ...edit, [field]: fieldValue } : edit), null, 2));
-  }
+  const [jsonValue, setJsonValue] = useState<string | null>(null);
+  const [loadingJson, setLoadingJson] = useState(false);
+  const [savingJson, setSavingJson] = useState(false);
+  const [pendingImport, setPendingImport] = useState<PendingFactImport | null>(null);
 
-  function addDraft() {
-    onChange(JSON.stringify([...(drafts ?? []), emptyFactEditDraft()], null, 2));
-  }
+  useEffect(() => {
+    if (editorMode !== "json") {
+      setJsonValue(null);
+      return;
+    }
+    let active = true;
+    setLoadingJson(true);
+    void dataset.getJson()
+      .then((value) => {
+        if (active) setJsonValue(value);
+      })
+      .catch((reason) => {
+        if (active) onError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (active) setLoadingJson(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [dataset.getJson, dataset.revision, editorMode, onError]);
 
-  function removeDraft(index: number) {
-    if (!drafts) return;
-    onChange(JSON.stringify(drafts.filter((_, editIndex) => editIndex !== index), null, 2));
+  async function showFormEditor() {
+    if (editorMode !== "json") {
+      onEditorModeChange("form");
+      return;
+    }
+    if (jsonValue === null) return;
+    setSavingJson(true);
+    try {
+      const drafts = parseFactEditDrafts(jsonValue);
+      if (!drafts) throw new Error(`${label} JSON must be an array of fact objects.`);
+      await dataset.replace(drafts);
+      onEditorModeChange("form");
+      onError("");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSavingJson(false);
+    }
   }
 
   async function uploadJson(file: File | null) {
     if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text());
-      if (!Array.isArray(parsed)) throw new Error("ROME series JSON must be an array of fact objects.");
-      onChange(JSON.stringify(parsed, null, 2));
-      onEditorModeChange("form");
+      const records = parseFactImportRecords(await file.text());
+      if (!records) throw new Error(`${label} JSON must be a fact object or an array of fact objects.`);
+      if (!records.length) throw new Error(`${label} JSON must include at least one fact.`);
+      setPendingImport({ records, mapping: detectFactImportMapping(records) });
       onError("");
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
-  function showFormEditor() {
-    if (!drafts) {
-      onError("Fix the sequential series JSON before switching to the form editor.");
-      return;
+  async function commitImport(mapping: FactImportFieldMapping) {
+    if (!pendingImport) return;
+    try {
+      const drafts = pendingImport.records.map((record, index) => normalizeImportedFactDraft(record, mapping, index));
+      await dataset.replace(drafts);
+      setPendingImport(null);
+      onEditorModeChange("form");
+      onError("");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
     }
-    onError("");
-    onEditorModeChange("form");
+  }
+
+  async function clearFacts() {
+    try {
+      await dataset.clear();
+      setJsonValue(null);
+      onEditorModeChange("form");
+      onError("");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
   function formatJson() {
+    if (jsonValue === null) return;
     try {
-      const parsed = JSON.parse(value);
-      if (!Array.isArray(parsed)) throw new Error("ROME series JSON must be an array of fact objects.");
-      onChange(JSON.stringify(parsed, null, 2));
+      const drafts = parseFactEditDrafts(jsonValue);
+      if (!drafts) throw new Error(`${label} JSON must be an array of fact objects.`);
+      setJsonValue(JSON.stringify(drafts, null, 2));
       onError("");
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="label">Sequential Facts</span>
+        <span className="label">{label}</span>
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded-md border border-line bg-white p-1">
-            <button aria-pressed={editorMode === "form"} className={`rounded px-2 py-1 text-xs ${editorMode === "form" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={showFormEditor} type="button">Form</button>
-            <button aria-pressed={editorMode === "json"} className={`rounded px-2 py-1 text-xs ${editorMode === "json" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => onEditorModeChange("json")} type="button">JSON</button>
+            <button aria-pressed={editorMode === "form"} className={`rounded px-2 py-1 text-xs ${editorMode === "form" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} disabled={savingJson} onClick={() => void showFormEditor()} type="button">Form</button>
+            <button aria-pressed={editorMode === "json"} className={`rounded px-2 py-1 text-xs ${editorMode === "json" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} disabled={dataset.status !== "ready" || savingJson} onClick={() => onEditorModeChange("json")} type="button">JSON</button>
           </div>
-          <label className="ghost-button grid size-8 shrink-0 cursor-pointer place-items-center p-0" title="Upload ROME sequential facts JSON">
+          <label className="ghost-button grid size-8 shrink-0 cursor-pointer place-items-center p-0" title={`Upload ${uploadTitle}`}>
             <Upload size={14} />
-            <input className="sr-only" type="file" accept="application/json,.json" onChange={(event) => {
+            <input className="sr-only" disabled={dataset.status !== "ready" || savingJson} type="file" accept="application/json,.json" onChange={(event) => {
               void uploadJson(event.target.files?.[0] ?? null);
               event.target.value = "";
             }} />
           </label>
+          <button aria-label={`Clear all ${label.toLocaleLowerCase()}`} className="ghost-button grid size-8 shrink-0 place-items-center p-0 text-rust hover:text-rust" disabled={dataset.status !== "ready" || dataset.count === 0 || savingJson} onClick={() => void clearFacts()} title={`Clear all ${label.toLocaleLowerCase()}`} type="button"><Trash2 size={14} /></button>
         </div>
       </div>
-      {editorMode === "form" && drafts ? (
-        <div className="grid max-h-96 gap-3 overflow-y-auto pr-1">
-          {drafts.map((edit, index) => (
-            <section key={index} className="grid gap-3 border border-line bg-panel p-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium">Fact {index + 1}</span>
-                <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={drafts.length === 1} onClick={() => removeDraft(index)} title="Remove fact" type="button"><Trash2 size={15} /></button>
-              </div>
-              <FactInput label="Subject" value={edit.subject} onChange={(fieldValue) => updateDraft(index, "subject", fieldValue)} />
-              <FactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(fieldValue) => updateDraft(index, "relation_prompt", fieldValue)} />
-              <FactInput label="New Object" value={edit.new_object} onChange={(fieldValue) => updateDraft(index, "new_object", fieldValue)} />
-              <FactInput label="Ground Truth" value={edit.ground_truth} onChange={(fieldValue) => updateDraft(index, "ground_truth", fieldValue)} />
-            </section>
-          ))}
-          <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={addDraft} type="button"><Plus size={14} />Add fact</button>
-        </div>
-      ) : (
-        <>
-          <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={formatJson} type="button">Format JSON</button></div>
-          <textarea className="control min-h-64 font-mono text-xs" value={value} onChange={(event) => onChange(event.target.value)} />
-        </>
-      )}
+      {editorMode === "form" ? (
+        dataset.status === "loading" ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading saved facts…</div>
+          : dataset.status === "error" ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-xs text-rust">{dataset.error}</div>
+            : <>
+                <VirtualFactDraftList dataset={dataset} onError={onError} />
+                <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={() => void dataset.append(emptyFactEditDraft())} type="button"><Plus size={14} />Add fact</button>
+              </>
+      ) : loadingJson ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading JSON from local browser storage…</div>
+        : <>
+            <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={savingJson || jsonValue === null} onClick={formatJson} type="button">Format JSON</button></div>
+            <textarea className="control min-h-64 font-mono text-xs" value={jsonValue ?? ""} onChange={(event) => setJsonValue(event.target.value)} />
+          </>}
+      {pendingImport ? <FactImportMappingDialog label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
     </div>
+  );
+}
+
+function FactImportMappingDialog({
+  label,
+  mapping: initialMapping,
+  records,
+  onClose,
+  onConfirm
+}: {
+  label: string;
+  mapping: FactImportFieldMapping;
+  records: Record<string, unknown>[];
+  onClose: () => void;
+  onConfirm: (mapping: FactImportFieldMapping) => void;
+}) {
+  const [mapping, setMapping] = useState(initialMapping);
+  const [error, setError] = useState("");
+  const keys = useMemo(() => Array.from(new Set(records.flatMap((record) => Object.keys(record)))).sort((left, right) => left.localeCompare(right)), [records]);
+
+  function confirm() {
+    const missing = REQUIRED_FACT_IMPORT_FIELDS.find((field) => !mapping[field].trim());
+    if (missing) {
+      setError(`Choose a JSON attribute for ${factImportFieldLabel(missing)}.`);
+      return;
+    }
+    const unavailable = Object.entries(mapping).find(([, value]) => value.trim() && !keys.includes(value));
+    if (unavailable) {
+      setError(`JSON attribute \"${unavailable[1]}\" was not found in this file.`);
+      return;
+    }
+    onConfirm(mapping);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }} role="presentation">
+      <section aria-labelledby="fact-import-mapping-title" aria-modal="true" className="my-auto w-full max-w-xl rounded-md border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="fact-import-mapping-title" className="text-base font-semibold">Map Imported Facts</h2>
+            <p className="mt-1 text-sm text-ink/60">{records.length} {label.toLocaleLowerCase()} detected. Common aliases were selected automatically.</p>
+          </div>
+          <button aria-label="Close import mapping" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
+        </div>
+        <div className="mt-5 grid gap-3">
+          {FACT_IMPORT_FIELDS.map((field) => (
+            <label className="grid gap-1" key={field}>
+              <span className="label">{factImportFieldLabel(field)}</span>
+              <input className="control font-mono text-sm" list={`fact-import-keys-${field}`} value={mapping[field]} onChange={(event) => setMapping((current) => ({ ...current, [field]: event.target.value }))} />
+              <datalist id={`fact-import-keys-${field}`}>
+                {keys.map((key) => <option key={key} value={key} />)}
+              </datalist>
+            </label>
+          ))}
+        </div>
+        <p className="mt-4 text-xs leading-5 text-ink/60">Only the first four fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
+        {error ? <div className="mt-4 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="ghost-button min-h-9 px-3 py-1 text-sm" onClick={onClose} type="button">Cancel</button>
+          <button className="tool-button min-h-9 px-3 py-1 text-sm" onClick={confirm} type="button">Import facts</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDataset<FactEditDraft>; onError: (value: string) => void }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(384);
+  const [facts, setFacts] = useState<FactEditDraft[]>([]);
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / VIRTUAL_FACT_CARD_HEIGHT));
+  const startIndex = Math.max(0, Math.floor(scrollTop / VIRTUAL_FACT_CARD_HEIGHT) - VIRTUAL_FACT_OVERSCAN);
+  const endIndex = Math.min(dataset.count, startIndex + visibleCount + VIRTUAL_FACT_OVERSCAN * 2);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const updateViewport = () => setViewportHeight(container.clientHeight || 384);
+    updateViewport();
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void dataset.getRange(startIndex, endIndex)
+      .then((values) => {
+        if (active) setFacts(values);
+      })
+      .catch((reason) => {
+        if (active) onError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      active = false;
+    };
+  }, [dataset.getRange, dataset.revision, endIndex, onError, startIndex]);
+
+  if (dataset.count === 0) {
+    return <div className="rounded-md border border-dashed border-line bg-panel/50 p-4 text-xs text-ink/60">No facts yet. Add a fact or upload a JSON file.</div>;
+  }
+
+  return (
+    <div ref={scrollRef} className="max-h-96 overflow-y-auto pr-1" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <div className="relative" style={{ height: dataset.count * VIRTUAL_FACT_CARD_HEIGHT }}>
+        <div className="absolute inset-x-0 grid gap-3" style={{ transform: `translateY(${startIndex * VIRTUAL_FACT_CARD_HEIGHT}px)` }}>
+          {Array.from({ length: Math.max(0, endIndex - startIndex) }, (_, offset) => {
+            const index = startIndex + offset;
+            const fact = facts[offset];
+            return fact ? (
+              <VirtualFactDraftCard
+                key={index}
+                count={dataset.count}
+                fact={fact}
+                index={index}
+                onError={onError}
+                onRemove={() => void dataset.remove(index).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
+                onUpdate={(field, value) => void dataset.update(index, (current) => ({ ...current, [field]: value })).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
+              />
+            ) : <div key={index} className="animate-pulse border border-line bg-panel" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }} />;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VirtualFactDraftCard({
+  count,
+  fact,
+  index,
+  onError,
+  onRemove,
+  onUpdate
+}: {
+  count: number;
+  fact: FactEditDraft;
+  index: number;
+  onError: (value: string) => void;
+  onRemove: () => void;
+  onUpdate: (field: FactEditableField, value: string) => void;
+}) {
+  const [value, setValue] = useState(fact);
+
+  useEffect(() => {
+    setValue(fact);
+  }, [fact]);
+
+  function update(field: FactEditableField, fieldValue: string) {
+    setValue((current) => ({ ...current, [field]: fieldValue }));
+    onError("");
+    onUpdate(field, fieldValue);
+  }
+
+  return (
+    <section className="grid gap-3 border border-line bg-panel p-3" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium">Fact {index + 1}</span>
+        <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={count === 1} onClick={onRemove} title="Remove fact" type="button"><Trash2 size={15} /></button>
+      </div>
+      <FactInput label="Subject" value={value.subject} onChange={(fieldValue) => update("subject", fieldValue)} />
+      <FactInput label="Relation Prompt" value={value.relation_prompt} onChange={(fieldValue) => update("relation_prompt", fieldValue)} />
+      <FactInput label="New Object" value={value.new_object} onChange={(fieldValue) => update("new_object", fieldValue)} />
+      <FactInput label="Ground Truth" value={value.ground_truth} onChange={(fieldValue) => update("ground_truth", fieldValue)} />
+    </section>
   );
 }
 
@@ -812,7 +1036,6 @@ function MemitForm({
 }) {
   const memitModels = useMemo(() => models.filter((model) => model.supports_memit), [models]);
   const [modelId, setModelId] = usePersistentState("kew:edit:memit:modelId", memitModels[0]?.id ?? "gpt2-xl");
-  const [edits, setEdits] = usePersistentState("kew:edit:memit:edits", '[{"subject":"Michael Jordan","relation_prompt":"{} plays the sport of","ground_truth":"basketball","new_object":"baseball"},{"subject":"The Space Needle","relation_prompt":"{} is located in the city of","ground_truth":"Seattle","new_object":"Paris"}]');
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">("kew:edit:memit:inputMode", "form");
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
@@ -826,6 +1049,12 @@ function MemitForm({
   const reliabilityTestCancellation = useReliabilityTestCancellation();
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
+  const batchDataset = useIndexedFactDataset({
+    datasetId: "kew:edit:memit:batch-facts",
+    initialValues: DEFAULT_FACT_EDIT_DRAFTS,
+    legacyStorageKey: "kew:edit:memit:edits",
+    normalize: normalizeFactEditDraft
+  });
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
   const selectedModelId = selectedModel?.id;
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
@@ -834,11 +1063,7 @@ function MemitForm({
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
-  const editDrafts = useMemo(() => parseFactEditDrafts(edits), [edits]);
-  const evaluationPrompts = useMemo(
-    () => buildFactEvaluationPrompts(editDrafts ?? []),
-    [editDrafts]
-  );
+  const evaluationPrompts = useFactEvaluationPromptPreview(batchDataset, true);
 
   useLoadedModelSelection(memitModels, runtime, setModelId);
 
@@ -851,7 +1076,7 @@ function MemitForm({
 
   useEffect(() => {
     setReliabilityResult(null);
-  }, [editDrafts, modelId]);
+  }, [batchDataset.revision, modelId]);
 
   useEffect(() => {
     let active = true;
@@ -882,15 +1107,9 @@ function MemitForm({
     setResult(null);
     setJob(null);
     try {
-      if (!edits.trim()) {
-        throw new Error("Batch Edits JSON is empty. Add at least one MEMIT fact.");
-      }
-      const parsedEdits = parseFactEditDrafts(edits);
-      if (!parsedEdits) {
-        throw new Error("Batch Edits JSON is invalid. Use a JSON array of MEMIT fact objects.");
-      }
+      const parsedEdits = await batchDataset.getAll();
       if (!parsedEdits.length) {
-        throw new Error("Batch Edits JSON must include at least one MEMIT fact.");
+        throw new Error("Batch Edits needs at least one MEMIT fact.");
       }
       const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
       if (invalidEdit >= 0) {
@@ -906,7 +1125,7 @@ function MemitForm({
           ground_truth: edit.ground_truth.trim() || null
         })),
         layers: selectedLayers,
-        evaluation_prompts: evaluationPrompts,
+        evaluation_prompts: buildFactEvaluationPrompts(parsedEdits),
         sequential_edit: sequentialEdit,
         mom2_adjustment: mom2Adjustment
       });
@@ -930,17 +1149,18 @@ function MemitForm({
   }
 
   async function testReliability() {
-    if (!modelLoaded || !evaluationPrompts.length || busy || testingReliability || !editDrafts?.length) return;
+    if (!modelLoaded || batchDataset.count === 0 || busy || testingReliability) return;
     setTestingReliability(true);
     setError("");
     setReliabilityResult(null);
     setReliabilityTestProgress(null);
     reliabilityTestCancellation.reset();
     try {
+      const edits = await batchDataset.getAll();
       const response = await api.easyEditReliability({
         model_id: modelId,
         method: "memit",
-        edits: editDrafts.map((edit) => ({
+        edits: edits.map((edit) => ({
           subject: edit.subject,
           relation_prompt: edit.relation_prompt,
           new_object: edit.new_object,
@@ -970,113 +1190,18 @@ function MemitForm({
     }
   }
 
-  async function uploadEditsJson(file: File | null) {
-    if (!file) return;
-    setError("");
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      if (!Array.isArray(parsed)) {
-        throw new Error("MEMIT edits JSON must be an array of edit objects.");
-      }
-      setEdits(JSON.stringify(parsed, null, 2));
-      setInputMode("form");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  function updateEditDraft(index: number, field: FactEditableField, value: string) {
-    if (!editDrafts) return;
-    setEdits(JSON.stringify(editDrafts.map((edit, editIndex) => editIndex === index ? { ...edit, [field]: value } : edit), null, 2));
-  }
-
-  function addEditDraft() {
-    const nextEdits = editDrafts ?? [];
-    setEdits(JSON.stringify([...nextEdits, emptyFactEditDraft()], null, 2));
-  }
-
-  function removeEditDraft(index: number) {
-    if (!editDrafts) return;
-    setEdits(JSON.stringify(editDrafts.filter((_, editIndex) => editIndex !== index), null, 2));
-  }
-
-  function showFormEditor() {
-    if (!editDrafts) {
-      setError("Fix the JSON before switching to the form editor.");
-      return;
-    }
-    setError("");
-    setInputMode("form");
-  }
-
-  function formatEditsJson() {
-    try {
-      const parsed = JSON.parse(edits);
-      if (!Array.isArray(parsed)) throw new Error("MEMIT edits JSON must be an array of edit objects.");
-      setEdits(JSON.stringify(parsed, null, 2));
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   return (
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
-        <div className="grid gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="label">Batch Edits</span>
-            <div className="flex items-center gap-2">
-              <div className="inline-flex rounded-md border border-line bg-white p-1">
-                <button className={`rounded px-2 py-1 text-xs ${inputMode === "form" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={showFormEditor} type="button">Form</button>
-                <button className={`rounded px-2 py-1 text-xs ${inputMode === "json" ? "bg-ink text-white" : "text-ink/70 hover:text-ink"}`} onClick={() => setInputMode("json")} type="button">JSON</button>
-              </div>
-              <label className="ghost-button grid size-8 shrink-0 cursor-pointer place-items-center p-0" title="Upload MEMIT edits JSON">
-                <Upload size={14} />
-                <input
-                  className="sr-only"
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={(event) => {
-                    void uploadEditsJson(event.target.files?.[0] ?? null);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-            </div>
-          </div>
-          {inputMode === "form" && editDrafts ? (
-            <div className="grid max-h-96 gap-3 overflow-y-auto pr-1">
-              {editDrafts.map((edit, index) => (
-                <section key={index} className="grid gap-3 border border-line bg-panel p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium">Fact {index + 1}</span>
-                    <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={editDrafts.length === 1} onClick={() => removeEditDraft(index)} title="Remove fact" type="button">
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                  <FactInput label="Subject" value={edit.subject} onChange={(value) => updateEditDraft(index, "subject", value)} />
-                  <FactInput label="Relation Prompt" value={edit.relation_prompt} onChange={(value) => updateEditDraft(index, "relation_prompt", value)} />
-                  <FactInput label="New Object" value={edit.new_object} onChange={(value) => updateEditDraft(index, "new_object", value)} />
-                  <FactInput label="Ground Truth" value={edit.ground_truth} onChange={(value) => updateEditDraft(index, "ground_truth", value)} />
-                </section>
-              ))}
-              <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={addEditDraft} type="button">
-                <Plus size={14} />
-                Add fact
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-wrap justify-end gap-2">
-                <button className="ghost-button min-h-8 px-2 py-1 text-xs" onClick={formatEditsJson} type="button">Format JSON</button>
-              </div>
-              <textarea id="memit-edits-json" className="control min-h-64 font-mono text-xs" value={edits} onChange={(event) => setEdits(event.target.value)} />
-            </>
-          )}
-        </div>
+        <FactDatasetEditor
+          label="Batch Edits"
+          dataset={batchDataset}
+          editorMode={inputMode}
+          onEditorModeChange={setInputMode}
+          onError={setError}
+          uploadTitle="MEMIT edits JSON"
+        />
         <label className="grid gap-2">
           <span className="label">Edit Layers</span>
           <input
@@ -1097,6 +1222,7 @@ function MemitForm({
         </label>
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
+          totalPromptCount={batchDataset.count}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
           reliabilityResult={reliabilityResult}
@@ -1104,7 +1230,7 @@ function MemitForm({
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
           testCanceling={reliabilityTestCancellation.canceling}
-          testDisabled={busy || !modelLoaded || !evaluationPrompts.length || !editDrafts?.length}
+          testDisabled={busy || !modelLoaded || batchDataset.status !== "ready" || batchDataset.count === 0}
         />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
@@ -1121,7 +1247,7 @@ function MemitForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
         </button>
@@ -1268,23 +1394,28 @@ function buildFactEvaluationPrompts(edits: Array<Pick<FactEditDraft, "subject" |
   });
 }
 
-async function generateReliabilityTestOutputs(
-  modelId: string,
-  edits: Array<Pick<FactEditDraft, "subject" | "relation_prompt" | "new_object">> | null
-) {
-  const generations = [];
-  for (const edit of edits ?? []) {
-    if (!edit.subject.trim() || !edit.relation_prompt.trim()) continue;
-    const prompt = buildEditPrompt(edit.subject, edit.relation_prompt);
-    const response = await api.generate({
-      model_id: modelId,
-      prompt,
-      max_new_tokens: 32,
-      decoding_strategy: "greedy"
-    });
-    generations.push({ prompt, text: response.text, target_new: edit.new_object });
-  }
-  return generations;
+function useFactEvaluationPromptPreview(dataset: IndexedFactDataset<FactEditDraft>, active: boolean) {
+  const [prompts, setPrompts] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!active || dataset.status !== "ready" || dataset.count === 0) {
+      setPrompts([]);
+      return;
+    }
+    let current = true;
+    void dataset.getRange(0, Math.min(dataset.count, 20))
+      .then((facts) => {
+        if (current) setPrompts(buildFactEvaluationPrompts(facts));
+      })
+      .catch(() => {
+        if (current) setPrompts([]);
+      });
+    return () => {
+      current = false;
+    };
+  }, [active, dataset.count, dataset.getRange, dataset.revision, dataset.status]);
+
+  return prompts;
 }
 
 async function watchReliabilityTestJob(initial: EditJob, onUpdate: (job: EditJob) => void): Promise<EditJob> {
@@ -1436,6 +1567,7 @@ function useReliabilityTestResultPages(
 
 function DerivedEvaluationPrompts({
   prompts,
+  totalPromptCount,
   onTest,
   onCancel,
   reliabilityResult,
@@ -1446,6 +1578,7 @@ function DerivedEvaluationPrompts({
   testDisabled
 }: {
   prompts: string[];
+  totalPromptCount?: number;
   onTest: () => void;
   onCancel: () => void;
   reliabilityResult: Record<string, unknown> | null;
@@ -1463,6 +1596,7 @@ function DerivedEvaluationPrompts({
     : [];
   const completed = testProgress?.completed ?? 0;
   const total = testProgress?.total ?? 0;
+  const hasAdditionalPrompts = totalPromptCount !== undefined && totalPromptCount > prompts.length;
 
   return (
     <div className="grid min-w-0 max-w-full gap-2">
@@ -1484,7 +1618,7 @@ function DerivedEvaluationPrompts({
         className="control h-28 resize-y overflow-y-auto"
         placeholder="Add an edit fact to create its evaluation prompt."
         readOnly
-        value={prompts.join("\n")}
+        value={hasAdditionalPrompts ? `${prompts.join("\n")}\n…` : prompts.join("\n")}
       />
       {testing ? (
         <EvaluationProgressIndicator cancelDisabled={!testCancelable} canceling={testCanceling} current={completed} multiFactLabel="Testing edit facts…" onCancel={onCancel} preparingLabel="Preparing EasyEdit…" singleFactLabel="Evaluating fact…" total={total} />
@@ -1542,10 +1676,7 @@ async function startRomeSequentialSeries(
     throw new Error("Sequential Facts JSON is invalid. Use a JSON array of fact objects.");
   }
   if (!drafts.length) {
-    throw new Error("Sequential Facts JSON must include at least one fact.");
-  }
-  if (drafts.length > 100) {
-    throw new Error("Sequential series supports at most 100 facts at once.");
+    throw new Error("Sequential Facts must include at least one fact.");
   }
   const invalidEdit = drafts.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
   if (invalidEdit >= 0) {
@@ -1592,25 +1723,138 @@ function emptyFactEditDraft(): FactEditDraft {
 }
 
 function parseFactEditDrafts(value: string): FactEditDraft[] | null {
+  const records = parseFactImportRecords(value);
+  if (!records) return null;
+  const mapping = detectFactImportMapping(records);
   try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return null;
-    return parsed.map((item) => {
-      if (!item || typeof item !== "object") return emptyFactEditDraft();
-      const edit = item as Record<string, unknown>;
-      return {
-        subject: typeof edit.subject === "string" ? edit.subject : "",
-        relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
-        ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
-        new_object: typeof edit.new_object === "string" ? edit.new_object : "",
-        rephrase_prompts: Array.isArray(edit.rephrase_prompts)
-          ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
-          : undefined
-      };
-    });
+    return records.map((record, index) => normalizeImportedFactDraft(record, mapping, index));
   } catch {
     return null;
   }
+}
+
+function parseFactImportRecords(value: string): Record<string, unknown>[] | null {
+  try {
+    const parsed = JSON.parse(value);
+    const records = Array.isArray(parsed) ? parsed : [parsed];
+    if (!records.every(isFactImportRecord)) return null;
+    return records;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFactEditDraft(value: unknown): FactEditDraft {
+  if (!isFactImportRecord(value)) return emptyFactEditDraft();
+  const edit = value;
+  const sourceMetadata = isFactImportRecord(edit.source_metadata) ? edit.source_metadata : undefined;
+  return {
+    subject: typeof edit.subject === "string" ? edit.subject : "",
+    relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
+    ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
+    new_object: typeof edit.new_object === "string" ? edit.new_object : "",
+    rephrase_prompts: Array.isArray(edit.rephrase_prompts)
+      ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
+      : undefined,
+    source_metadata: sourceMetadata
+  };
+}
+
+function detectFactImportMapping(records: Record<string, unknown>[]): FactImportFieldMapping {
+  const keys = new Map<string, string>();
+  for (const record of records) {
+    for (const key of Object.keys(record)) {
+      const normalized = normalizeImportKey(key);
+      if (!keys.has(normalized)) keys.set(normalized, key);
+    }
+  }
+  return {
+    subject: findImportKey(keys, ["subject", "entity", "entityname", "name"]),
+    relation_prompt: findImportKey(keys, ["relationprompt", "prompt", "relation", "template"]),
+    new_object: findImportKey(keys, ["newobject", "targetnew", "newtarget", "target"]),
+    ground_truth: findImportKey(keys, ["groundtruth", "targettrue", "targetold", "originalobject"]),
+    rephrase_prompt: findImportKey(keys, ["rephraseprompt", "rephraseprompts"]),
+    locality_prompt: findImportKey(keys, ["localityprompt"]),
+    locality_ground_truth: findImportKey(keys, ["localitygroundtruth"]),
+    portability_prompt: findImportKey(keys, ["portabilityprompt"]),
+    portability_ground_truth: findImportKey(keys, ["portabilitygroundtruth"])
+  };
+}
+
+function normalizeImportedFactDraft(record: Record<string, unknown>, mapping: FactImportFieldMapping, index: number): FactEditDraft {
+  const subject = stringImportValue(record, mapping.subject);
+  const sourcePrompt = stringImportValue(record, mapping.relation_prompt);
+  const newObject = stringImportValue(record, mapping.new_object);
+  const groundTruth = stringImportValue(record, mapping.ground_truth);
+  const missing = [
+    !subject && "subject",
+    !sourcePrompt && "relation prompt",
+    !newObject && "new object",
+    !groundTruth && "ground truth"
+  ].filter(Boolean);
+  if (missing.length) {
+    throw new Error(`Fact ${index + 1} is missing ${missing.join(", ")} for the selected mapping.`);
+  }
+  const sourceMetadata = isFactImportRecord(record.source_metadata) ? record.source_metadata : record;
+  const rephrasePrompts = readRephrasePrompts(record, sourceMetadata, mapping.rephrase_prompt);
+  return {
+    subject,
+    relation_prompt: relationPromptFromImportedValue(sourcePrompt, subject),
+    ground_truth: groundTruth,
+    new_object: newObject,
+    ...(rephrasePrompts.length ? { rephrase_prompts: rephrasePrompts } : {}),
+    source_metadata: sourceMetadata
+  };
+}
+
+function readRephrasePrompts(record: Record<string, unknown>, sourceMetadata: Record<string, unknown>, mappedKey: string) {
+  const candidate = (mappedKey ? record[mappedKey] : undefined)
+    ?? record.rephrase_prompts
+    ?? record.rephrase_prompt
+    ?? sourceMetadata.rephrase_prompts
+    ?? sourceMetadata.rephrase_prompt;
+  if (Array.isArray(candidate)) return candidate.filter((prompt): prompt is string => typeof prompt === "string" && prompt.trim().length > 0);
+  return typeof candidate === "string" && candidate.trim() ? [candidate] : [];
+}
+
+function relationPromptFromImportedValue(value: string, subject: string) {
+  if (value.includes("{}") || !subject) return value;
+  return value.includes(subject) ? value.replaceAll(subject, "{}") : value;
+}
+
+function findImportKey(keys: Map<string, string>, aliases: string[]) {
+  for (const alias of aliases) {
+    const key = keys.get(alias);
+    if (key) return key;
+  }
+  return "";
+}
+
+function normalizeImportKey(value: string) {
+  return value.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function stringImportValue(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : value === null || value === undefined ? "" : String(value).trim();
+}
+
+function isFactImportRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function factImportFieldLabel(field: FactImportField) {
+  return ({
+    subject: "Subject",
+    relation_prompt: "Relation Prompt",
+    new_object: "New Object",
+    ground_truth: "Ground Truth",
+    rephrase_prompt: "Rephrase Prompt",
+    locality_prompt: "Locality Prompt",
+    locality_ground_truth: "Locality Ground Truth",
+    portability_prompt: "Portability Prompt",
+    portability_ground_truth: "Portability Ground Truth"
+  } as const)[field];
 }
 
 function FactInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
