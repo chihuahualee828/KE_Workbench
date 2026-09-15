@@ -424,7 +424,19 @@ def _job_result(job: dict) -> dict | None:
 
 @router.get("/patches", response_model=PatchListResponse)
 def list_patches() -> PatchListResponse:
-    return PatchListResponse(patches=patch_service.list_patches())
+    return PatchListResponse(patches=patch_service.list_patch_summaries())
+
+
+@router.get("/patches/{patch_id}/edits")
+def get_patch_edits(
+    patch_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    try:
+        return patch_service.get_patch_edits_page(patch_id, offset, limit)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Patch not found") from exc
 
 
 @router.post("/patches/{patch_id}/export")
@@ -475,11 +487,21 @@ def discard_patch(patch_id: str) -> dict:
 @router.delete("/patches/{patch_id}")
 def delete_patch(patch_id: str) -> dict:
     try:
-        return patch_service.delete_patch_artifact(patch_id)
+        deletion = patch_service.prepare_patch_artifact_deletion(patch_id)
+        try:
+            for model_id in deletion["affected_model_ids"]:
+                model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+        except Exception:
+            patch_service.restore_patch_deletion_state(deletion)
+            for model_id in deletion["affected_model_ids"]:
+                try:
+                    model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+                except Exception:
+                    pass
+            raise
+        return patch_service.finalize_patch_artifact_deletion(deletion)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Patch not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/patches")

@@ -102,6 +102,30 @@ class PatchService:
         patches.sort(key=lambda patch: str(patch.get("created_at") or ""), reverse=True)
         return patches
 
+    def list_patch_summaries(self) -> list[dict[str, Any]]:
+        """List patch metadata without copying every edit into the shared UI store."""
+        summaries = []
+        for patch in self.list_patches():
+            summary = {key: value for key, value in patch.items() if key != "edits"}
+            summary["edit_count"] = len(patch.get("edits", []))
+            summary["edits"] = []
+            summaries.append(summary)
+        return summaries
+
+    def get_patch_edits_page(self, patch_id: str, offset: int, limit: int) -> dict[str, Any]:
+        """Return a bounded edit-fact slice for the patch-details dialog."""
+        patch = self.get_patch(patch_id)
+        edits = patch.get("edits")
+        if not isinstance(edits, list):
+            edits = []
+        return {
+            "patch_id": patch_id,
+            "offset": offset,
+            "limit": limit,
+            "total": len(edits),
+            "items": edits[offset : offset + limit],
+        }
+
     def get_patch(self, patch_id: str) -> dict[str, Any]:
         self._migrate_flat_metadata(patch_id)
         return local_store.read_json(self._metadata_relative_path(patch_id))
@@ -331,20 +355,95 @@ class PatchService:
             patches_root.mkdir(parents=True, exist_ok=True)
         return {"deleted_patch_count": patch_count}
 
-    def delete_patch_artifact(self, patch_id: str) -> dict[str, str]:
+    def prepare_patch_artifact_deletion(self, patch_id: str) -> dict[str, Any]:
+        """Deactivate a patch and all descendants before their files are removed."""
         if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id:
             raise FileNotFoundError(patch_id)
-        patch = self.get_patch(patch_id)
-        model_id = str(patch["base_model"])
         with self._lock:
-            if patch_id in self.active_patches_by_model().get(model_id, []):
-                raise ValueError(f"Discard or revert patch {patch_id} before deleting its saved artifact.")
-
-            patch_dir = local_store.root / "patches" / patch_id
-            if not patch_dir.exists():
+            patches = self._patch_records()
+            if patch_id not in patches:
                 raise FileNotFoundError(patch_id)
-            shutil.rmtree(patch_dir)
-        return {"patch_id": patch_id}
+            deleted_patch_ids = self._dependent_patch_ids(patch_id, patches)
+            active_before = {
+                model_id: list(active_patch_ids)
+                for model_id, active_patch_ids in self.active_patches_by_model().items()
+            }
+            active_after = {
+                model_id: [candidate_id for candidate_id in active_patch_ids if candidate_id not in deleted_patch_ids]
+                for model_id, active_patch_ids in active_before.items()
+            }
+            active_after = {
+                model_id: active_patch_ids
+                for model_id, active_patch_ids in active_after.items()
+                if active_patch_ids
+            }
+            affected_model_ids = sorted(
+                model_id
+                for model_id, active_patch_ids in active_before.items()
+                if active_patch_ids != active_after.get(model_id, [])
+            )
+            if affected_model_ids:
+                self._write_active_patches(active_after)
+            return {
+                "patch_id": patch_id,
+                "deleted_patch_ids": sorted(deleted_patch_ids),
+                "affected_model_ids": affected_model_ids,
+                "active_patches_before": active_before,
+            }
+
+    def restore_patch_deletion_state(self, deletion: dict[str, Any]) -> None:
+        active_before = deletion.get("active_patches_before")
+        if not isinstance(active_before, dict):
+            return
+        self.restore_active_patches(
+            {
+                str(model_id): [str(patch_id) for patch_id in patch_ids]
+                for model_id, patch_ids in active_before.items()
+                if isinstance(patch_ids, list)
+            }
+        )
+
+    def finalize_patch_artifact_deletion(self, deletion: dict[str, Any]) -> dict[str, Any]:
+        deleted_patch_ids = [str(candidate_id) for candidate_id in deletion.get("deleted_patch_ids", [])]
+        with self._lock:
+            patches_root = local_store.root / "patches"
+            for candidate_id in deleted_patch_ids:
+                if not candidate_id.startswith("patch_") or Path(candidate_id).name != candidate_id:
+                    continue
+                shutil.rmtree(patches_root / candidate_id, ignore_errors=True)
+                (patches_root / f"{candidate_id}.json").unlink(missing_ok=True)
+        return {
+            "patch_id": str(deletion["patch_id"]),
+            "deleted_patch_ids": deleted_patch_ids,
+            "deleted_patch_count": len(deleted_patch_ids),
+        }
+
+    def _patch_records(self) -> dict[str, dict[str, Any]]:
+        patches_root = local_store.root / "patches"
+        if not patches_root.exists():
+            return {}
+        for legacy_metadata_path in patches_root.glob("patch_*.json"):
+            self._migrate_flat_metadata(legacy_metadata_path.stem)
+        return {
+            str(record["patch_id"]): record
+            for metadata_path in patches_root.glob("*/patch.json")
+            if isinstance((record := local_store.read_json(str(metadata_path.relative_to(local_store.root)))).get("patch_id"), str)
+        }
+
+    def _dependent_patch_ids(self, patch_id: str, patches: dict[str, dict[str, Any]]) -> set[str]:
+        """Return a patch and every transitive child in the saved lineage graph."""
+        deleted_patch_ids = {patch_id}
+        while True:
+            descendants = {
+                candidate_id
+                for candidate_id, patch in patches.items()
+                if candidate_id not in deleted_patch_ids
+                and isinstance(patch.get("parent_patch_ids"), list)
+                and any(str(parent_id) in deleted_patch_ids for parent_id in patch["parent_patch_ids"])
+            }
+            if not descendants:
+                return deleted_patch_ids
+            deleted_patch_ids.update(descendants)
 
     def import_model_lineage(self, model: dict[str, Any]) -> dict[str, Any]:
         local_path = Path(model.get("local_path") or model.get("hf_id") or "")
