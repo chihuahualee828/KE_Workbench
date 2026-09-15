@@ -256,8 +256,8 @@ export const api = {
     }),
   experiments: () => request<Experiment[]>("/api/experiments"),
   experiment: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}`),
-  deleteExperiment: (experimentId: string) =>
-    request<{ experiment_id: string }>(`/api/experiments/${experimentId}`, {
+  deleteExperiment: (experimentId: string, jobId?: string) =>
+    request<{ experiment_id: string }>(`/api/experiments/${encodeURIComponent(experimentId)}${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`, {
       method: "DELETE"
     }),
   clearExperiments: () =>

@@ -49,10 +49,15 @@ class LocalStore:
         path = self.root / relative_dir
         if not path.exists():
             return []
-        return [
-            self.read_json(str(item.relative_to(self.root)))
-            for item in sorted(path.glob("*.json"), reverse=True)
-        ]
+        records = []
+        for item in sorted(path.glob("*.json"), reverse=True):
+            try:
+                records.append(self.read_json(str(item.relative_to(self.root))))
+            except FileNotFoundError:
+                # A history deletion can remove a file after glob() created this
+                # listing but before this request reaches read_json().
+                continue
+        return records
 
 
 local_store = LocalStore()

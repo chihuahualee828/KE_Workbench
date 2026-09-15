@@ -125,7 +125,7 @@ class ExperimentService:
             self._condition.notify_all()
         return {"deleted_experiment_count": experiment_count}
 
-    def delete_experiment(self, experiment_id: str) -> dict[str, str]:
+    def delete_experiment(self, experiment_id: str, job_id: str | None = None) -> dict[str, str]:
         if not experiment_id.startswith("exp_") or Path(experiment_id).name != experiment_id:
             raise FileNotFoundError(experiment_id)
 
@@ -137,11 +137,7 @@ class ExperimentService:
                 raise RuntimeError("Wait for the running experiment to finish before deleting it.")
 
             experiments_root = local_store.root / "experiments"
-            related_jobs = [
-                str(item["id"])
-                for item in local_store.list_json("experiments")
-                if item.get("id", "").startswith("job_") and item.get("experiment_id") == experiment_id
-            ]
+            related_jobs = _related_experiment_job_ids(experiment_id, job_id)
             for job_id in related_jobs:
                 (experiments_root / f"{job_id}.json").unlink(missing_ok=True)
             (experiments_root / f"{experiment_id}.json").unlink(missing_ok=True)
@@ -521,3 +517,19 @@ def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:
         if compact_input:
             summary["input_json"] = compact_input
     return summary
+
+
+def _related_experiment_job_ids(experiment_id: str, known_job_id: str | None) -> list[str]:
+    if known_job_id and known_job_id.startswith("job_") and Path(known_job_id).name == known_job_id:
+        try:
+            job = local_store.read_json(f"experiments/{known_job_id}.json")
+        except FileNotFoundError:
+            job = None
+        if job and job.get("experiment_id") == experiment_id:
+            return [known_job_id]
+
+    return [
+        str(item["id"])
+        for item in local_store.list_json("experiments")
+        if item.get("id", "").startswith("job_") and item.get("experiment_id") == experiment_id
+    ]

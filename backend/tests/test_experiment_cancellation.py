@@ -28,3 +28,26 @@ def test_canceled_job_remains_canceled_when_the_worker_later_errors(
     assert persisted_job["status"] == "canceled"
     assert persisted_experiment["status"] == "canceled"
     assert persisted_experiment["result_path"] is None
+
+
+def test_delete_experiment_uses_known_job_id_without_listing_history(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(local_store, "root", tmp_path)
+    service = ExperimentService()
+    experiment = service.create("rome_edit", "gpt2-xl", {})
+    job = service.create_job(experiment["id"])
+    service.complete_job(job["id"], {"ok": True})
+
+    monkeypatch.setattr(
+        local_store,
+        "list_json",
+        lambda *_: (_ for _ in ()).throw(AssertionError("Known job deletion must not rescan experiment history.")),
+    )
+
+    result = service.delete_experiment(experiment["id"], job["id"])
+
+    assert result == {"experiment_id": experiment["id"]}
+    assert not (tmp_path / "experiments" / f"{experiment['id']}.json").exists()
+    assert not (tmp_path / "experiments" / f"{job['id']}.json").exists()
