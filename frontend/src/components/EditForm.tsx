@@ -93,6 +93,10 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
     resumeAttempted.current = false;
   }, []);
 
+  useEffect(() => {
+    if (tab === "patches") setTab("rome");
+  }, [setTab, tab]);
+
   return (
     <div className="grid gap-4">
       <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-white p-1.5">
@@ -100,14 +104,13 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
           ["rome", "ROME"],
           ["r_rome", "r-ROME"],
           ["kn", "KN"],
-          ["memit", "MEMIT"],
-          ["patches", "Patches"]
+          ["memit", "MEMIT"]
         ].map(([id, label]) => (
           <button
             key={id}
             aria-pressed={tab === id}
             className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit" | "patches")}
+            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit")}
           >
             {label}
           </button>
@@ -117,14 +120,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "r_rome" ? <RomeForm method="r_rome" models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "patches" ? (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]">
-          <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
-          <div className="min-w-0">
-            <ResultPanel result={edit.result} job={edit.job} onPatchesChanged={onPatchesChanged} />
-          </div>
-        </div>
-      ) : null}
+      <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
