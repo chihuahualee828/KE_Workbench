@@ -16,7 +16,8 @@ const CANCELABLE_EDIT_EXPERIMENT_TYPES = new Set([
   "r_rome_sequential_edits",
   "memit_edit",
   "kn_edit",
-  "prepare_mom2_statistics"
+  "prepare_mom2_statistics",
+  "evaluation"
 ]);
 
 export function ExperimentHistory({
@@ -33,9 +34,12 @@ export function ExperimentHistory({
   onChanged: () => void | Promise<void>;
 }) {
   const [details, setDetails] = useState<ExperimentDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const detailRequest = useRef(0);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [deletingExperimentId, setDeletingExperimentId] = useState("");
+  const [optimisticallyDeletedIds, setOptimisticallyDeletedIds] = useState<Set<string>>(() => new Set());
   const [cancelingExperimentId, setCancelingExperimentId] = useState("");
   const [canceledExperimentIds, setCanceledExperimentIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
@@ -43,7 +47,8 @@ export function ExperimentHistory({
     () => [...experiments].sort((left, right) => right.created_at.localeCompare(left.created_at)),
     [experiments]
   );
-  const displayedExperiments = limit === undefined ? sortedExperiments : sortedExperiments.slice(0, limit);
+  const visibleExperiments = sortedExperiments.filter((experiment) => !optimisticallyDeletedIds.has(experiment.id));
+  const displayedExperiments = limit === undefined ? visibleExperiments : visibleExperiments.slice(0, limit);
   const hasRunningExperiment = experiments.some((experiment) => experiment.status === "running");
 
   useEffect(() => listenForEditJobCanceling((jobId) => {
@@ -64,13 +69,42 @@ export function ExperimentHistory({
     if (!experiment || experiment.status !== "running") setCancelingExperimentId("");
   }, [cancelingExperimentId, experiments]);
 
+  useEffect(() => {
+    const currentIds = new Set(experiments.map((experiment) => experiment.id));
+    setOptimisticallyDeletedIds((current) => {
+      const next = new Set([...current].filter((experimentId) => currentIds.has(experimentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [experiments]);
+
+  useEffect(() => {
+    setCanceledExperimentIds((current) => {
+      const next = new Set(
+        [...current].filter((experimentId) => experiments.some((experiment) => experiment.id === experimentId && experiment.status === "running"))
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [experiments]);
+
   async function openDetails(experiment: Experiment) {
+    const requestId = ++detailRequest.current;
     setError("");
+    setDetails(experimentDetailsPreview(experiment));
+    setLoadingDetails(true);
     try {
-      setDetails(await api.experiment(experiment.id));
+      const loadedDetails = await api.experiment(experiment.id);
+      if (detailRequest.current === requestId) setDetails(loadedDetails);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (detailRequest.current === requestId) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (detailRequest.current === requestId) setLoadingDetails(false);
     }
+  }
+
+  function closeDetails() {
+    detailRequest.current += 1;
+    setLoadingDetails(false);
+    setDetails(null);
   }
 
   async function clearHistory() {
@@ -92,9 +126,12 @@ export function ExperimentHistory({
     setDeletingExperimentId(experiment.id);
     setError("");
     try {
-      await api.deleteExperiment(experiment.id);
+      await api.deleteExperiment(experiment.id, experiment.job?.id);
+      setOptimisticallyDeletedIds((current) => new Set(current).add(experiment.id));
       setDetails((current) => current?.id === experiment.id ? null : current);
-      await onChanged();
+      void Promise.resolve(onChanged()).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -109,9 +146,11 @@ export function ExperimentHistory({
     setError("");
     let cancelAccepted = false;
     try {
-      const canceledJob = await api.cancelEditJob(experiment.job.id);
+      const canceledJob = experiment.type === "evaluation"
+        ? await api.cancelEvaluationJob(experiment.job.id)
+        : await api.cancelEditJob(experiment.job.id);
       if (canceledJob.status !== "canceled") {
-        throw new Error("This edit is no longer running.");
+        throw new Error("This experiment is no longer running.");
       }
       setCanceledExperimentIds((current) => new Set(current).add(experiment.id));
       setCancelingExperimentId("");
@@ -161,9 +200,9 @@ export function ExperimentHistory({
       <div className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
         {displayedExperiments.map((experiment) => (
           <ExperimentHistoryCard
+            deleting={deletingExperimentId === experiment.id}
             canceling={cancelingExperimentId === experiment.id}
             canCancel={canCancelEditExperiment(experiment) && !canceledExperimentIds.has(experiment.id)}
-            deleting={deletingExperimentId === experiment.id}
             experiment={experiment}
             key={experiment.id}
             status={canceledExperimentIds.has(experiment.id) ? "canceled" : experiment.status}
@@ -177,7 +216,7 @@ export function ExperimentHistory({
       </div>
 
       {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-2 text-xs text-rust">{error}</div> : null}
-      {details ? <ExperimentDetailsDialog details={details} onClose={() => setDetails(null)} /> : null}
+      {details ? <ExperimentDetailsDialog details={details} loading={loadingDetails} onClose={closeDetails} /> : null}
     </section>
   );
 }
@@ -255,7 +294,7 @@ function ExperimentHistoryCard({
         <div className="flex shrink-0 items-center gap-2">
           {statusBadge}
           {canCancel ? (
-            <button aria-label="Cancel edit" className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={onCancel} title="Cancel this edit and unload its model" type="button">
+            <button aria-label={experiment.type === "evaluation" ? "Cancel evaluation" : "Cancel edit"} className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={onCancel} title={experiment.type === "evaluation" ? "Cancel this evaluation; keep its model loaded" : "Cancel this edit and unload its model"} type="button">
               {canceling ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
               {canceling ? "Canceling" : "Cancel"}
             </button>
@@ -292,7 +331,7 @@ function ExperimentHistoryCard({
   );
 }
 
-function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDetails; onClose: () => void }) {
+function ExperimentDetailsDialog({ details, loading, onClose }: { details: ExperimentDetails; loading: boolean; onClose: () => void }) {
   if (typeof document === "undefined") return null;
   const evaluationMetrics = Array.isArray(details.input_json?.evaluation_modes)
     ? details.input_json.evaluation_modes.filter((metric): metric is string => typeof metric === "string")
@@ -315,6 +354,7 @@ function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDeta
                 <span>{formatExperimentType(details.type)}</span>
               </div>
               <div className="mt-1 font-mono text-xs text-ink/60">{details.id}</div>
+              {loading ? <div className="mt-2 text-xs text-ink/50">Loading latest job details…</div> : null}
             </div>
             <button aria-label="Close experiment details" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
           </div>
@@ -337,6 +377,14 @@ function ExperimentDetailsDialog({ details, onClose }: { details: ExperimentDeta
     </div>,
     document.body
   );
+}
+
+function experimentDetailsPreview(experiment: Experiment): ExperimentDetails {
+  return {
+    ...experiment,
+    job: experiment.job ? { ...experiment.job, logs: [] } : null,
+    result: null
+  };
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
@@ -366,7 +414,7 @@ function ExperimentStatusIcon({ status }: { status: Experiment["status"] }) {
 }
 
 function formatExperimentType(value: string) {
-  if (value === "easyedit_reliability" || value.startsWith("evaluation_")) return "Evaluation";
+  if (value === "easyedit_edit_quality" || value === "easyedit_reliability" || value.startsWith("evaluation_")) return "Evaluation";
   return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 

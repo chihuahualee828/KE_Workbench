@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.services.experiment_service import experiment_service
 
@@ -21,9 +21,9 @@ def get_experiment(experiment_id: str) -> dict:
 
 
 @router.delete("/experiments/{experiment_id}")
-def delete_experiment(experiment_id: str) -> dict:
+def delete_experiment(experiment_id: str, job_id: str | None = Query(default=None)) -> dict:
     try:
-        return experiment_service.delete_experiment(experiment_id)
+        return experiment_service.delete_experiment(experiment_id, job_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Experiment not found") from exc
     except RuntimeError as exc:
