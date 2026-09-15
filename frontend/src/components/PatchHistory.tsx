@@ -141,10 +141,10 @@ export function PatchHistory({
     setMessage("");
     setError("");
     try {
-      await api.deletePatch(patch.patch_id);
+      const result = await api.deletePatch(patch.patch_id);
       setPatchPendingDeletion(null);
-      setSelectedPatch((current) => current?.patch_id === patch.patch_id ? null : current);
-      setMessage(`Deleted saved patch ${patch.patch_id}.`);
+      setSelectedPatch((current) => current && result.deleted_patch_ids.includes(current.patch_id) ? null : current);
+      setMessage(`Deleted ${result.deleted_patch_count} saved patch record${result.deleted_patch_count === 1 ? "" : "s"}.`);
       await onPatchesChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -775,7 +775,7 @@ function DeletePatchDialog({
         <span className="label">Destructive Action</span>
         <h2 id="delete-patch-title" className="mt-1 text-base font-semibold">Delete saved patch?</h2>
         <p className="mt-3 text-sm leading-6 text-ink/70">
-          This permanently deletes <span className="font-mono text-xs">{patch.patch_id}</span> and its saved tensor deltas. It cannot be undone.
+          This permanently deletes <span className="font-mono text-xs">{patch.patch_id}</span>, every dependent patch, and their saved tensor deltas. It cannot be undone.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button className="ghost-button min-h-9 px-3 py-1" disabled={deleting} onClick={onCancel} type="button">Cancel</button>

@@ -276,7 +276,7 @@ export const api = {
       method: "POST"
     }),
   deletePatch: (patchId: string) =>
-    request<{ patch_id: string }>(`/api/patches/${patchId}`, {
+    request<{ patch_id: string; deleted_patch_ids: string[]; deleted_patch_count: number }>(`/api/patches/${patchId}`, {
       method: "DELETE"
     }),
   revertToPatch: (patchId: string) =>
