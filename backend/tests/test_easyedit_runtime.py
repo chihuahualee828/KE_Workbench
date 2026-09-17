@@ -98,6 +98,49 @@ def test_imported_model_reuses_base_model_mom2_cache_identity(monkeypatch: pytes
     assert runtime_model.config._name_or_path == "/models/gpt2-xl_local6"
 
 
+def test_imported_model_can_use_its_own_mom2_cache_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    imported_model = {
+        "id": "local-abc123",
+        "hf_id": "/models/gpt2-xl-local",
+        "local_path": "/models/gpt2-xl-local",
+        "source": "local",
+        "base_model_id": "gpt2-xl",
+        "mom2_stats_source": "model",
+    }
+    base_model = {"id": "gpt2-xl", "hf_id": "gpt2-xl", "source": "hub"}
+    monkeypatch.setattr(
+        easyedit_runtime.model_registry,
+        "get",
+        lambda model_id: base_model if model_id == "gpt2-xl" else imported_model,
+    )
+
+    assert easyedit_runtime._mom2_cache_model_name(imported_model) == "local-abc123"
+
+    runtime_model = SimpleNamespace(config=SimpleNamespace(_name_or_path="/models/gpt2-xl-local"))
+    identity = easyedit_runtime._set_loaded_model_mom2_cache_identity(runtime_model, imported_model)
+
+    assert runtime_model.config._name_or_path == "local-abc123"
+    easyedit_runtime._restore_loaded_model_mom2_cache_identity(identity)
+    assert runtime_model.config._name_or_path == "/models/gpt2-xl-local"
+
+
+def test_imported_model_rejects_base_statistics_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
+    imported_model = {
+        "id": "local-abc123",
+        "source": "local",
+        "base_model_id": "gpt2-xl",
+    }
+    base_model = {"id": "gpt2-xl", "hf_id": "gpt2-xl", "source": "hub"}
+    monkeypatch.setattr(
+        easyedit_runtime.model_registry,
+        "get",
+        lambda model_id: base_model if model_id == "gpt2-xl" else imported_model,
+    )
+
+    with pytest.raises(easyedit_runtime.EasyEditRuntimeError, match="cannot be computed"):
+        easyedit_runtime.prepare_mom2_statistics("local-abc123", "memit", [13], "base")
+
+
 def test_r_rome_is_registered_as_an_easyedit_method() -> None:
     assert easyedit_runtime.METHODS["r_rome"] == {
         "hparams_class": "R_ROMEHyperParams",

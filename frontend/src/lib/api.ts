@@ -326,32 +326,38 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  mom2StatisticsStatus: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null }) =>
-    request<{ model_id: string; method: string; mom2_adjustment: boolean; dataset: string; layers: number[]; ready: boolean; missing_layers: number[]; stats_dir?: string; statistics: Array<{ layer: number; path: string; ready: boolean }> }>("/api/edit/mom2/status", {
+  mom2StatisticsStatus: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null; stats_source?: "base" | "model" | null }) =>
+    request<{ model_id: string; method: string; mom2_adjustment: boolean; dataset: string; layers: number[]; ready: boolean; missing_layers: number[]; stats_dir?: string; stats_source: "base" | "model"; available_stats_sources: Array<"base" | "model">; base_model_id?: string | null; cache_model_id: string; statistics: Array<{ layer: number; path: string; ready: boolean }> }>("/api/edit/mom2/status", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  prepareMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null }) =>
+  setMom2StatisticsSource: (body: { model_id: string; stats_source: "base" | "model" }) =>
+    request<{ model_id: string; stats_source: "base" | "model"; available_stats_sources: Array<"base" | "model">; base_model_id?: string | null }>("/api/edit/mom2/source", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  prepareMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers?: number[] | null; stats_source?: "base" | "model" | null }) =>
     request<EditJob>("/api/edit/mom2/prepare", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  importMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; dataset: string; layers: number[]; files: File[] }) => {
+  importMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; dataset: string; layers: number[]; files: File[]; stats_source?: "base" | "model" | null }) => {
     const form = new FormData();
     form.set("model_id", body.model_id);
     form.set("method", body.method);
     form.set("dataset", body.dataset);
     form.set("layers", JSON.stringify(body.layers));
     body.files.forEach((file) => form.append("files", file));
-    return upload<{ ready: boolean; missing_layers: number[]; dataset: string; imported_layers: number[] }>("/api/edit/mom2/import", form);
+    if (body.stats_source) form.set("stats_source", body.stats_source);
+    return upload<{ ready: boolean; missing_layers: number[]; dataset: string; stats_source: "base" | "model"; available_stats_sources: Array<"base" | "model">; base_model_id?: string | null; cache_model_id: string; imported_layers: number[] }>("/api/edit/mom2/import", form);
   },
-  mom2Cache: (body: { model_id: string; method: "rome" | "r_rome" | "memit" }) =>
-    request<{ model_id: string; method: string; dataset: string; stats_dir: string; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
+  mom2Cache: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; stats_source?: "base" | "model" | null }) =>
+    request<{ model_id: string; method: string; dataset: string; stats_dir: string; stats_source: "base" | "model"; available_stats_sources: Array<"base" | "model">; base_model_id?: string | null; cache_model_id: string; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  deleteMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers: number[] }) =>
-    request<{ model_id: string; method: string; dataset: string; stats_dir: string; deleted_layers: number[]; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
+  deleteMom2Statistics: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; layers: number[]; stats_source?: "base" | "model" | null }) =>
+    request<{ model_id: string; method: string; dataset: string; stats_dir: string; stats_source: "base" | "model"; available_stats_sources: Array<"base" | "model">; base_model_id?: string | null; cache_model_id: string; deleted_layers: number[]; statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number }> }>("/api/edit/mom2/cache", {
       method: "DELETE",
       body: JSON.stringify(body)
     }),

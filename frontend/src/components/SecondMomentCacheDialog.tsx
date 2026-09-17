@@ -18,10 +18,13 @@ type CacheResponse = {
   method: string;
   dataset: string;
   stats_dir: string;
+  stats_source: "base" | "model";
+  base_model_id?: string | null;
+  cache_model_id: string;
   statistics: CacheEntry[];
 };
 
-export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId: string; method: "rome" | "r_rome" | "memit"; onClose: () => void }) {
+export function SecondMomentCacheDialog({ modelId, method, statsSource, onClose }: { modelId: string; method: "rome" | "r_rome" | "memit"; statsSource?: "base" | "model"; onClose: () => void }) {
   const [cache, setCache] = useState<CacheResponse | null>(null);
   const [deletingLayer, setDeletingLayer] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -29,7 +32,7 @@ export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId:
   async function refresh() {
     setError("");
     try {
-      setCache(await api.mom2Cache({ model_id: modelId, method }));
+      setCache(await api.mom2Cache({ model_id: modelId, method, stats_source: statsSource }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -39,7 +42,7 @@ export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId:
     setDeletingLayer(layer);
     setError("");
     try {
-      setCache(await api.deleteMom2Statistics({ model_id: modelId, method, layers: [layer] }));
+      setCache(await api.deleteMom2Statistics({ model_id: modelId, method, layers: [layer], stats_source: statsSource }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -49,7 +52,7 @@ export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId:
 
   useEffect(() => {
     void refresh();
-  }, [method, modelId]);
+  }, [method, modelId, statsSource]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" onMouseDown={(event) => {
@@ -62,7 +65,10 @@ export function SecondMomentCacheDialog({ modelId, method, onClose }: { modelId:
               <Database size={17} />
               <h2 id="second-moment-cache-title" className="text-base font-semibold">Second-Moment Cache</h2>
             </div>
-            <p className="mt-1 text-sm text-ink/60">{modelId} · {method === "r_rome" ? "R-ROME" : method.toUpperCase()} · {cache?.dataset ?? "Loading dataset..."}</p>
+            <p className="mt-1 text-sm text-ink/60">
+              {modelId} · {method === "r_rome" ? "R-ROME" : method.toUpperCase()} · {cache?.dataset ?? "Loading dataset..."}
+              {cache ? ` · ${cache.stats_source === "base" ? `Base model (${cache.base_model_id})` : "Imported model"}` : ""}
+            </p>
           </div>
           <div className="flex items-center gap-1">
             <button className="ghost-button grid size-8 place-items-center p-0" onClick={() => void refresh()} title="Refresh cache" type="button">

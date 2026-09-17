@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
+from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -21,6 +21,7 @@ from app.ml.editing.easyedit_runtime import (
     get_mom2_statistics_status,
     prepare_mom2_statistics,
     require_mom2_statistics,
+    set_mom2_statistics_source,
     delete_mom2_statistics,
 )
 from app.ml.editing.memit_wrapper import run_memit_edit
@@ -184,11 +185,21 @@ def _stop_canceled_edit_worker(job_id: str) -> None:
 @router.post("/edit/mom2/status")
 def mom2_statistics_status(request: Mom2StatisticsRequest) -> dict:
     try:
-        return get_mom2_statistics_status(request.model_id, request.method, request.layers)
+        return get_mom2_statistics_status(
+            request.model_id, request.method, request.layers, request.stats_source
+        )
     except EasyEditUnsupportedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EasyEditRuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/edit/mom2/source")
+def select_mom2_statistics_source(request: Mom2StatisticsSourceRequest) -> dict:
+    try:
+        return set_mom2_statistics_source(request.model_id, request.stats_source)
+    except (EasyEditUnsupportedError, EasyEditRuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/edit/mom2/prepare", response_model=JobResponse)
@@ -206,6 +217,7 @@ def import_mom2(
     method: str = Form(...),
     dataset: str = Form(...),
     layers: str = Form(...),
+    stats_source: str | None = Form(default=None),
     files: list[UploadFile] = File(...),
 ) -> dict:
     try:
@@ -220,6 +232,7 @@ def import_mom2(
             dataset,
             parsed_layers,
             [(file.filename or "upload.npz", file.file) for file in files],
+            stats_source,
         )
     except (EasyEditUnsupportedError, EasyEditRuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -228,7 +241,7 @@ def import_mom2(
 @router.post("/edit/mom2/cache")
 def list_mom2_cache(request: Mom2StatisticsRequest) -> dict:
     try:
-        return list_mom2_statistics(request.model_id, request.method)
+        return list_mom2_statistics(request.model_id, request.method, request.stats_source)
     except EasyEditUnsupportedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EasyEditRuntimeError as exc:
@@ -240,7 +253,12 @@ def delete_mom2_cache(request: Mom2StatisticsRequest) -> dict:
     if _edit_job_lock.locked():
         raise HTTPException(status_code=409, detail="Wait for the active edit or statistics job before deleting cached statistics.")
     try:
-        return delete_mom2_statistics(request.model_id, request.method, request.layers or [])
+        return delete_mom2_statistics(
+            request.model_id,
+            request.method,
+            request.layers or [],
+            request.stats_source,
+        )
     except EasyEditUnsupportedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EasyEditRuntimeError as exc:
