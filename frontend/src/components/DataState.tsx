@@ -32,6 +32,8 @@ function useWorkbenchDataStore() {
   const [backend, setBackend] = useState<BackendConnection>(() => getBackendConnection());
   const [backendHydrated, setBackendHydrated] = useState(false);
   const reconnecting = useRef(false);
+  const runtimeSnapshot = useRef<ModelRuntimeStatus[]>([]);
+  const runtimePatchRefreshPending = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -40,6 +42,7 @@ function useWorkbenchDataStore() {
       setPatches(patchResult.patches.filter((patch) => patch.patch_id));
       setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
       setRuntime(runtimeResult);
+      runtimeSnapshot.current = runtimeResult;
       announceModelRuntimeConnected();
       setStatus("ready");
     } catch (error) {
@@ -53,6 +56,16 @@ function useWorkbenchDataStore() {
     }
   }, []);
 
+  const refreshPatchesAfterRuntimeUnload = useCallback(() => {
+    if (runtimePatchRefreshPending.current) return;
+    runtimePatchRefreshPending.current = true;
+    void refresh()
+      .catch(() => undefined)
+      .finally(() => {
+        runtimePatchRefreshPending.current = false;
+      });
+  }, [refresh]);
+
   const changeBackend = useCallback(async (connection: BackendConnection) => {
     const saved = saveBackendConnection(connection);
     setBackend(saved);
@@ -61,6 +74,7 @@ function useWorkbenchDataStore() {
     setPatches([]);
     setExperiments([]);
     setRuntime([]);
+    runtimeSnapshot.current = [];
     announceModelRuntimeDisconnected();
     await refresh();
   }, [refresh]);
@@ -86,14 +100,27 @@ function useWorkbenchDataStore() {
       }
     });
     const stopListeningForStatuses = listenForModelRuntimeStatuses((runtimeStatus) => {
+      const previousStatus = runtimeSnapshot.current.find((status) => status.model_id === runtimeStatus.model_id);
+      runtimeSnapshot.current = applyRuntimeStatusToRuntime(runtimeSnapshot.current, runtimeStatus);
       setRuntime((current) => applyRuntimeStatusToRuntime(current, runtimeStatus));
+      if (previousStatus?.loaded && !runtimeStatus.loaded) {
+        refreshPatchesAfterRuntimeUnload();
+      }
     });
     const stopListeningForRuntimeStream = listenForModelRuntimeStream(
       (statuses) => {
+        const unloadedModel = statuses.some((status) =>
+          runtimeSnapshot.current.find((previous) => previous.model_id === status.model_id)?.loaded
+          && !status.loaded
+        );
+        runtimeSnapshot.current = statuses;
         announceModelRuntimeConnected();
         announceModelRuntimeStatuses(statuses);
         setRuntime(statuses);
         setStatus("ready");
+        if (unloadedModel) {
+          refreshPatchesAfterRuntimeUnload();
+        }
       },
       () => {
         reconnecting.current = true;
@@ -102,6 +129,7 @@ function useWorkbenchDataStore() {
         setPatches([]);
         setExperiments([]);
         setRuntime([]);
+        runtimeSnapshot.current = [];
         setStatus("offline");
       },
       () => {
@@ -115,7 +143,7 @@ function useWorkbenchDataStore() {
       stopListeningForStatuses();
       stopListeningForRuntimeStream();
     };
-  }, [backend.baseUrl, backend.token, backendHydrated, refresh]);
+  }, [backend.baseUrl, backend.token, backendHydrated, refresh, refreshPatchesAfterRuntimeUnload]);
 
   return { models, patches, experiments, runtime, status, backend, changeBackend, refresh };
 }
