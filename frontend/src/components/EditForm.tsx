@@ -213,20 +213,23 @@ function KnForm({
     setReliabilityResult(null);
     setReliabilityTestProgress(null);
     reliabilityTestCancellation.reset();
+    setResult(null);
     try {
+      const facts = [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }];
       const response = await api.easyEditReliability({
         model_id: modelId,
         method: "kn",
-        edits: [{ subject, relation_prompt: relationPrompt, new_object: newObject, ground_truth: groundTruth || null }],
-        include_generations: true
+        edits: facts,
+        include_generations: true,
       });
       reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
-        if (!job.result) return;
-        setReliabilityResult(job.result);
+        const reliability = job.result;
+        if (!reliability) return;
+        setReliabilityResult(reliability);
         setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
-          reliability: job.result,
+          reliability,
           reliability_test_job_id: job.job_id,
           reliability_test_item_count: job.result_item_count ?? 0,
           reliability_test_page_size: job.result_page_size ?? null,
@@ -532,6 +535,7 @@ function RomeForm({
     setReliabilityResult(null);
     setReliabilityTestProgress(null);
     reliabilityTestCancellation.reset();
+    setResult(null);
     try {
       const facts = isSeriesEdit ? await seriesDataset.getAll() : [singleFact];
       if (!facts.length) throw new Error("Add at least one fact before testing reliability.");
@@ -544,15 +548,16 @@ function RomeForm({
           new_object: edit.new_object,
           ground_truth: edit.ground_truth || null
         })),
-        include_generations: true
+        include_generations: true,
       });
       reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
-        if (!job.result) return;
-        setReliabilityResult(job.result);
+        const reliability = job.result;
+        if (!reliability) return;
+        setReliabilityResult(reliability);
         setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
-          reliability: job.result,
+          reliability,
           reliability_test_job_id: job.job_id,
           reliability_test_item_count: job.result_item_count ?? 0,
           reliability_test_page_size: job.result_page_size ?? null,
@@ -1151,6 +1156,7 @@ function MemitForm({
     setReliabilityResult(null);
     setReliabilityTestProgress(null);
     reliabilityTestCancellation.reset();
+    setResult(null);
     try {
       const edits = await batchDataset.getAll();
       const response = await api.easyEditReliability({
@@ -1162,15 +1168,16 @@ function MemitForm({
           new_object: edit.new_object,
           ground_truth: edit.ground_truth || null
         })),
-        include_generations: true
+        include_generations: true,
       });
       reliabilityTestCancellation.setJobId(response.job_id);
       await watchReliabilityTestJob(response, (job) => {
-        if (!job.result) return;
-        setReliabilityResult(job.result);
+        const reliability = job.result;
+        if (!reliability) return;
+        setReliabilityResult(reliability);
         setReliabilityTestProgress(reliabilityTestJobProgress(job));
         setResult({
-          reliability: job.result,
+          reliability,
           reliability_test_job_id: job.job_id,
           reliability_test_item_count: job.result_item_count ?? 0,
           reliability_test_page_size: job.result_page_size ?? null,
@@ -1587,12 +1594,15 @@ function DerivedEvaluationPrompts({
   const meanReliability = typeof reliabilityResult?.mean_reliability === "number"
     ? reliabilityResult.mean_reliability
     : null;
-  const cases = Array.isArray(reliabilityResult?.cases)
-    ? reliabilityResult.cases.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-    : [];
+  const completedFacts = typeof reliabilityResult?.completed_fact_count === "number"
+    ? reliabilityResult.completed_fact_count
+    : 0;
+  const totalFacts = typeof reliabilityResult?.total_fact_count === "number"
+    ? reliabilityResult.total_fact_count
+    : 0;
+  const hasAdditionalPrompts = totalPromptCount !== undefined && totalPromptCount > prompts.length;
   const completed = testProgress?.completed ?? 0;
   const total = testProgress?.total ?? 0;
-  const hasAdditionalPrompts = totalPromptCount !== undefined && totalPromptCount > prompts.length;
 
   return (
     <div className="grid min-w-0 max-w-full gap-2">
@@ -1617,7 +1627,7 @@ function DerivedEvaluationPrompts({
         value={hasAdditionalPrompts ? `${prompts.join("\n")}\n…` : prompts.join("\n")}
       />
       {testing ? (
-        <EvaluationProgressIndicator cancelDisabled={!testCancelable} canceling={testCanceling} current={completed} multiFactLabel="Testing edit facts…" onCancel={onCancel} preparingLabel="Preparing EasyEdit…" singleFactLabel="Evaluating fact…" total={total} />
+        <EvaluationProgressIndicator cancelDisabled={!testCancelable} canceling={testCanceling} current={completed} multiFactLabel="Testing edit facts…" onCancel={onCancel} singleFactLabel="Evaluating fact…" total={total} />
       ) : null}
       {reliabilityResult ? (
         <div className="grid min-w-0 max-w-full gap-2 overflow-hidden rounded-md border border-cyan/30 bg-cyan/5 p-3 text-sm">
@@ -1625,21 +1635,7 @@ function DerivedEvaluationPrompts({
             <span className="min-w-0 break-words font-medium">Reliability · EasyEdit rewrite_acc</span>
             <span className="font-mono text-cyan">{meanReliability === null ? "Metric unavailable" : formatReliabilityScore(meanReliability)}</span>
           </div>
-          {cases.length ? (
-            <div className="grid min-w-0 max-w-full max-h-36 gap-2 overflow-x-hidden overflow-y-auto pr-1 text-xs">
-              {cases.map((testCase, index) => {
-                const prompt = typeof testCase.prompt === "string" ? testCase.prompt : "";
-                const target = typeof testCase.target_new === "string" ? testCase.target_new : "";
-                const score = typeof testCase.reliability_score === "number" ? testCase.reliability_score : null;
-                return (
-                  <div key={`${prompt}-${index}`} className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1 border-t border-cyan/20 pt-2 first:border-t-0 first:pt-0">
-                    <span className="min-w-0 max-w-full break-words font-mono text-ink/65">{prompt} <span className="text-ink/40">→</span> {target}</span>
-                    <span className="shrink-0 font-mono text-ink">{score === null ? "—" : formatReliabilityScore(score)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
+          {completedFacts > 0 ? <span className="text-xs text-ink/60">Completed {completedFacts}{totalFacts ? ` of ${totalFacts}` : ""} fact tests. Per-fact outputs and scores are shown in Generations.</span> : null}
         </div>
       ) : null}
     </div>
