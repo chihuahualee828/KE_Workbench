@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class GenerateRequest(BaseModel):
+class ApiSchema(BaseModel):
+    """Base schema for API payloads with model identifier fields."""
+
+    model_config = ConfigDict(protected_namespaces=("model_validate", "model_dump"))
+
+
+class GenerateRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     prompt: str
     max_new_tokens: int = Field(default=20, ge=1, le=128)
@@ -17,19 +23,19 @@ class GenerateRequest(BaseModel):
     patch_id: str | None = None
 
 
-class GenerateResponse(BaseModel):
+class GenerateResponse(ApiSchema):
     experiment_id: str
     text: str
 
 
-class LogitLensRequest(BaseModel):
+class LogitLensRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     prompt: str
     target_token: str | None = None
     top_k: int = Field(default=10, ge=1, le=50)
 
 
-class LogitLensLayer(BaseModel):
+class LogitLensLayer(ApiSchema):
     layer: int
     target_rank: int | None = None
     target_logit: float | None = None
@@ -37,17 +43,17 @@ class LogitLensLayer(BaseModel):
     top_tokens: list[tuple[str, float]]
 
 
-class LogitLensResponse(BaseModel):
+class LogitLensResponse(ApiSchema):
     experiment_id: str
     layers: list[LogitLensLayer]
 
 
-class CorruptionConfig(BaseModel):
+class CorruptionConfig(ApiSchema):
     type: str = "gaussian_noise"
     noise_level: float = Field(default=3.0, ge=0.0, le=20.0)
 
 
-class CausalTraceRequest(BaseModel):
+class CausalTraceRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     prompt: str
     subject: str
@@ -58,7 +64,7 @@ class CausalTraceRequest(BaseModel):
     seed: int = Field(default=1, ge=0, le=2_147_483_647)
 
 
-class RomeEditRequest(BaseModel):
+class RomeEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     subject: str
     relation_prompt: str
@@ -77,7 +83,7 @@ class RRomeEditRequest(RomeEditRequest):
     """Request schema for EasyEdit's rebuilding-ROME implementation."""
 
 
-class KnEditRequest(BaseModel):
+class KnEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     subject: str
     relation_prompt: str
@@ -87,7 +93,7 @@ class KnEditRequest(BaseModel):
     sequential_edit: bool = False
 
 
-class EditSpec(BaseModel):
+class EditSpec(ApiSchema):
     subject: str
     relation_prompt: str
     new_object: str
@@ -96,7 +102,7 @@ class EditSpec(BaseModel):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class RomeSequentialEditsRequest(BaseModel):
+class RomeSequentialEditsRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     target_layer: int = Field(ge=0)
@@ -105,7 +111,7 @@ class RomeSequentialEditsRequest(BaseModel):
     mom2_adjustment: bool = False
 
 
-class MemitEditRequest(BaseModel):
+class MemitEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec]
     layers: list[int] | None = None
@@ -116,19 +122,19 @@ class MemitEditRequest(BaseModel):
     mom2_adjustment: Literal[True] = True
 
 
-class Mom2StatisticsRequest(BaseModel):
+class Mom2StatisticsRequest(ApiSchema):
     model_id: str
     method: Literal["rome", "r_rome", "memit"]
     layers: list[int] | None = None
 
 
-class EvaluationRequest(BaseModel):
+class EvaluationRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     patch_id: str
     prompts: list[str] = Field(default_factory=list)
 
 
-class ReliabilityEvaluationRequest(BaseModel):
+class ReliabilityEvaluationRequest(ApiSchema):
     """Evaluate edit quality on the current active model without editing it."""
 
     model_id: str = "gpt2-xl"
@@ -138,7 +144,7 @@ class ReliabilityEvaluationRequest(BaseModel):
     evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
 
 
-class ActiveModelEvaluationRequest(BaseModel):
+class ActiveModelEvaluationRequest(ApiSchema):
     """Evaluate the edit facts currently active for a model.
 
     Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive
@@ -153,7 +159,7 @@ class ActiveModelEvaluationRequest(BaseModel):
     include_generations: bool = True
 
 
-class JobResponse(BaseModel):
+class JobResponse(ApiSchema):
     job_id: str
     experiment_id: str
     status: str
@@ -168,5 +174,5 @@ class JobResponse(BaseModel):
     result: dict[str, Any] | None = None
 
 
-class PatchListResponse(BaseModel):
+class PatchListResponse(ApiSchema):
     patches: list[dict[str, Any]]
