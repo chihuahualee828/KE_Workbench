@@ -5,25 +5,26 @@ import shutil
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import SecretStr
 from starlette.background import BackgroundTask
 
 from app.services.model_cache_service import model_cache_service
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
+from app.db.schemas import ApiSchema
 
 router = APIRouter(tags=["models"])
 
 
-class ModelCacheRequest(BaseModel):
+class ModelCacheRequest(ApiSchema):
     model_id: str
 
 
-class HfTokenRequest(BaseModel):
+class HfTokenRequest(ApiSchema):
     token: SecretStr
 
 
-class LocalModelRequest(BaseModel):
+class LocalModelRequest(ApiSchema):
     id: str | None = None
     name: str
     local_path: str
@@ -43,12 +44,12 @@ class LocalModelRequest(BaseModel):
     import_job_id: str | None = None
 
 
-class ModelExportRequest(BaseModel):
+class ModelExportRequest(ApiSchema):
     model_id: str
     output_path: str
 
 
-class LocalFolderImportRequest(BaseModel):
+class LocalFolderImportRequest(ApiSchema):
     source_name: str
     total_bytes: int
 

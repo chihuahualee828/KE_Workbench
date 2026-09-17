@@ -9,10 +9,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from app.config import settings
-from app.db.schemas import KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
+from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -38,11 +37,11 @@ _active_edit_job_id: str | None = None
 _active_edit_job_lock = threading.Lock()
 
 
-class PatchExportRequest(BaseModel):
+class PatchExportRequest(ApiSchema):
     output_path: str
 
 
-class EditDefaultLayersRequest(BaseModel):
+class EditDefaultLayersRequest(ApiSchema):
     model_id: str
     method: str
 
@@ -203,7 +202,7 @@ def prepare_mom2(request: Mom2StatisticsRequest) -> JobResponse:
 
 @router.post("/edit/mom2/import")
 def import_mom2(
-    model_id: str = Form(...),
+    source_id: str = Form(..., alias="model_id"),
     method: str = Form(...),
     dataset: str = Form(...),
     layers: str = Form(...),
@@ -216,7 +215,7 @@ def import_mom2(
         if not isinstance(parsed_layers, list) or not all(isinstance(layer, int) for layer in parsed_layers):
             raise ValueError("Layers must be a JSON array of integers.")
         return import_mom2_statistics(
-            model_id,
+            source_id,
             method,
             dataset,
             parsed_layers,
