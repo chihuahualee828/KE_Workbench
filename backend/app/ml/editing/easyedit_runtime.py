@@ -1069,30 +1069,74 @@ def _override_model_name(hparams: Any, model: dict[str, Any]) -> None:
         setattr(hparams, "tokenizer_name", model_name)
 
 
-def _mom2_cache_model_name(model: dict[str, Any]) -> str:
-    """Return the stable model identity used by EasyEdit's MOM2 filenames."""
+def _mom2_base_model(model: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the supported hub model an imported model was derived from."""
+    if model.get("source") != "local":
+        return None
     base_model_id = model.get("base_model_id")
-    if model.get("source") == "local" and isinstance(base_model_id, str) and base_model_id:
-        try:
-            base_model = model_registry.get(base_model_id)
-        except ValueError:
-            pass
-        else:
-            if base_model.get("source") == "hub":
-                return str(base_model["hf_id"])
+    if not isinstance(base_model_id, str) or not base_model_id:
+        return None
+    try:
+        base_model = model_registry.get(base_model_id)
+    except ValueError:
+        return None
+    return base_model if base_model.get("source") == "hub" else None
+
+
+def _resolve_mom2_statistics_source(
+    model: dict[str, Any],
+    requested_source: Literal["base", "model"] | None = None,
+) -> Literal["base", "model"]:
+    """Resolve an imported model's persisted MOM2 cache preference."""
+    if requested_source not in {None, "base", "model"}:
+        raise EasyEditRuntimeError("MOM2 statistics source must be 'base' or 'model'.")
+
+    base_model = _mom2_base_model(model)
+    if model.get("source") != "local":
+        if requested_source == "base":
+            raise EasyEditRuntimeError("Hub models use their own MOM2 statistics.")
+        return "model"
+
+    source = requested_source or model.get("mom2_stats_source")
+    if source is None:
+        # Preserve the established behavior for existing imported models.
+        source = "base" if base_model is not None else "model"
+    if source == "base" and base_model is None:
+        raise EasyEditRuntimeError(
+            f"{model['id']} does not have a supported base-model MOM2 cache. "
+            "Use this imported model's own statistics instead."
+        )
+    return source
+
+
+def _mom2_cache_model_name(
+    model: dict[str, Any],
+    stats_source: Literal["base", "model"] | None = None,
+) -> str:
+    """Return the stable model identity used by EasyEdit's MOM2 filenames."""
+    source = _resolve_mom2_statistics_source(model, stats_source)
+    if source == "base":
+        base_model = _mom2_base_model(model)
+        if base_model is not None:
+            return str(base_model["hf_id"])
+    if model.get("source") == "local":
+        # The opaque import ID is unique and avoids collisions between two
+        # modified snapshots that happen to have the same folder name.
+        return str(model["id"])
     return str(model.get("hf_id") or model.get("local_path") or model["id"])
 
 
 def _set_loaded_model_mom2_cache_identity(
     loaded_model: Any,
     model: dict[str, Any],
+    stats_source: Literal["base", "model"] | None = None,
 ) -> tuple[Any, str] | None:
-    """Temporarily align EasyEdit's model-config cache key with the base model."""
+    """Temporarily align EasyEdit's model-config cache key with the chosen cache."""
     config = getattr(loaded_model, "config", None)
     if config is None or not hasattr(config, "_name_or_path"):
         return None
     previous_name = str(config._name_or_path)
-    cache_name = _mom2_cache_model_name(model)
+    cache_name = _mom2_cache_model_name(model, stats_source)
     if previous_name == cache_name:
         return None
     config._name_or_path = cache_name
@@ -1150,9 +1194,12 @@ def get_mom2_statistics_status(
     model_id: str,
     method: str,
     layers: list[int] | None = None,
+    stats_source: Literal["base", "model"] | None = None,
 ) -> dict[str, Any]:
     """Report the MOM2 cache files EasyEdit will use for this runtime model."""
-    hparams, effective_layers = _load_mom2_cache_profile(model_id, method, layers)
+    hparams, effective_layers = _load_mom2_cache_profile(
+        model_id, method, layers, stats_source
+    )
 
     statistics = []
     for layer in effective_layers:
@@ -1166,9 +1213,32 @@ def get_mom2_statistics_status(
         "dataset": str(getattr(hparams, "mom2_dataset")),
         "layers": effective_layers,
         "stats_dir": str(getattr(hparams, "stats_dir")),
+        "stats_source": str(getattr(hparams, "mom2_stats_source")),
+        "available_stats_sources": list(getattr(hparams, "available_mom2_stats_sources")),
+        "base_model_id": getattr(hparams, "base_model_id"),
+        "cache_model_id": str(getattr(hparams, "mom2_cache_model_name")),
         "ready": not missing_layers,
         "missing_layers": missing_layers,
         "statistics": statistics,
+    }
+
+
+def set_mom2_statistics_source(
+    model_id: str,
+    stats_source: Literal["base", "model"],
+) -> dict[str, Any]:
+    """Persist which cache an imported model should use for future edits."""
+    model = model_registry.get(model_id)
+    resolved_source = _resolve_mom2_statistics_source(model, stats_source)
+    if model.get("source") == "local":
+        model_registry.set_mom2_statistics_source(model_id, resolved_source)
+    return {
+        "model_id": model_id,
+        "stats_source": resolved_source,
+        "available_stats_sources": ["base", "model"]
+        if _mom2_base_model(model) is not None
+        else ["model"],
+        "base_model_id": (_mom2_base_model(model) or {}).get("id"),
     }
 
 
@@ -1194,12 +1264,29 @@ def require_mom2_statistics(
     return status
 
 
-def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None = None) -> dict[str, Any]:
+def prepare_mom2_statistics(
+    model_id: str,
+    method: str,
+    layers: list[int] | None = None,
+    stats_source: Literal["base", "model"] | None = None,
+) -> dict[str, Any]:
     """Compute the missing EasyEdit MOM2 covariance caches for selected layers."""
+    model = model_registry.get(model_id)
+    resolved_source = _resolve_mom2_statistics_source(model, stats_source)
+    if model.get("source") == "local" and resolved_source == "base":
+        raise EasyEditRuntimeError(
+            "Base-model MOM2 statistics cannot be computed from an imported model's "
+            "modified weights. Select this imported model's own statistics first."
+        )
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(
             "prepare_mom2",
-            {"model_id": model_id, "method": method, "layers": layers},
+            {
+                "model_id": model_id,
+                "method": method,
+                "layers": layers,
+                "stats_source": resolved_source,
+            },
             timeout=7200.0,
         )
     hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
@@ -1210,7 +1297,7 @@ def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(hparams.model_name), method.lower())
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         mom2_model_identity = _set_loaded_model_mom2_cache_identity(
-            runtime_bundle["model"], model_registry.get(model_id)
+            runtime_bundle["model"], model, resolved_source
         )
 
         try:
@@ -1236,7 +1323,9 @@ def prepare_mom2_statistics(model_id: str, method: str, layers: list[int] | None
         finally:
             _restore_loaded_model_mom2_cache_identity(mom2_model_identity)
 
-    return get_mom2_statistics_status(model_id, method, effective_layers)
+    if model.get("source") == "local" and resolved_source == "model":
+        model_registry.set_mom2_statistics_source(model_id, "model")
+    return get_mom2_statistics_status(model_id, method, effective_layers, resolved_source)
 
 
 def import_mom2_statistics(
@@ -1245,9 +1334,12 @@ def import_mom2_statistics(
     dataset: str,
     layers: list[int] | None,
     files: list[tuple[str, Any]],
+    stats_source: Literal["base", "model"] | None = None,
 ) -> dict[str, Any]:
     """Validate and atomically install precomputed MOM2 cache files."""
-    hparams, effective_layers = _load_mom2_cache_profile(model_id, method, layers)
+    hparams, effective_layers = _load_mom2_cache_profile(
+        model_id, method, layers, stats_source
+    )
     expected_dataset = str(getattr(hparams, "mom2_dataset"))
     if dataset.strip() != expected_dataset:
         raise EasyEditRuntimeError(
@@ -1283,14 +1375,24 @@ def import_mom2_statistics(
             if temporary_path is not None:
                 Path(temporary_path).unlink(missing_ok=True)
 
-    status = get_mom2_statistics_status(model_id, method, effective_layers)
+    if imported_layers and getattr(hparams, "mom2_stats_source") == "model":
+        model = model_registry.get(model_id)
+        if model.get("source") == "local":
+            model_registry.set_mom2_statistics_source(model_id, "model")
+    status = get_mom2_statistics_status(
+        model_id, method, effective_layers, getattr(hparams, "mom2_stats_source")
+    )
     status["imported_layers"] = sorted(set(imported_layers))
     return status
 
 
-def list_mom2_statistics(model_id: str, method: str) -> dict[str, Any]:
+def list_mom2_statistics(
+    model_id: str,
+    method: str,
+    stats_source: Literal["base", "model"] | None = None,
+) -> dict[str, Any]:
     """List all cached second-moment files that match a model/method hparams profile."""
-    hparams, _ = _load_mom2_cache_profile(model_id, method, None)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     statistics = []
@@ -1313,14 +1415,23 @@ def list_mom2_statistics(model_id: str, method: str) -> dict[str, Any]:
         "method": method.lower(),
         "dataset": str(getattr(hparams, "mom2_dataset")),
         "stats_dir": str(getattr(hparams, "stats_dir")),
+        "stats_source": str(getattr(hparams, "mom2_stats_source")),
+        "available_stats_sources": list(getattr(hparams, "available_mom2_stats_sources")),
+        "base_model_id": getattr(hparams, "base_model_id"),
+        "cache_model_id": str(getattr(hparams, "mom2_cache_model_name")),
         "statistics": statistics,
     }
 
 
-def delete_mom2_statistics(model_id: str, method: str, layers: list[int]) -> dict[str, Any]:
+def delete_mom2_statistics(
+    model_id: str,
+    method: str,
+    layers: list[int],
+    stats_source: Literal["base", "model"] | None = None,
+) -> dict[str, Any]:
     if not layers:
         raise EasyEditRuntimeError("Select one or more second-moment statistics files to delete.")
-    hparams, _ = _load_mom2_cache_profile(model_id, method, None)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     invalid_layers = [layer for layer in layers if not isinstance(layer, int) or layer < 0 or layer >= layer_count]
@@ -1333,7 +1444,9 @@ def delete_mom2_statistics(model_id: str, method: str, layers: list[int]) -> dic
         if path.exists():
             path.unlink()
             deleted_layers.append(layer)
-    result = list_mom2_statistics(model_id, method)
+    result = list_mom2_statistics(
+        model_id, method, getattr(hparams, "mom2_stats_source")
+    )
     result["deleted_layers"] = deleted_layers
     return result
 
@@ -1342,6 +1455,7 @@ def _load_mom2_cache_profile(
     model_id: str,
     method: str,
     layers: list[int] | None,
+    stats_source: Literal["base", "model"] | None = None,
 ) -> tuple[SimpleNamespace, list[int]]:
     """Read the hparams fields that determine a MOM2 cache filename.
 
@@ -1386,15 +1500,23 @@ def _load_mom2_cache_profile(
     if not effective_layers:
         raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers for {model_id}.")
 
+    resolved_source = _resolve_mom2_statistics_source(model, stats_source)
+    base_model = _mom2_base_model(model)
     return (
         SimpleNamespace(
-            model_name=_mom2_cache_model_name(model),
+            model_name=_mom2_cache_model_name(model, resolved_source),
             stats_dir=str(_mom2_stats_dir()),
             rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
             mom2_dataset=str(payload["mom2_dataset"]),
             mom2_dtype=str(payload["mom2_dtype"]),
             mom2_n_samples=payload.get("mom2_n_samples"),
             layers=effective_layers,
+            mom2_stats_source=resolved_source,
+            available_mom2_stats_sources=(
+                ["base", "model"] if base_model is not None else ["model"]
+            ),
+            base_model_id=base_model.get("id") if base_model is not None else None,
+            mom2_cache_model_name=_mom2_cache_model_name(model, resolved_source),
         ),
         effective_layers,
     )

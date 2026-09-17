@@ -253,6 +253,41 @@ class ModelRegistry:
                 return model
         raise ValueError(f"Unsupported model: {model_id}")
 
+    def set_mom2_statistics_source(self, model_id: str, stats_source: str) -> dict:
+        """Persist the MOM2 cache choice for an imported model.
+
+        A local model that was identified as a copy of a supported hub model can
+        either reuse that base model's covariance statistics or own separate
+        statistics. Hub models have only their own cache identity.
+        """
+        if stats_source not in {"base", "model"}:
+            raise ValueError("MOM2 statistics source must be 'base' or 'model'.")
+
+        models = self.list_local_models()
+        for model in models:
+            if model.get("id") != model_id:
+                continue
+            if model.get("source") != "local":
+                raise ValueError("Only imported models can choose a MOM2 statistics source.")
+            if stats_source == "base" and not self._has_supported_hub_base(model):
+                raise ValueError("This imported model does not have a supported base-model MOM2 cache.")
+            model["mom2_stats_source"] = stats_source
+            _write_local_models(models)
+            return model
+
+        if any(model.get("id") == model_id for model in SUPPORTED_MODELS):
+            if stats_source != "model":
+                raise ValueError("Hub models use their own MOM2 statistics.")
+            return self.get(model_id)
+        raise ValueError(f"Unsupported model: {model_id}")
+
+    def _has_supported_hub_base(self, model: dict[str, Any]) -> bool:
+        base_model_id = model.get("base_model_id")
+        return isinstance(base_model_id, str) and any(
+            candidate["id"] == base_model_id and candidate.get("source") == "hub"
+            for candidate in SUPPORTED_MODELS
+        )
+
     def list_local_models(self) -> list[dict]:
         models = _read_local_models()
         if _migrate_managed_local_models(models):
@@ -320,6 +355,7 @@ class ModelRegistry:
             "source": "local",
             "managed_local": managed_local,
             "base_model_id": model.get("base_model_id"),
+            "mom2_stats_source": model.get("mom2_stats_source"),
             "architecture_model_type": model.get("architecture_model_type"),
             "model_type": model_type,
             "n_layers": configured_layers,
@@ -470,6 +506,7 @@ class ModelRegistry:
             "source": "local",
             "managed_local": True,
             "base_model_id": metadata["base_model_id"],
+            "mom2_stats_source": "base" if self._has_supported_hub_base(metadata) else "model",
             "architecture_model_type": metadata["architecture_model_type"],
             "model_type": metadata["model_type"],
             "n_layers": metadata["n_layers"],

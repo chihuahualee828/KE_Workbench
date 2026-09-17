@@ -126,6 +126,12 @@ class Mom2StatisticsRequest(ApiSchema):
     model_id: str
     method: Literal["rome", "r_rome", "memit"]
     layers: list[int] | None = None
+    stats_source: Literal["base", "model"] | None = None
+
+
+class Mom2StatisticsSourceRequest(ApiSchema):
+    model_id: str
+    stats_source: Literal["base", "model"]
 
 
 class EvaluationRequest(ApiSchema):

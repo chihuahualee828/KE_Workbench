@@ -7,7 +7,6 @@ import { api } from "@/lib/api";
 import { getDefaultBackendUrl, type BackendConnection } from "@/lib/backendConnection";
 import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { AppSettings, EditJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
-import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { AccentThemeSettings } from "./AccentTheme";
 import { ApiStatus } from "./DataState";
@@ -230,7 +229,15 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
   const [modelId, setModelId] = usePersistentState("kew:settings:mom2:modelId", "gpt2-xl");
   const [layers, setLayers] = useState("");
   const [dataset, setDataset] = useState("wikipedia");
-  const [status, setStatus] = useState<{ ready: boolean; missing_layers: number[]; dataset?: string } | null>(null);
+  const [mom2StatsSource, setMom2StatsSource] = useState<"base" | "model">("model");
+  const [status, setStatus] = useState<{
+    ready: boolean;
+    missing_layers: number[];
+    dataset?: string;
+    stats_source: "base" | "model";
+    available_stats_sources: Array<"base" | "model">;
+    base_model_id?: string | null;
+  } | null>(null);
   const [job, setJob] = useState<EditJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -239,18 +246,24 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
   const editableModels = models.filter((model) =>
     method === "rome" ? model.supports_rome : method === "r_rome" ? model.supports_r_rome : model.supports_memit
   );
+  const hubEditableModels = editableModels.filter((model) => model.source !== "local");
+  const importedEditableModels = editableModels.filter((model) => model.source === "local");
   const selectedModel = editableModels.find((model) => model.id === modelId);
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
   const selectedLayers = parseLayers(layers, maxLayer);
   const modelLoaded = runtime.some((entry) => entry.model_id === modelId && entry.loaded);
-
-  useLoadedModelSelection(editableModels, runtime, setModelId);
+  const importedModelHasBaseStats = selectedModel?.source === "local" && Boolean(selectedModel.base_model_id);
+  const canPrepareSelectedSource = selectedModel?.source !== "local" || mom2StatsSource === "model";
 
   useEffect(() => {
     if (editableModels.length && !editableModels.some((model) => model.id === modelId)) {
       setModelId(editableModels[0].id);
     }
   }, [editableModels, modelId, setModelId]);
+
+  useEffect(() => {
+    setMom2StatsSource(importedModelHasBaseStats ? "base" : "model");
+  }, [importedModelHasBaseStats, modelId]);
 
   useEffect(() => {
     let active = true;
@@ -274,11 +287,13 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
       setStatus(null);
       return;
     }
+    setStatus(null);
     api.mom2StatisticsStatus({ model_id: modelId, method, layers: selectedLayers })
       .then((response) => {
         if (!active) return;
         setStatus(response);
         setDataset(response.dataset);
+        setMom2StatsSource(response.stats_source);
       })
       .catch((err) => {
         if (active) setError(err instanceof Error ? err.message : String(err));
@@ -288,12 +303,41 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
     };
   }, [layers, method, modelId, selectedLayers?.join(",")]);
 
-  async function prepare() {
-    if (!modelLoaded || !selectedLayers?.length || busy) return;
+  async function selectMom2StatsSource(source: "base" | "model") {
+    if (busy || source === mom2StatsSource) return;
     setBusy(true);
     setError("");
     try {
-      let current = await api.prepareMom2Statistics({ model_id: modelId, method, layers: selectedLayers });
+      const selection = await api.setMom2StatisticsSource({ model_id: modelId, stats_source: source });
+      setMom2StatsSource(selection.stats_source);
+      if (selectedLayers?.length) {
+        const refreshed = await api.mom2StatisticsStatus({
+          model_id: modelId,
+          method,
+          layers: selectedLayers,
+          stats_source: selection.stats_source
+        });
+        setStatus(refreshed);
+        setDataset(refreshed.dataset);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepare() {
+    if (!modelLoaded || !selectedLayers?.length || busy || !canPrepareSelectedSource) return;
+    setBusy(true);
+    setError("");
+    try {
+      let current = await api.prepareMom2Statistics({
+        model_id: modelId,
+        method,
+        layers: selectedLayers,
+        stats_source: mom2StatsSource
+      });
       announceExperimentStarted(current.experiment_id);
       setJob(current);
       while (current.status === "running") {
@@ -303,9 +347,15 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
       if (current.status === "failed") {
         throw new Error(current.logs[current.logs.length - 1] ?? "MOM2 statistics preparation failed.");
       }
-      const refreshed = await api.mom2StatisticsStatus({ model_id: modelId, method, layers: selectedLayers });
+      const refreshed = await api.mom2StatisticsStatus({
+        model_id: modelId,
+        method,
+        layers: selectedLayers,
+        stats_source: mom2StatsSource
+      });
       setStatus(refreshed);
       setDataset(refreshed.dataset);
+      setMom2StatsSource(refreshed.stats_source);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -324,10 +374,12 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
         method,
         dataset,
         layers: selectedLayers,
-        files: selectedFiles
+        files: selectedFiles,
+        stats_source: mom2StatsSource
       });
       setStatus(response);
       setDataset(response.dataset);
+      setMom2StatsSource(response.stats_source);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -341,7 +393,7 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
         <Database size={17} />
         <h2 className="text-base font-semibold">Second-Moment Statistics</h2>
       </div>
-      <div className="grid gap-2 md:grid-cols-4">
+      <div className="grid gap-2 md:grid-cols-5">
         <label className="grid gap-1">
           <span className="label">Method</span>
           <select className="control" value={method} onChange={(event) => setMethod(event.target.value as "rome" | "r_rome" | "memit") }>
@@ -353,7 +405,16 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
         <label className="grid gap-1">
           <span className="label">Model</span>
           <select className="control" value={modelId} onChange={(event) => setModelId(event.target.value)}>
-            {editableModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+            {hubEditableModels.length ? (
+              <optgroup label="Hugging Face models">
+                {hubEditableModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+              </optgroup>
+            ) : null}
+            {importedEditableModels.length ? (
+              <optgroup label="Imported models">
+                {importedEditableModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+              </optgroup>
+            ) : null}
           </select>
         </label>
         <label className="grid gap-1">
@@ -366,6 +427,15 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
             <option value="wikipedia">Wikipedia</option>
           </select>
         </label>
+        {importedModelHasBaseStats ? (
+          <label className="grid gap-1">
+            <span className="label">Statistics Source</span>
+            <select className="control" disabled={busy} value={mom2StatsSource} onChange={(event) => void selectMom2StatsSource(event.target.value as "base" | "model")}>
+              <option value="base">Base model ({selectedModel?.base_model_id})</option>
+              <option value="model">This imported model</option>
+            </select>
+          </label>
+        ) : null}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink/60">
         <span>Valid layers: 0-{maxLayer}</span>
@@ -397,14 +467,14 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
           <Upload size={16} />
           Import NPZ
         </button>
-        <button className="tool-button min-h-9 px-3 py-1" onClick={prepare} disabled={busy || !modelLoaded || !selectedLayers?.length} title={modelLoaded ? "Compute missing second-moment covariance statistics" : "Load the selected model before preparing statistics"}>
+        <button className="tool-button min-h-9 px-3 py-1" onClick={prepare} disabled={busy || !modelLoaded || !selectedLayers?.length || !canPrepareSelectedSource} title={!modelLoaded ? "Load the selected model before preparing statistics" : !canPrepareSelectedSource ? "Select this imported model's statistics before computing from its weights" : "Compute missing second-moment covariance statistics"}>
           {busy ? <Loader2 className="animate-spin" size={16} /> : <Database size={16} />}
           {busy ? "Preparing" : status?.ready ? "Statistics Ready" : "Prepare Statistics"}
         </button>
       </div>
       {job ? <div className="font-mono text-xs text-ink/60">{job.status === "running" ? "Preparing statistics. Progress is available in Jobs." : `Preparation ${job.status}.`}</div> : null}
       {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
-      {cacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setCacheOpen(false)} /> : null}
+      {cacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} statsSource={mom2StatsSource} onClose={() => setCacheOpen(false)} /> : null}
     </section>
   );
 }
