@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from itertools import chain
 from threading import RLock
 from typing import Any
 
 from app.ml.adapters.base import ModelAdapter
+from app.ml.device import model_device, release_mps_cache
 
 _ADAPTERS: dict[tuple[str, int, bool, bool], "GPT2Adapter"] = {}
 _ADAPTER_LOCK = RLock()
@@ -38,7 +40,7 @@ class GPT2Adapter(ModelAdapter):
                 import torch
             except ImportError as exc:
                 raise RuntimeError("Install backend[ml] to enable real model generation.") from exc
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            device = model_device()
             load_kwargs: dict[str, Any] = {
                 "local_files_only": local_files_only,
                 "trust_remote_code": self.trust_remote_code,
@@ -57,9 +59,18 @@ class GPT2Adapter(ModelAdapter):
                         "low_cpu_mem_usage": True,
                     }
                 )
+            if device == "mps":
+                load_kwargs["dtype"] = "auto"
             self._model = AutoModelForCausalLM.from_pretrained(self.model_id, **load_kwargs)
             try:
-                if device == "cpu":
+                if device == "mps":
+                    # Loading happens on CPU. Preserve inferred checkpoint precision,
+                    # but remove unsupported FP64 tensors before the MPS transfer.
+                    with torch.no_grad():
+                        for tensor in chain(self._model.parameters(), self._model.buffers()):
+                            if tensor.dtype == torch.float64:
+                                tensor.data = tensor.data.to(dtype=torch.float32)
+                if not device.startswith("cuda"):
                     self._model.to(device)
             except Exception:
                 self._model = None
@@ -115,7 +126,7 @@ class GPT2Adapter(ModelAdapter):
             return 0
         for tensor in [*parameters, *buffers]:
             try:
-                if tensor.device.type == "cuda":
+                if tensor.device.type in {"cuda", "mps"}:
                     total += tensor.numel() * tensor.element_size()
             except Exception:
                 continue
@@ -282,6 +293,8 @@ def _collect_runtime_memory() -> None:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+        else:
+            release_mps_cache()
         gc.collect()
     except ImportError:
         pass
