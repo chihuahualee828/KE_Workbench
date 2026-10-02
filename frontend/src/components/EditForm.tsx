@@ -64,7 +64,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
 
     async function resume() {
       try {
-        const current = await api.editJob(jobId);
+        const current = await api.editJob(jobId!);
         if (controller.signal.aborted) return;
         setJob(current);
         if (current.status !== "running") {
@@ -294,7 +294,7 @@ async function watchEditJob(
   return new Promise<EditJob>((resolve, reject) => {
     let current = initial;
     let settled = false;
-    let stopSubscription = () => undefined;
+    let stopSubscription: () => void = () => undefined;
     const finish = () => {
       stopSubscription();
       options.signal?.removeEventListener("abort", stop);
@@ -317,7 +317,7 @@ async function watchEditJob(
       return;
     }
     options.signal?.addEventListener("abort", stop, { once: true });
-    stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${initial.job_id}/events`, {
+    stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${initial.job_id}/events?include_result=false`, {
       onEvent: (event, data) => {
         if (event === "job") {
           try {
@@ -326,7 +326,10 @@ async function watchEditJob(
             if (current.status === "running") return;
             clearActiveEditJob();
             if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Edit job failed"));
-            else succeed(current);
+            else if (current.status === "completed") {
+              stopSubscription();
+              void api.editJob(current.job_id).then(succeed, (error) => fail(error instanceof Error ? error : new Error(String(error))));
+            } else succeed(current);
           } catch (error) {
             fail(error instanceof Error ? error : new Error(String(error)));
           }

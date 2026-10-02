@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 const DATABASE_NAME = "knowledge-editing-workbench";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DATASET_STORE = "fact-datasets";
 const FACT_STORE = "fact-dataset-facts";
+const OVERRIDE_STORE = "fact-overrides";
 
 export type FactEditDraft = {
   subject: string;
@@ -178,6 +179,9 @@ async function openDatabase(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error ?? new Error("Could not open IndexedDB."));
     request.onupgradeneeded = () => {
       const database = request.result;
+      if (!database.objectStoreNames.contains(OVERRIDE_STORE)) {
+        database.createObjectStore(OVERRIDE_STORE, { keyPath: ["datasetId", "key"] });
+      }
       if (!database.objectStoreNames.contains(DATASET_STORE)) {
         database.createObjectStore(DATASET_STORE, { keyPath: "id" });
       }
@@ -244,6 +248,7 @@ async function pruneDatasetGroup(
     const staleDatasets = datasets
       .filter((dataset) => dataset.id.startsWith(cacheGroup.prefix) && dataset.id !== protectedDatasetId)
       .sort((left, right) => left.updatedAt - right.updatedAt)
+      .reverse()
       .slice(Math.max(0, cacheGroup.maxDatasets - 1));
     const facts = transaction.objectStore(FACT_STORE);
     for (const dataset of staleDatasets) {
@@ -361,4 +366,38 @@ async function readAllDatasetValues<T>(datasetId: string): Promise<T[]> {
 async function deleteDatasetFacts(store: IDBObjectStore, datasetId: string): Promise<void> {
   const keys = await requestResult(store.index("datasetId").getAllKeys(IDBKeyRange.only(datasetId)));
   keys.forEach((key) => store.delete(key));
+}
+
+/** Read only user-authored overrides. Legacy fact caches are traversed one row at
+ * a time, rather than materializing the old dataset in memory. */
+export async function readFactOverrides(datasetId: string): Promise<Record<string, string>> {
+  const database = await openDatabase();
+  const values: Record<string, string> = {};
+  try {
+    const transaction = database.transaction([FACT_STORE, OVERRIDE_STORE], "readonly");
+    const done = transactionDone(transaction);
+    const scan = (request: IDBRequest<IDBCursorWithValue | null>, legacy: boolean) => new Promise<void>((resolve, reject) => {
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        const row = legacy ? cursor.value.value : cursor.value;
+        if (row?.key && typeof row.rephrase_override === "string" && (!legacy || row.rephrase_override)) values[row.key] = row.rephrase_override;
+        cursor.continue();
+      };
+    });
+    await scan(transaction.objectStore(FACT_STORE).index("datasetId").openCursor(IDBKeyRange.only(datasetId)), true);
+    await scan(transaction.objectStore(OVERRIDE_STORE).openCursor(IDBKeyRange.bound([datasetId, ""], [datasetId, "\uffff"])), false);
+    await done;
+    return values;
+  } finally { database.close(); }
+}
+
+export async function writeFactOverride(datasetId: string, key: string, value: string) {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(OVERRIDE_STORE, "readwrite");
+    transaction.objectStore(OVERRIDE_STORE).put({ datasetId, key, rephrase_override: value });
+    await transactionDone(transaction);
+  } finally { database.close(); }
 }

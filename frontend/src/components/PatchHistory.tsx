@@ -3,6 +3,7 @@
 import { GitBranch, Layers, RotateCcw, Save, Trash2, X, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { historyResource, loadMorePatches } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
 import type { ModelRuntimeStatus, Patch, PatchEditPage, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -22,6 +23,8 @@ export function PatchHistory({
   runtime?: ModelRuntimeStatus[];
   onPatchesChanged?: () => void | Promise<void>;
 }) {
+  const [totals] = historyResource.use();
+  const savedPatchCount = Math.max(totals.patches, patches.length);
   const [busyPatchId, setBusyPatchId] = useState("");
   const [savingPatchId, setSavingPatchId] = useState("");
   const [loadingPatchId, setLoadingPatchId] = useState("");
@@ -175,7 +178,7 @@ export function PatchHistory({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h2 className="text-base font-semibold">Patch History</h2>
-          <span className="label whitespace-nowrap">{activePatches.length} active / {patches.length} saved</span>
+          <span className="label whitespace-nowrap">{activePatches.length} active / {savedPatchCount} saved</span>
         </div>
         <button
           className="ghost-button min-h-8 px-2 py-1 text-xs"
@@ -256,7 +259,7 @@ export function PatchHistory({
       {confirmingClear ? (
         <ClearPatchHistoryDialog
           clearing={clearingHistory}
-          patchCount={patches.length}
+          patchCount={savedPatchCount}
           onCancel={() => setConfirmingClear(false)}
           onConfirm={clearHistory}
         />
@@ -313,7 +316,7 @@ function PatchTable({
   if (patches.length === 0) return null;
   const lineageGraph = mode === "library" ? buildLineageGraph(patches) : null;
   return (
-    <div className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
+    <div onScroll={(event) => { const node = event.currentTarget; if (scrollable && node.scrollHeight - node.scrollTop - node.clientHeight < 240) void loadMorePatches().catch(() => undefined); }} className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
       <table className="w-full table-fixed border-collapse text-sm">
         <colgroup>
           {lineageGraph ? <col className="w-14" /> : null}

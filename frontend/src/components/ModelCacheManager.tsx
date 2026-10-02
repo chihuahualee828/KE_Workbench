@@ -3,10 +3,11 @@
 import { Download, FolderUp, Loader2, PlusCircle, RefreshCw, Trash2, Upload, XCircle } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 
+import { cacheResource, downloadResource, runtimeResource } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
-import { announceModelCacheStatus, announceModelDownload, applyCacheStatusToCache, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
-import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
-import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
+import { announceModelCacheStatus, announceModelDownload, applyDownloadJobToCache, listenForModelDownloads } from "@/lib/modelDownloadEvents";
+import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
+import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { GpuVramMonitor } from "./GpuVramMonitor";
 
@@ -36,8 +37,8 @@ export function ModelCacheManager({
   apiStatus: "loading" | "ready" | "offline";
   onModelsChanged?: () => void | Promise<void>;
 }) {
-  const [cache, setCache] = useState<ModelCacheStatus[]>([]);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
+  const [cache, setCache] = cacheResource.use();
+  const [runtime, setRuntime] = runtimeResource.use();
   const [jobs, setJobs] = useState<Record<string, ModelDownloadJob>>({});
   const [runtimeJobs, setRuntimeJobs] = useState<Record<string, ModelRuntimeJob>>({});
   const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
@@ -124,7 +125,6 @@ export function ModelCacheManager({
     setError("");
     try {
       const status = await api.deleteModelCache({ model_id: modelId });
-      setCache((current) => applyCacheStatusToCache(current, status));
       announceModelCacheStatus(status);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -137,7 +137,6 @@ export function ModelCacheManager({
     try {
       const job = await api.loadModelRuntime({ model_id: modelId });
       setRuntimeJobs((current) => ({ ...current, [job.job_id]: job }));
-      setRuntime((current) => applyRuntimeJobToRuntime(current, job));
       announceModelRuntimeLoad(job);
       watchModelRuntimeJob(job).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
@@ -304,7 +303,6 @@ export function ModelCacheManager({
   useEffect(() => {
     return listenForModelRuntimeLoads((job) => {
       setRuntimeJobs((current) => ({ ...current, [job.job_id]: job }));
-      setRuntime((current) => applyRuntimeJobToRuntime(current, job));
       if (!["queued", "loading"].includes(job.status)) {
         void refresh();
       }
@@ -313,7 +311,6 @@ export function ModelCacheManager({
 
   useEffect(() => {
     return listenForModelRuntimeStatuses((status) => {
-      setRuntime((current) => applyRuntimeStatusToRuntime(current, status));
     });
   }, []);
 
@@ -355,28 +352,10 @@ export function ModelCacheManager({
     });
   }, []);
 
+  const [sharedDownloads] = downloadResource.use();
   useEffect(() => {
-    const activeJobs = Object.values(jobs).filter(
-      (job) => activeDownloadStatuses.includes(job.status)
-        && !(job.job_type === "local_import" && job.status === "uploading")
-    );
-    const activeCache = cache.some((status) => activeDownloadStatuses.includes(status.cache_state));
-    if (activeJobs.length === 0 && !activeCache) return;
-    const timer = window.setInterval(async () => {
-      if (activeJobs.length > 0) {
-        const updates = await Promise.all(activeJobs.map((job) => api.modelDownloadJob(job.job_id)));
-        setJobs((current) => {
-          const next = { ...current };
-          updates.forEach((job) => {
-            next[job.job_id] = job;
-          });
-          return next;
-        });
-      }
-      refresh();
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [jobs, cache]);
+    setJobs(Object.fromEntries(sharedDownloads.map((job) => [job.job_id, job])));
+  }, [sharedDownloads]);
 
   const localModels = models.filter((model) => model.source === "local");
   const firstLocalModelId = localModels[0]?.id;

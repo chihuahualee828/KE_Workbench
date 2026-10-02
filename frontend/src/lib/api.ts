@@ -18,8 +18,39 @@ function requestHeaders(init?: RequestInit) {
   return headers;
 }
 
+// Coalesce shared GETs across mounts/events; mutations invalidate snapshots.
+const reads = new Map<string, { promise: Promise<unknown>; expires: number }>();
+let readEpoch = 0;
+export function apiReadVersion() { return readEpoch; }
+export function invalidateApiReads() { readEpoch += 1; reads.clear(); }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(backendUrl(path), {
+  const mutation = init?.method && init.method !== "GET";
+  const cacheable = !mutation && !init?.signal && /^(\/api\/models(?:$|\/(?:cache$|runtime$|cache\/jobs$))|\/api\/(?:experiments|patches)\/page|\/api\/patches\/active)/.test(path);
+  if (mutation) invalidateApiReads();
+  if (!cacheable) {
+    try { return await rawRequest<T>(path, init); }
+    finally { if (mutation) invalidateApiReads(); }
+  }
+  for (const [key, entry] of reads) if (entry.expires <= Date.now()) reads.delete(key);
+  const key = JSON.stringify([backendUrl(path), backendAuthorizationHeaders()]);
+  const current = reads.get(key);
+  if (current && current.expires > Date.now()) return current.promise as Promise<T>;
+  const epoch = readEpoch;
+  const entry = { promise: Promise.resolve(undefined) as Promise<unknown>, expires: Infinity };
+  entry.promise = rawRequest<T>(path, init).then((value) => {
+    entry.expires = Date.now() + 1000;
+    setTimeout(() => { if (reads.get(key) === entry) reads.delete(key); }, 1000);
+    if (epoch !== readEpoch && reads.get(key) === entry) reads.delete(key);
+    return value;
+  }, (error) => { if (reads.get(key) === entry) reads.delete(key); throw error; });
+  reads.set(key, entry);
+  return entry.promise as Promise<T>;
+}
+
+async function rawRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const url = backendUrl(path);
+  const auth = JSON.stringify(backendAuthorizationHeaders());
+  const response = await fetch(url, {
     ...init,
     headers: requestHeaders(init),
     cache: "no-store"
@@ -34,7 +65,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(`${response.status} ${detail}`);
   }
-  return response.json() as Promise<T>;
+  const payload = await response.json() as T;
+  if (url !== backendUrl(path) || auth !== JSON.stringify(backendAuthorizationHeaders())) throw new Error("Backend connection changed during request.");
+  return payload;
 }
 
 async function download(path: string, init?: RequestInit): Promise<Response> {
@@ -57,6 +90,13 @@ async function download(path: string, init?: RequestInit): Promise<Response> {
 }
 
 async function upload<T>(path: string, body: FormData): Promise<T> {
+  invalidateApiReads();
+  try {
+    return await rawUpload<T>(path, body);
+  } finally { invalidateApiReads(); }
+}
+
+async function rawUpload<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(backendUrl(path), {
     method: "POST",
     body,
@@ -90,17 +130,20 @@ function parseEventBlock(block: string, handlers: EventStreamHandlers) {
   if (data.length) handlers.onEvent(event, data.join("\n"));
 }
 
-function subscribeToEvents(path: string, handlers: EventStreamHandlers) {
+function openEventStream(path: string, handlers: EventStreamHandlers) {
+  const url = backendUrl(path);
+  const headers = requestHeaders({ headers: { Accept: "text/event-stream" } });
   let closed = false;
   let controller: AbortController | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let resumeRetry: (() => void) | null = null;
 
   const connect = async () => {
     while (!closed) {
       controller = new AbortController();
       try {
-        const response = await fetch(backendUrl(path), {
-          headers: requestHeaders({ headers: { Accept: "text/event-stream" } }),
+        const response = await fetch(url, {
+          headers,
           cache: "no-store",
           signal: controller.signal
         });
@@ -123,9 +166,11 @@ function subscribeToEvents(path: string, handlers: EventStreamHandlers) {
       }
       if (closed) break;
       await new Promise<void>((resolve) => {
+        resumeRetry = resolve;
         retryTimer = setTimeout(resolve, 1000);
       });
       retryTimer = null;
+      resumeRetry = null;
     }
   };
 
@@ -134,6 +179,49 @@ function subscribeToEvents(path: string, handlers: EventStreamHandlers) {
     closed = true;
     controller?.abort();
     if (retryTimer) clearTimeout(retryTimer);
+    resumeRetry?.();
+  };
+}
+
+const streams = new Map<string, { listeners: Set<EventStreamHandlers>; stop: () => void; last?: [string, string]; opened: boolean }>();
+function subscribeToEvents(path: string, handlers: EventStreamHandlers) {
+  const key = JSON.stringify([backendUrl(path), backendAuthorizationHeaders()]);
+  let stream = streams.get(key);
+  if (!stream) {
+    stream = { listeners: new Set(), stop: () => undefined, opened: false };
+    streams.set(key, stream);
+    const current = stream;
+    current.stop = openEventStream(path, {
+      onOpen: () => { current.opened = true; current.listeners.forEach((listener) => listener.onOpen?.()); },
+      onEvent: (event, data) => {
+        // Keep a bounded log snapshot for consumers joining an existing job stream.
+        // Current listeners still receive the original delta.
+        if (event === "job") {
+          try {
+            const update = JSON.parse(data) as EditJob;
+            const previous = current.last?.[0] === "job" ? JSON.parse(current.last[1]) as EditJob : null;
+            if (Array.isArray(update.logs)) {
+              const logs = (previous && update.log_start_count === previous.log_count
+                ? [...previous.logs, ...update.logs] : update.logs).slice(-500);
+              current.last = [event, JSON.stringify({ ...update, logs, log_start_count: (update.log_count ?? logs.length) - logs.length })];
+            } else current.last = [event, data];
+          } catch { current.last = [event, data]; }
+        } else if (event !== "complete" || current.last?.[0] !== "job") current.last = [event, data];
+        current.listeners.forEach((listener) => listener.onEvent(event, data));
+      },
+      onError: (error) => { current.opened = false; current.listeners.forEach((listener) => listener.onError?.(error)); }
+    });
+  }
+  const current = stream;
+  current.listeners.add(handlers);
+  queueMicrotask(() => {
+    if (!current.listeners.has(handlers)) return;
+    if (current.opened) handlers.onOpen?.();
+    if (current.last) handlers.onEvent(...current.last);
+  });
+  return () => {
+    current.listeners.delete(handlers);
+    if (!current.listeners.size) { current.stop(); if (streams.get(key) === current) streams.delete(key); }
   };
 }
 
@@ -254,7 +342,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  experimentPage: (offset = 0, status?: string) => request<{ items: Experiment[]; total: number; status_counts: Record<string, number> }>(`/api/experiments/page?offset=${offset}&limit=50${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  patchPage: (offset = 0) => request<{ items: Patch[]; total: number }>(`/api/patches/page?offset=${offset}&limit=50`),
+  activePatches: () => request<{ patches: Patch[] }>("/api/patches/active"),
   experiments: () => request<Experiment[]>("/api/experiments"),
+  experimentStatus: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}?include_result=false`),
   experiment: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}`),
   deleteExperiment: (experimentId: string, jobId?: string) =>
     request<{ experiment_id: string }>(`/api/experiments/${encodeURIComponent(experimentId)}${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`, {
@@ -485,8 +577,8 @@ export const api = {
     request<EditJob>(`/api/evaluate/jobs/${encodeURIComponent(jobId)}/cancel`, {
       method: "POST"
     }),
-  activeEvaluationFacts: (modelId: string) =>
-    request<ActiveEvaluationFacts>(`/api/evaluate/active-facts?model_id=${encodeURIComponent(modelId)}`),
+  activeEvaluationFacts: (modelId: string, offset = 0, limit = 50, query = "") =>
+    request<ActiveEvaluationFacts>(`/api/evaluate/active-facts/page?model_id=${encodeURIComponent(modelId)}&offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`),
   evaluateActiveModel: (body: {
     model_id: string;
     evaluation_modes: Array<"reliability" | "generalization" | "locality" | "portability">;

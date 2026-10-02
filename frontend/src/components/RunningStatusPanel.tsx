@@ -2,68 +2,37 @@
 
 import { Activity, CheckCircle2, CircleAlert, Clock3, Download, Loader2, RefreshCw, Server, Trash2, X, XCircle } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { ExperimentHistory } from "@/components/ExperimentHistory";
+import { cacheResource, downloadResource, runtimeResource, experimentResource, refreshJobs } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
 import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
-import { listenForExperimentCanceled } from "@/lib/experimentEvents";
-import { listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
-import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
+import type { ModelCacheStatus, ModelDownloadJob } from "@/lib/types";
 
 const activeDownloadStates = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
 const activeRuntimeStates = ["queued", "loading"];
 
 export function RunningStatusPanel() {
-  const [cache, setCache] = useState<ModelCacheStatus[]>([]);
-  const [downloadJobs, setDownloadJobs] = useState<ModelDownloadJob[]>([]);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
-  const [experiments, setExperiments] = useState<Experiment[]>([]);
+  const [cache] = cacheResource.use();
+  const [downloadJobs] = downloadResource.use();
+  const [runtime] = runtimeResource.use();
+  const [experiments] = experimentResource.use();
   const [busyJob, setBusyJob] = useState("");
   const [error, setError] = useState("");
   const [details, setDetails] = useState<ModelDownloadJob | null>(null);
   const [confirmingClearDownloads, setConfirmingClearDownloads] = useState(false);
   const [clearingDownloads, setClearingDownloads] = useState(false);
-  const refreshing = useRef(false);
 
-  const activeDownloads = useMemo(
-    () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
-    [downloadJobs]
-  );
-  const requiresTransferPolling = activeDownloads.some(
-    (job) => job.job_type !== "local_import" || job.status !== "uploading"
-  );
   const activeRuntime = useMemo(
     () => runtime.filter((item) => item.active_job || activeRuntimeStates.includes(item.runtime_state)),
     [runtime]
   );
-  const runningExperiments = useMemo(
-    () => experiments.filter((item) => item.status === "running"),
-    [experiments]
-  );
-  const hasActiveWork = requiresTransferPolling || activeRuntime.length > 0 || runningExperiments.length > 0;
   const hasFinishedDownloads = downloadJobs.some((job) => !activeDownloadStates.includes(job.status));
 
   async function refresh() {
-    if (refreshing.current) return;
-    refreshing.current = true;
-    setError("");
-    try {
-      const [cacheResult, downloadJobResult, runtimeResult, experimentResult] = await Promise.all([
-        api.modelCache(),
-        api.modelDownloadJobs(),
-        api.modelRuntime(),
-        api.experiments()
-      ]);
-      setCache(cacheResult);
-      setDownloadJobs(downloadJobResult);
-      setRuntime(runtimeResult);
-      setExperiments(experimentResult);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      refreshing.current = false;
-    }
+    try { await refreshJobs(); setError(""); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   }
 
   async function cancelDownload(jobId: string) {
@@ -93,36 +62,6 @@ export function RunningStatusPanel() {
     }
   }
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  useEffect(() => listenForExperimentCanceled(({ experimentId, jobId }) => {
-    setExperiments((current) => current.map((experiment) => {
-      if (experiment.id !== experimentId && experiment.job?.id !== jobId) return experiment;
-      return {
-        ...experiment,
-        status: "canceled",
-        error_message: "",
-        job: experiment.job ? { ...experiment.job, status: "canceled", progress: 1 } : experiment.job
-      };
-    }));
-  }), []);
-
-  useEffect(() => {
-    return listenForModelDownloads((job) => {
-      setDownloadJobs((current) => upsertModelDownloadJob(current, job));
-      if (job.job_type !== "local_import" || job.status !== "uploading") {
-        void refresh();
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!hasActiveWork) return;
-    const timer = window.setInterval(refresh, 1500);
-    return () => window.clearInterval(timer);
-  }, [hasActiveWork]);
 
   return (
     <section className="panel">

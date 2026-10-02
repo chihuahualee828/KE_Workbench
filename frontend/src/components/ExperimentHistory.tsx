@@ -4,6 +4,7 @@ import { CheckCircle2, CircleAlert, Clock3, Loader2, Trash2, X } from "lucide-re
 import { createPortal } from "react-dom";
 import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { loadMoreExperiments } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
 import { announceEditJobCanceling, announceExperimentCanceled, listenForEditJobCanceling, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import type { Experiment, ExperimentDetails } from "@/lib/types";
@@ -197,7 +198,7 @@ export function ExperimentHistory({
         </div>
       ) : null}
 
-      <div className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
+      <div onScroll={(event) => { const node = event.currentTarget; if (limit === undefined && node.scrollHeight - node.scrollTop - node.clientHeight < 240) void loadMoreExperiments().catch((error) => setError(String(error))); }} className={`divide-y divide-line rounded-md border border-line ${compact ? "max-h-72 overflow-y-auto" : "max-h-[540px] overflow-y-auto"}`}>
         {displayedExperiments.map((experiment) => (
           <ExperimentHistoryCard
             deleting={deletingExperimentId === experiment.id}

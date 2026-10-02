@@ -4,8 +4,9 @@ import { BarChart3, FlaskConical, Loader2, SlidersHorizontal, X } from "lucide-r
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { getBackendConnection } from "@/lib/backendConnection";
 import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
-import { useIndexedFactDataset } from "@/lib/factDataset";
+import { readFactOverrides, writeFactOverride } from "@/lib/factDataset";
 import type { EvaluationFact, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -21,19 +22,12 @@ type EvaluationGenerationMetric = Exclude<EvaluationMode, "portability">;
 
 const EVALUATION_METRICS: EvaluationMode[] = ["reliability", "generalization", "locality", "portability"];
 const PAGE_SIZE = 50;
-const EMPTY_EVALUATION_FACTS: StoredEvaluationFact[] = [];
 const DEFAULT_SELECTED_METRICS: EvaluationMode[] = ["reliability"];
 
 type StoredEvaluationFact = EvaluationFact & { rephrase_override?: string };
 
 const EVALUATION_FACT_DATASET_PREFIX = "kew:evaluate:active-facts:session:";
-const EVALUATION_FACT_CACHE_GROUP_PREFIX = "kew:evaluate:active-facts:";
-const EVALUATION_FACT_CACHE_LIMIT = 10;
 const EVALUATION_FACT_SESSION_KEY = "kew:evaluate:active-facts:session-id";
-const EVALUATION_FACT_CACHE_GROUP = {
-  prefix: EVALUATION_FACT_CACHE_GROUP_PREFIX,
-  maxDatasets: EVALUATION_FACT_CACHE_LIMIT,
-};
 let evaluationFactSessionId: string | null = null;
 
 function getEvaluationFactSessionId(): string {
@@ -55,30 +49,8 @@ function getEvaluationFactSessionId(): string {
   }
 }
 
-function normalizeStoredEvaluationFact(value: unknown): StoredEvaluationFact {
-  const fact = value as Partial<StoredEvaluationFact>;
-  return {
-    ...fact,
-    key: String(fact.key ?? ""),
-    subject: String(fact.subject ?? ""),
-    relation_prompt: String(fact.relation_prompt ?? ""),
-    prompt: String(fact.prompt ?? ""),
-    new_object: String(fact.new_object ?? ""),
-    ground_truth: String(fact.ground_truth ?? ""),
-    rephrase_prompt: String(fact.rephrase_prompt ?? ""),
-    locality_prompt: String(fact.locality_prompt ?? ""),
-    locality_ground_truth: String(fact.locality_ground_truth ?? ""),
-    portability_prompt: String(fact.portability_prompt ?? ""),
-    portability_ground_truth: String(fact.portability_ground_truth ?? ""),
-  };
-}
-
 function defaultRephrasePrompt(fact: StoredEvaluationFact) {
   return fact.rephrase_prompt?.trim() || fact.prompt;
-}
-
-function metricPromptCount(facts: StoredEvaluationFact[], field: "locality_prompt" | "portability_prompt") {
-  return facts.filter((fact) => Boolean(fact[field]?.trim())).length;
 }
 
 function isCurrentEvaluationExperiment(experiment: ExperimentDetails, modelId: string, activePatchSignature: string) {
@@ -114,7 +86,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   const [generationMetric, setGenerationMetric] = useState<EvaluationGenerationMetric>("reliability");
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
   const [factSearch, setFactSearch] = useState("");
-  const [factSearchMatches, setFactSearchMatches] = useState<number[]>([]);
+  const [factSearchTotal, setFactSearchTotal] = useState(0);
   const [factSearchPosition, setFactSearchPosition] = useState(-1);
   const [focusedFactIndex, setFocusedFactIndex] = useState<number | null>(null);
   const modelLoaded = runtime.some((status) => status.model_id === modelId && status.loaded);
@@ -155,7 +127,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   useEffect(() => {
     setFocusedResultIndex(null);
     setFocusedFactIndex(null);
-    setFactSearchMatches([]);
+    setFactSearchTotal(0);
     setFactSearchPosition(-1);
     setRawData(null);
     setRawDataOpen(false);
@@ -165,22 +137,26 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   }, [activePatchSignature, modelId]);
 
   useEffect(() => {
-    const query = factSearch.trim().toLocaleLowerCase();
+    setFactSearchPosition(-1);
+  }, [factSearch, facts.sourceKey]);
+
+  useEffect(() => {
+    const query = factSearch.trim();
     if (!query || !facts.ready) {
-      setFactSearchMatches([]);
-      setFactSearchPosition(-1);
+      setFactSearchTotal(0);
       setFocusedFactIndex(null);
       return;
     }
     let active = true;
-    const matches = facts.items.flatMap((fact, index) => [fact.subject, fact.ground_truth, fact.new_object]
-      .some((value) => value.toLocaleLowerCase().includes(query)) ? [index] : []);
-    if (!active) return;
-    setFactSearchMatches(matches);
-    setFactSearchPosition(matches.length ? 0 : -1);
-    setFocusedFactIndex(matches[0] ?? null);
-    return () => { active = false; };
-  }, [factSearch, facts.items, facts.ready]);
+    const timer = setTimeout(() => {
+      void api.activeEvaluationFacts(modelId, Math.max(0, factSearchPosition), 1, query).then((page) => {
+        if (!active) return;
+        setFactSearchTotal(page.match_total);
+        setFocusedFactIndex(page.matches[0] ?? null);
+      }).catch((error) => { if (active) setError(String(error)); });
+    }, 200);
+    return () => { active = false; clearTimeout(timer); };
+  }, [factSearch, factSearchPosition, facts.ready, facts.sourceKey, modelId]);
 
   useEffect(() => {
     if (!evaluationExperimentId) {
@@ -198,7 +174,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     let retryTimer: number | null = null;
     const restoreEvaluation = async () => {
       try {
-        const experiment = await api.experiment(evaluationExperimentId);
+        const experiment = await api.experimentStatus(evaluationExperimentId);
         if (cancelled) return;
         if (!isCurrentEvaluationExperiment(experiment, modelId, activePatchSignature)) {
           setEvaluationExperimentId(null);
@@ -262,7 +238,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     setBusy(true);
     setEvaluationProgress(null);
     try {
-      const rephraseOverrides = Object.fromEntries(facts.items.flatMap((fact): Array<[string, string]> => fact.rephrase_override?.trim() ? [[fact.key, fact.rephrase_override.trim()]] : []));
+      const rephraseOverrides = facts.overrides;
       const response = await api.evaluateActiveModel({
         model_id: modelId,
         evaluation_modes: selectedMetricOrder,
@@ -309,8 +285,8 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     if (editingRephrase?.key !== fact.key || editingRephrase.index !== index) return;
     const value = editingRephrase.value.trim();
     const rephraseOverride = value === defaultRephrasePrompt(fact) ? "" : value;
-    await facts.dataset.update(index, (current) => ({ ...current, rephrase_override: rephraseOverride }));
-    facts.setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, rephrase_override: rephraseOverride } : item));
+    try { await facts.saveOverride(fact.key, rephraseOverride); }
+    catch (error) { setError(String(error)); return; }
     setEditingRephrase(null);
   }
 
@@ -345,12 +321,11 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
               {EVALUATION_METRICS.map((tab) => <button key={tab} type="button" aria-pressed={selectedMetrics.includes(tab)} className={`rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition ${selectedMetrics.includes(tab) ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`} onClick={() => setSelectedMetrics((current) => current.includes(tab) ? current.filter((metric) => metric !== tab) : EVALUATION_METRICS.filter((metric) => [...current, tab].includes(metric)))}>{tab}</button>)}
             </div>
             {selectedMetrics.some((metric) => metric === "reliability" || metric === "generalization") ? <label className="grid gap-1.5"><span className="label">Find an edit fact</span><input className="control" value={factSearch} onChange={(event) => setFactSearch(event.target.value)} onKeyDown={(event) => {
-              if (event.key !== "Enter" || !factSearchMatches.length) return;
+              if (event.key !== "Enter" || !factSearchTotal) return;
               event.preventDefault();
-              const next = (factSearchPosition + 1) % factSearchMatches.length;
+              const next = (Math.max(0, factSearchPosition) + 1) % factSearchTotal;
               setFactSearchPosition(next);
-              setFocusedFactIndex(factSearchMatches[next]);
-            }} placeholder="Search subject, original value, and edited target" type="search" />{factSearch.trim() ? <span className="text-[11px] text-ink/55">{factSearchMatches.length ? `${factSearchPosition + 1} of ${factSearchMatches.length} matches · Enter for next` : "No matching edit facts"}</span> : null}</label> : null}
+            }} placeholder="Search subject, original value, and edited target" type="search" />{factSearch.trim() ? <span className="text-[11px] text-ink/55">{factSearchTotal ? `${Math.max(0, factSearchPosition) + 1} of ${factSearchTotal} matches · Enter for next` : "No matching edit facts"}</span> : null}</label> : null}
             {selectedMetrics.includes("reliability") ? <EvaluationFactList facts={facts} focusedIndex={focusedFactIndex} title="Original edit prompts" emptyMessage="No active patches are loaded for this model. Load a patch in Patch History to evaluate its edit facts." onFactClick={(resultIncludesReliability || resultIncludesGeneralization) && overview?.total ? (index) => focusResult(index) : undefined} /> : null}
             {selectedMetrics.includes("generalization") ? <ManualRephraseList facts={facts} editing={editingRephrase} focusedIndex={focusedFactIndex} resultAvailable={resultIncludesGeneralization && Boolean(overview?.total)} onClick={(index) => focusResult(index, "generalization")} onEdit={setEditingRephrase} onChange={setEditingRephrase} onSave={saveRephrase} /> : null}
             {selectedMetrics.includes("locality") ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="locality_prompt" groundTruthField="locality_ground_truth" promptCount={facts.localityPromptCount} title="Unrelated fact prompts" emptyMessage="No locality prompts are included in the active patches." onFactClick={resultIncludesLocality && Boolean(overview?.total) ? (index) => focusResult(index, "locality") : undefined} /> : null}
@@ -359,7 +334,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
           {!patches.length ? <p className="text-xs leading-5 text-ink/55">Create a knowledge edit first, then select its patch here.</p> : !modelLoaded ? <p className="text-xs leading-5 text-ink/55">Load the selected model to enable evaluation.</p> : null}
           <button className="tool-button" onClick={run} disabled={busy || !modelLoaded || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)} title={modelLoaded ? "Run all highlighted metrics" : "Load the selected model before evaluating"}>{busy ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}{busy ? "Evaluating patch…" : "Run evaluation"}</button>
         </fieldset>
-        {error ? <div role="alert" className="inline-error mt-4">{error}</div> : null}
+        {error || facts.error ? <div role="alert" className="inline-error mt-4">{error || facts.error}</div> : null}
       </section>
       <section className="panel grid gap-4" aria-busy={busy}>
         <h2 className="flex items-center gap-2 text-sm font-semibold"><FlaskConical size={17} className="text-cyan" />Evaluation results</h2>
@@ -385,67 +360,77 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
 
 function useActiveFactDataset(modelId: string, enabled: boolean, patchSignature: string, activeMethod: string) {
   const sessionId = getEvaluationFactSessionId();
-  const datasetId = `${EVALUATION_FACT_DATASET_PREFIX}${sessionId}:${modelId}:${patchSignature || "none"}`;
-  const dataset = useIndexedFactDataset<StoredEvaluationFact>({
-    datasetId,
-    initialValues: EMPTY_EVALUATION_FACTS,
-    normalize: normalizeStoredEvaluationFact,
-    cacheGroup: EVALUATION_FACT_CACHE_GROUP,
-  });
-  const [method, setMethod] = useState(activeMethod);
-  const [items, setItems] = useState<StoredEvaluationFact[]>([]);
-  const [metricPromptCounts, setMetricPromptCounts] = useState({ locality: 0, portability: 0 });
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const requestKey = `${datasetId}:${enabled}`;
-  const synchronizedKey = useRef<string | null>(null);
+  const legacyId = `${EVALUATION_FACT_DATASET_PREFIX}${sessionId}:${modelId}:${patchSignature || "none"}`;
+  const connection = getBackendConnection();
+  const datasetId = `${legacyId}:${connection.baseUrl}`;
+  const sourceKey = `${datasetId}:${enabled}`;
+  const [pages, setPages] = useState<Record<number, EvaluationFact[]>>({});
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [meta, setMeta] = useState({ total: 0, locality: 0, portability: 0, method: activeMethod, key: "" });
+  const [error, setError] = useState("");
+  const pending = useRef(new Set<string>());
+  const version = useRef(0);
+  const ranges = useRef(new Map<string, [number, number]>());
+  const loaded = useRef(new Set<number>());
+  const wantedPages = useRef(new Set<number>([0]));
 
   useEffect(() => {
-    setMethod(activeMethod);
-  }, [activeMethod, datasetId]);
-
-  useEffect(() => {
-    if (!enabled || !dataset.ready) {
-      synchronizedKey.current = null;
-      setItems([]);
-      setMetricPromptCounts({ locality: 0, portability: 0 });
-      setLoadedKey(null);
-      return;
-    }
-    if (synchronizedKey.current === requestKey) return;
-    synchronizedKey.current = requestKey;
-    let active = true;
+    const current = ++version.current;
+    setPages({}); loaded.current.clear(); ranges.current.clear(); pending.current.clear(); wantedPages.current = new Set([0]);
+    setMeta({ total: 0, locality: 0, portability: 0, method: activeMethod, key: "" });
+    setOverrides({}); setError("");
+    if (!enabled) return;
     void (async () => {
-      const cachedFacts = await dataset.getAll();
-      if (active && cachedFacts.length) {
-        setItems(cachedFacts);
-        setMetricPromptCounts({ locality: metricPromptCount(cachedFacts, "locality_prompt"), portability: metricPromptCount(cachedFacts, "portability_prompt") });
-        setLoadedKey(requestKey);
-      }
-      const response = await api.activeEvaluationFacts(modelId);
-      if (!active) return;
-      const latestFacts = await dataset.getAll();
-      const cachedOverrides = new Map(latestFacts.map((fact) => [fact.key, fact.rephrase_override ?? ""]));
-      const legacyOverrides = readLegacyGeneralizationOverrides();
-      const nextFacts = response.facts.map((fact) => ({
-        ...fact,
-        rephrase_override: cachedOverrides.get(fact.key) || legacyOverrides[fact.key] || "",
-      }));
-      await dataset.replace(nextFacts);
-      if (active) {
-        setItems(nextFacts);
-        setMetricPromptCounts({ locality: metricPromptCount(nextFacts, "locality_prompt"), portability: metricPromptCount(nextFacts, "portability_prompt") });
-        setMethod(response.method);
-        setLoadedKey(requestKey);
-      }
-    })()
-      .catch(() => {
-        if (active) synchronizedKey.current = null;
-      });
-    return () => { active = false; };
-  }, [dataset.getAll, dataset.ready, dataset.replace, enabled, modelId, requestKey]);
+      const [page, saved, legacy] = await Promise.all([
+        api.activeEvaluationFacts(modelId), readFactOverrides(datasetId), readFactOverrides(legacyId)
+      ]);
+      if (current !== version.current) return;
+      const legacyLocal = readLegacyGeneralizationOverrides();
+      const combined = { ...legacyLocal, ...legacy, ...saved };
+      await Promise.all(Object.entries({ ...legacyLocal, ...legacy }).filter(([key]) => !(key in saved)).map(([key, value]) => writeFactOverride(datasetId, key, value)));
+      if (current !== version.current) return;
+      setOverrides(combined);
+      setPages({ 0: page.facts }); loaded.current.add(0);
+      setMeta({ total: page.total, locality: page.locality_count, portability: page.portability_count, method: page.method, key: sourceKey });
+    })().catch((reason) => { if (current === version.current) setError(String(reason)); });
+    return () => { version.current += 1; };
+  }, [sourceKey, datasetId, legacyId, enabled, modelId, activeMethod]);
 
-  const total = enabled && loadedKey === requestKey ? items.length : 0;
-  return { dataset, getItem: (index: number) => items[index], items, localityPromptCount: metricPromptCounts.locality, method, portabilityPromptCount: metricPromptCounts.portability, ready: enabled && dataset.ready && loadedKey === requestKey, setItems, sourceKey: requestKey, total };
+  const ensureRange = useCallback((owner: string, start: number, end: number) => {
+    if (!enabled || meta.key !== sourceKey || end < start) return;
+    ranges.current.set(owner, [start, end]);
+    const wanted = new Set<number>();
+    ranges.current.forEach(([first, last]) => {
+      for (let offset = Math.max(0, Math.floor(first / PAGE_SIZE) * PAGE_SIZE - PAGE_SIZE); offset <= Math.min(meta.total - 1, last + PAGE_SIZE); offset += PAGE_SIZE) wanted.add(offset);
+    });
+    wantedPages.current = wanted;
+    for (const offset of loaded.current) if (!wanted.has(offset)) loaded.current.delete(offset);
+    setPages((current) => {
+      if (Object.keys(current).every((offset) => wanted.has(Number(offset)))) return current;
+      return Object.fromEntries(Object.entries(current).filter(([offset]) => wanted.has(Number(offset))));
+    });
+    const current = version.current;
+    for (const offset of wanted) {
+      const key = `${current}:${offset}`;
+      if (loaded.current.has(offset) || pending.current.has(key)) continue;
+      pending.current.add(key);
+      void api.activeEvaluationFacts(modelId, offset).then((page) => {
+        if (current !== version.current || !wantedPages.current.has(offset)) return;
+        loaded.current.add(offset);
+        setPages((previous) => ({ ...previous, [offset]: page.facts }));
+      }).catch((reason) => { if (current === version.current) setError(String(reason)); })
+        .finally(() => pending.current.delete(key));
+    }
+  }, [enabled, meta.key, meta.total, modelId, sourceKey]);
+  const saveOverride = async (key: string, value: string) => {
+    await writeFactOverride(datasetId, key, value);
+    setOverrides((current) => ({ ...current, [key]: value }));
+  };
+  const getItem = useCallback((index: number): StoredEvaluationFact | undefined => {
+    const fact = pages[Math.floor(index / PAGE_SIZE) * PAGE_SIZE]?.[index % PAGE_SIZE];
+    return fact ? { ...fact, rephrase_override: overrides[fact.key] ?? "" } : undefined;
+  }, [pages, overrides]);
+  return { getItem, ensureRange, overrides, saveOverride, error, localityPromptCount: meta.locality, method: meta.method, portabilityPromptCount: meta.portability, ready: enabled && meta.key === sourceKey, sourceKey, total: enabled && meta.key === sourceKey ? meta.total : 0 };
 }
 
 function readLegacyGeneralizationOverrides(): Record<string, string> {
@@ -454,7 +439,6 @@ function readLegacyGeneralizationOverrides(): Record<string, string> {
     const raw = window.localStorage.getItem(key);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    window.localStorage.removeItem(key);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
   } catch {
     return {};
@@ -489,11 +473,11 @@ function useEvaluationResultPages(experimentId: string | null, total: number) {
 }
 
 function EvaluationFactList({ facts, emptyMessage, focusedIndex, title, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; emptyMessage: string; focusedIndex: number | null; title: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
+  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(title, start, end)} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
 }
 
 function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onClick, onEdit, onChange, onSave }: { facts: ReturnType<typeof useActiveFactDataset>; editing: { index: number; key: string; value: string } | null; focusedIndex: number | null; resultAvailable: boolean; onClick: (index: number) => void; onEdit: (value: { index: number; key: string; value: string }) => void; onChange: (value: { index: number; key: string; value: string } | null) => void; onSave: (index: number, fact: StoredEvaluationFact) => Promise<void> }) {
-  return <div className="grid gap-2"><span className="label">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} renderItem={(fact, index, focused) => <div className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
+  return <div className="grid gap-2"><span className="label">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange("rephrases", start, end)} renderItem={(fact, index, focused) => <div className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
     event.preventDefault();
     event.stopPropagation();
     if (!editing) onEdit({ index, key: fact.key, value: fact.rephrase_override?.trim() || defaultRephrasePrompt(fact) });
@@ -501,7 +485,7 @@ function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onC
 }
 
 function EvaluationMetricPromptList({ facts, focusedIndex, promptField, groundTruthField, promptCount, title, emptyMessage, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; focusedIndex: number | null; promptField: "locality_prompt" | "portability_prompt"; groundTruthField: "locality_ground_truth" | "portability_ground_truth"; promptCount: number; title: string; emptyMessage: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} renderItem={(fact, index, focused) => {
+  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(promptField, start, end)} renderItem={(fact, index, focused) => {
     const prompt = fact[promptField]?.trim() || "";
     const groundTruth = fact[groundTruthField]?.trim() || "";
     const canFocus = Boolean(prompt && onFactClick);
