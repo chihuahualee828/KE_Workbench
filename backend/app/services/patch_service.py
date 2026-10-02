@@ -295,7 +295,7 @@ class PatchService:
             patches_root.mkdir(parents=True, exist_ok=True)
         return {"deleted_patch_count": patch_count}
 
-    def prepare_patch_artifact_deletion(self, patch_id: str) -> dict[str, Any]:
+    def prepare_patch_artifact_deletion(self, patch_id: str, *, require_inactive: bool = False) -> dict[str, Any]:
         """Deactivate a patch and all descendants before their files are removed."""
         if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id:
             raise FileNotFoundError(patch_id)
@@ -322,6 +322,8 @@ class PatchService:
                 for model_id, active_patch_ids in active_before.items()
                 if active_patch_ids != active_after.get(model_id, [])
             )
+            if require_inactive and affected_model_ids:
+                raise ValueError("Cannot delete this patch while editing or evaluation is running: it or a dependent patch is active.")
             if affected_model_ids:
                 self._write_active_patches(active_after)
             return {

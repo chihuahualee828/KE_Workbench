@@ -4,6 +4,7 @@ import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from app.api.operation_guard import operation_guard
 
 from app.db.schemas import ActiveModelEvaluationRequest, EvaluationRequest, JobResponse, ReliabilityEvaluationRequest
 from app.services.evaluation_service import evaluation_service
@@ -19,6 +20,7 @@ _reliability_evaluation_lock = threading.Lock()
 
 
 @router.post("/evaluate", response_model=JobResponse)
+@operation_guard.protect()
 def evaluate(request: EvaluationRequest) -> JobResponse:
     try:
         model_runtime_service.require_loaded_runtime_bundle(request.model_id)
@@ -47,6 +49,7 @@ def evaluate(request: EvaluationRequest) -> JobResponse:
 
 
 @router.post("/evaluate/reliability", response_model=JobResponse)
+@operation_guard.protect()
 def evaluate_reliability(request: ReliabilityEvaluationRequest) -> JobResponse:
     try:
         model_runtime_service.require_loaded_runtime_bundle(request.model_id)
@@ -123,7 +126,7 @@ def _start_reliability_evaluation(
     edits: list[dict[str, Any]],
     include_generations: bool,
 ) -> None:
-    threading.Thread(
+    operation_guard.start_thread(
         target=_run_reliability_evaluation,
         kwargs={
             "job_id": job_id,
@@ -132,8 +135,7 @@ def _start_reliability_evaluation(
             "edits": edits,
             "include_generations": include_generations,
         },
-        daemon=True,
-    ).start()
+    )
 
 
 def _run_reliability_evaluation(
@@ -306,6 +308,7 @@ def list_active_evaluation_facts_page(model_id: str, offset: int = Query(default
 
 
 @router.post("/evaluate/active-model", response_model=JobResponse)
+@operation_guard.protect()
 def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
     try:
         model_runtime_service.require_loaded_runtime_bundle(request.model_id)
@@ -394,7 +397,7 @@ def _start_active_model_evaluation(
     include_generations: bool,
     needs_edit_quality: bool,
 ) -> None:
-    threading.Thread(
+    operation_guard.start_thread(
         target=_run_active_model_evaluation,
         kwargs={
             "job_id": job_id,
@@ -407,8 +410,7 @@ def _start_active_model_evaluation(
             "include_generations": include_generations,
             "needs_edit_quality": needs_edit_quality,
         },
-        daemon=True,
-    ).start()
+    )
 
 
 def _run_active_model_evaluation(

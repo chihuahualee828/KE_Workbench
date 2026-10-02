@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
+from app.api.operation_guard import operation_guard
 from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
@@ -58,6 +59,7 @@ def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
 
 
 @router.post("/edit/rome", response_model=JobResponse)
+@operation_guard.protect()
 def rome_edit(request: RomeEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer] if request.target_layer is not None else None, request.mom2_adjustment)
@@ -69,6 +71,7 @@ def rome_edit(request: RomeEditRequest) -> JobResponse:
 
 
 @router.post("/edit/r-rome", response_model=JobResponse)
+@operation_guard.protect()
 def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(
@@ -85,6 +88,7 @@ def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
 
 
 @router.post("/edit/rome/sequential", response_model=JobResponse)
+@operation_guard.protect()
 def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer], request.mom2_adjustment)
@@ -96,6 +100,7 @@ def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
 
 
 @router.post("/edit/r-rome/sequential", response_model=JobResponse)
+@operation_guard.protect()
 def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "r_rome", [request.target_layer], request.mom2_adjustment)
@@ -107,6 +112,7 @@ def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
 
 
 @router.post("/edit/kn", response_model=JobResponse)
+@operation_guard.protect()
 def kn_edit(request: KnEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
@@ -117,6 +123,7 @@ def kn_edit(request: KnEditRequest) -> JobResponse:
 
 
 @router.post("/edit/memit", response_model=JobResponse)
+@operation_guard.protect()
 def memit_edit(request: MemitEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "memit", request.layers, request.mom2_adjustment)
@@ -161,6 +168,7 @@ def stream_edit_job(job_id: str, include_result: bool = True) -> StreamingRespon
 
 
 @router.post("/edit/jobs/{job_id}/cancel", response_model=JobResponse)
+@operation_guard.protect()
 def cancel_edit_job(job_id: str) -> JobResponse:
     current_job = experiment_service.get_job(job_id)
     was_running = current_job is not None and current_job.get("status") == "running"
@@ -170,7 +178,7 @@ def cancel_edit_job(job_id: str) -> JobResponse:
     with _active_edit_job_lock:
         is_active = _active_edit_job_id == job_id
     if was_running and job.get("status") == "canceled" and is_active:
-        threading.Thread(target=_stop_canceled_edit_worker, args=(job_id,), daemon=True).start()
+        operation_guard.start_thread(target=_stop_canceled_edit_worker, args=(job_id,))
     return _job_response(job)
 
 
@@ -203,6 +211,7 @@ def select_mom2_statistics_source(request: Mom2StatisticsSourceRequest) -> dict:
 
 
 @router.post("/edit/mom2/prepare", response_model=JobResponse)
+@operation_guard.protect()
 def prepare_mom2(request: Mom2StatisticsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     experiment = experiment_service.create("prepare_mom2_statistics", request.model_id, request.model_dump())
@@ -303,12 +312,10 @@ def _prepare_edit_patch_stack(model_id: str, continue_from_active_patches: bool)
 
 
 def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) -> None:
-    thread = threading.Thread(
+    operation_guard.start_thread(
         target=_run_edit_job,
         args=(method_label, job_id, runner, payload),
-        daemon=True,
     )
-    thread.start()
 
 
 def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None:
@@ -488,6 +495,7 @@ def export_patch(patch_id: str, request: PatchExportRequest) -> dict:
 
 
 @router.post("/patches/{patch_id}/load")
+@operation_guard.protect(patch_change=True)
 def load_patch(patch_id: str) -> dict:
     try:
         patch = patch_service.get_patch(patch_id)
@@ -513,6 +521,7 @@ def load_patch(patch_id: str) -> dict:
 
 
 @router.post("/patches/{patch_id}/discard")
+@operation_guard.protect(patch_change=True)
 def discard_patch(patch_id: str) -> dict:
     try:
         state = patch_service.discard_active_patch(patch_id)
@@ -526,25 +535,29 @@ def discard_patch(patch_id: str) -> dict:
 
 @router.delete("/patches/{patch_id}")
 def delete_patch(patch_id: str) -> dict:
-    try:
-        deletion = patch_service.prepare_patch_artifact_deletion(patch_id)
+    with operation_guard.patch_deletion() as busy:
         try:
-            for model_id in deletion["affected_model_ids"]:
-                model_runtime_service.sync_loaded_model_to_active_patches(model_id)
-        except Exception:
-            patch_service.restore_patch_deletion_state(deletion)
-            for model_id in deletion["affected_model_ids"]:
-                try:
+            deletion = patch_service.prepare_patch_artifact_deletion(patch_id, require_inactive=busy)
+            try:
+                for model_id in deletion["affected_model_ids"]:
                     model_runtime_service.sync_loaded_model_to_active_patches(model_id)
-                except Exception:
-                    pass
-            raise
-        return patch_service.finalize_patch_artifact_deletion(deletion)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Patch not found") from exc
+            except Exception:
+                patch_service.restore_patch_deletion_state(deletion)
+                for model_id in deletion["affected_model_ids"]:
+                    try:
+                        model_runtime_service.sync_loaded_model_to_active_patches(model_id)
+                    except Exception:
+                        pass
+                raise
+            return patch_service.finalize_patch_artifact_deletion(deletion)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Patch not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.delete("/patches")
+@operation_guard.protect(patch_change=True)
 def delete_all_patches() -> dict:
     state = patch_service.deactivate_all_patches()
     try:
@@ -559,6 +572,7 @@ def delete_all_patches() -> dict:
 
 
 @router.post("/patches/{patch_id}/revert-to")
+@operation_guard.protect(patch_change=True)
 def revert_to_patch(patch_id: str) -> dict:
     try:
         state = patch_service.revert_to_patch(patch_id)
