@@ -67,7 +67,7 @@ export type ExperimentJob = {
   updated_at: string;
 };
 
-export type ExperimentDetails = Experiment & {
+export type ExperimentDetails = Omit<Experiment, "job"> & {
   job?: ExperimentJob | null;
   result?: Record<string, unknown> | null;
 };
@@ -256,6 +256,10 @@ export type ActiveEvaluationFacts = {
   method: string;
   total: number;
   facts: EvaluationFact[];
+  locality_count: number;
+  portability_count: number;
+  matches: number[];
+  match_total: number;
 };
 
 export type EvaluationResultOverview = {

@@ -3,11 +3,12 @@
 import { Download, HardDrive, Loader2, Upload, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { cacheResource, downloadResource, runtimeResource } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
 import { getModelCacheSnapshot, getModelRuntimeSnapshot, getUnloadingModelSnapshot } from "@/lib/modelStatusCache";
-import { announceModelDownload, applyCacheStatusToCache, applyDownloadJobToCache, listenForModelCacheStatuses, listenForModelDownloads } from "@/lib/modelDownloadEvents";
-import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
-import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
+import { announceModelDownload, applyDownloadJobToCache, listenForModelCacheStatuses, listenForModelDownloads } from "@/lib/modelDownloadEvents";
+import { announceModelRuntimeLoad, announceModelRuntimeStatuses, announceModelRuntimeUnloading, applyRuntimeJobToRuntime, isModelRuntimeConnected, listenForModelRuntimeConnection, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeUnloading, watchModelRuntimeJob } from "@/lib/modelRuntimeEvents";
+import type { ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, SupportedModel } from "@/lib/types";
 
 const activeDownloadStatuses = ["queued", "downloading", "canceling"];
 
@@ -26,8 +27,8 @@ export function ModelSelector({
   showCacheControls?: boolean;
   refreshKey?: number;
 }) {
-  const [cache, setCache] = useState<ModelCacheStatus[]>(getModelCacheSnapshot);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>(getModelRuntimeSnapshot);
+  const [cache, setCache] = cacheResource.use();
+  const [runtime, setRuntime] = runtimeResource.use();
   const [job, setJob] = useState<ModelDownloadJob | null>(() => getModelCacheSnapshot().find((status) => status.model_id === value)?.active_job ?? null);
   const [runtimeJob, setRuntimeJob] = useState<ModelRuntimeJob | null>(() => getModelRuntimeSnapshot().find((status) => status.model_id === value)?.active_job ?? null);
   const [unloadingModelId, setUnloadingModelId] = useState<string | null>(getUnloadingModelSnapshot);
@@ -45,6 +46,11 @@ export function ModelSelector({
   const modelCatalogReady = Boolean(selectedModel);
   const modelStatusReady = runtimeConnected && modelCatalogReady;
   const selectedLocal = modelCatalogReady && (selectedModel?.source === "local" || selectedCache?.is_local);
+  const [sharedDownloads] = downloadResource.use();
+  useEffect(() => {
+    const current = sharedDownloads.find((item) => item.model_id === value);
+    if (current) setJob(current);
+  }, [sharedDownloads, value]);
   const selectedJobActive = job?.model_id === value && activeDownloadStatuses.includes(job.status);
   const selectedRuntime = useMemo(
     () => runtime.find((item) => item.model_id === value),
@@ -150,13 +156,11 @@ export function ModelSelector({
       if (downloadJob.model_id === value) {
         setJob(downloadJob);
       }
-      setCache((current) => applyDownloadJobToCache(current, downloadJob));
     });
   }, [value]);
 
   useEffect(() => {
     return listenForModelCacheStatuses((status) => {
-      setCache((current) => applyCacheStatusToCache(current, status));
       if (status.model_id === value && !status.active_job) {
         setJob(null);
       }
@@ -168,7 +172,6 @@ export function ModelSelector({
       if (loadJob.model_id === value) {
         setRuntimeJob(loadJob);
       }
-      setRuntime((current) => applyRuntimeJobToRuntime(current, loadJob));
       if (!["queued", "loading"].includes(loadJob.status)) {
         void refreshCache();
       }
@@ -180,7 +183,6 @@ export function ModelSelector({
       if (status.model_id === value && !status.active_job) {
         setRuntimeJob(null);
       }
-      setRuntime((current) => applyRuntimeStatusToRuntime(current, status));
     });
   }, [value]);
 
@@ -209,24 +211,6 @@ export function ModelSelector({
       ));
     });
   }, [value]);
-
-  useEffect(() => {
-    const activeCache = activeDownloadStatuses.includes(selectedCache?.cache_state ?? "not_cached");
-    if ((!job || !activeDownloadStatuses.includes(job.status)) && !activeCache) return;
-    const timer = window.setInterval(async () => {
-      try {
-        if (job && activeDownloadStatuses.includes(job.status)) {
-          const result = await api.modelDownloadJob(job.job_id);
-          setJob(result);
-        }
-        refreshCache();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        window.clearInterval(timer);
-      }
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [job, selectedCache?.cache_state]);
 
   return (
     <div className="grid gap-2">

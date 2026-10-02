@@ -5,12 +5,13 @@ import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ExperimentHistory } from "@/components/ExperimentHistory";
+import { cacheResource, downloadResource, runtimeResource, experimentResource, refreshJobs } from "@/lib/workbenchResources";
 import { api } from "@/lib/api";
 import { downloadJobCache, formatTransferSize, transferProgress } from "@/lib/downloadJobProgress";
 import { listenForExperimentCanceled, listenForExperimentStarts } from "@/lib/experimentEvents";
-import { applyDownloadJobToCache, listenForModelDownloads, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
-import { applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses } from "@/lib/modelRuntimeEvents";
-import type { EditJob, Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus } from "@/lib/types";
+import { listenForModelDownloads } from "@/lib/modelDownloadEvents";
+import { listenForModelRuntimeLoads } from "@/lib/modelRuntimeEvents";
+import type { ModelCacheStatus, ModelDownloadJob } from "@/lib/types";
 
 const activeDownloadStates = ["queued", "downloading", "uploading", "validating", "registering", "canceling"];
 const activeRuntimeStates = ["queued", "loading"];
@@ -19,25 +20,20 @@ export function TopbarJobsMenu() {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const newWorkTimer = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
-  const [cache, setCache] = useState<ModelCacheStatus[]>([]);
-  const [downloadJobs, setDownloadJobs] = useState<ModelDownloadJob[]>([]);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
-  const [experiments, setExperiments] = useState<Experiment[]>([]);
+  const [cache] = cacheResource.use();
+  const [downloadJobs] = downloadResource.use();
+  const [runtime] = runtimeResource.use();
+  const [experiments] = experimentResource.use();
   const [busyJob, setBusyJob] = useState("");
   const [error, setError] = useState("");
   const [hasNewWork, setHasNewWork] = useState(false);
   const [downloadDetails, setDownloadDetails] = useState<ModelDownloadJob | null>(null);
   const [confirmingClearDownloads, setConfirmingClearDownloads] = useState(false);
   const [clearingDownloads, setClearingDownloads] = useState(false);
-  const refreshing = useRef(false);
-  const refreshQueued = useRef(false);
 
   const activeDownloads = useMemo(
     () => downloadJobs.filter((job) => activeDownloadStates.includes(job.status)),
     [downloadJobs]
-  );
-  const requiresTransferPolling = activeDownloads.some(
-    (job) => job.job_type !== "local_import" || job.status !== "uploading"
   );
   const downloadHistory = useMemo(
     () => downloadJobs.filter((job) => !activeDownloadStates.includes(job.status)),
@@ -52,40 +48,11 @@ export function TopbarJobsMenu() {
     () => experiments.filter((item) => item.status === "running"),
     [experiments]
   );
-  const runningEditJobIds = useMemo(
-    () => runningExperiments.flatMap((experiment) => experiment.job?.id ? [experiment.job.id] : []).sort().join(","),
-    [runningExperiments]
-  );
   const activeCount = activeDownloads.length + activeRuntime.length + runningExperiments.length;
-  const hasActiveWork = requiresTransferPolling || activeRuntime.length > 0 || runningExperiments.length > 0;
 
   async function refresh() {
-    if (refreshing.current) {
-      refreshQueued.current = true;
-      return;
-    }
-    refreshing.current = true;
-    setError("");
-    try {
-      const [cacheResult, downloadJobResult, runtimeResult, experimentResult] = await Promise.all([
-        api.modelCache(),
-        api.modelDownloadJobs(),
-        api.modelRuntime(),
-        api.experiments()
-      ]);
-      setCache(cacheResult);
-      setDownloadJobs(downloadJobResult);
-      setRuntime(runtimeResult);
-      setExperiments(experimentResult);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      refreshing.current = false;
-      if (refreshQueued.current) {
-        refreshQueued.current = false;
-        void refresh();
-      }
-    }
+    try { await refreshJobs(); setError(""); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   }
 
   async function cancelDownload(jobId: string) {
@@ -126,86 +93,17 @@ export function TopbarJobsMenu() {
     }, 4000);
   }
 
+
   useEffect(() => {
-    refresh();
+    const stops = [listenForModelDownloads(markNewWork), listenForExperimentStarts(markNewWork),
+      listenForExperimentCanceled(markNewWork), listenForModelRuntimeLoads(markNewWork)];
+    return () => { stops.forEach((stop) => stop()); if (newWorkTimer.current !== null) clearTimeout(newWorkTimer.current); };
   }, []);
-
+  const previousActiveCount = useRef(activeCount);
   useEffect(() => {
-    const stopListening = listenForModelDownloads((job) => {
-      setCache((current) => applyDownloadJobToCache(current, job));
-      setDownloadJobs((current) => upsertModelDownloadJob(current, job));
-      markNewWork();
-      if (job.job_type !== "local_import" || job.status !== "uploading") {
-        void refresh();
-      }
-    });
-    return () => {
-      stopListening();
-      if (newWorkTimer.current !== null) {
-        window.clearTimeout(newWorkTimer.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const stopListeningForExperiments = listenForExperimentStarts(() => {
-      markNewWork();
-      void refresh();
-    });
-    const stopListeningForCanceledExperiments = listenForExperimentCanceled(({ experimentId, jobId }) => {
-      setExperiments((current) => current.map((experiment) => {
-        if (experiment.id !== experimentId && experiment.job?.id !== jobId) return experiment;
-        return {
-          ...experiment,
-          status: "canceled",
-          error_message: "",
-          job: experiment.job ? { ...experiment.job, status: "canceled", progress: 1 } : experiment.job
-        };
-      }));
-      markNewWork();
-    });
-    const stopListeningForRuntimeLoads = listenForModelRuntimeLoads((job) => {
-      setRuntime((current) => applyRuntimeJobToRuntime(current, job));
-      if (activeRuntimeStates.includes(job.status)) {
-        markNewWork();
-      }
-      void refresh();
-    });
-    const stopListeningForRuntimeStatuses = listenForModelRuntimeStatuses((status) => {
-      setRuntime((current) => applyRuntimeStatusToRuntime(current, status));
-    });
-    return () => {
-      stopListeningForExperiments();
-      stopListeningForCanceledExperiments();
-      stopListeningForRuntimeLoads();
-      stopListeningForRuntimeStatuses();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!runningEditJobIds) return;
-    const stopSubscriptions = runningEditJobIds.split(",").map((jobId) => api.subscribeToEvents(`/api/edit/jobs/${jobId}/events`, {
-      onEvent: (event, data) => {
-        if (event !== "job") return;
-        try {
-          const job = JSON.parse(data) as EditJob;
-          setExperiments((current) => applyEditJobUpdate(current, job));
-          if (job.status !== "running") markNewWork();
-        } catch {
-          // The next server event remains authoritative if a malformed event is received.
-        }
-      }
-    }));
-    return () => stopSubscriptions.forEach((stop) => stop());
-  }, [runningEditJobIds]);
-
-  useEffect(() => {
-    if (!open) return;
-    refresh();
-    if (!hasActiveWork) return;
-    const timer = window.setInterval(refresh, 1500);
-    return () => window.clearInterval(timer);
-  }, [open, hasActiveWork]);
+    if (previousActiveCount.current > activeCount) markNewWork();
+    previousActiveCount.current = activeCount;
+  }, [activeCount]);
 
   useEffect(() => {
     if (!open) return;
@@ -348,27 +246,6 @@ export function TopbarJobsMenu() {
       {downloadDetails ? <DownloadDetailsDialog job={downloadJobs.find((job) => job.job_id === downloadDetails.job_id) ?? downloadDetails} status={downloadJobCache(downloadJobs.find((job) => job.job_id === downloadDetails.job_id) ?? downloadDetails, cache)} onClose={() => setDownloadDetails(null)} /> : null}
     </div>
   );
-}
-
-function applyEditJobUpdate(experiments: Experiment[], job: EditJob): Experiment[] {
-  return experiments.map((experiment) => {
-    if (experiment.id !== job.experiment_id) return experiment;
-    const previousJob = experiment.job;
-    return {
-      ...experiment,
-      status: job.status,
-      job: {
-        id: job.job_id,
-        experiment_id: job.experiment_id,
-        status: job.status,
-        progress: job.progress,
-        progress_current: job.progress_current,
-        progress_total: job.progress_total,
-        created_at: previousJob?.created_at ?? experiment.created_at,
-        updated_at: previousJob?.updated_at ?? experiment.updated_at ?? experiment.created_at
-      }
-    };
-  });
 }
 
 function Progress({ downloadedBytes, totalBytes, active, complete }: { downloadedBytes: number; totalBytes?: number | null; active: boolean; complete: boolean }) {

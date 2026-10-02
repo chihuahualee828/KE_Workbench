@@ -3,6 +3,8 @@
 import { GitBranch, Layers, RotateCcw, Save, Trash2, X, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { experimentResource, historyResource, loadMorePatches, patchResource } from "@/lib/workbenchResources";
+import { patchDeletionBlockReason, patchMutationBlockReason } from "@/lib/patchOperations";
 import { api } from "@/lib/api";
 import type { ModelRuntimeStatus, Patch, PatchEditPage, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -10,6 +12,11 @@ import { VirtualizedList } from "./VirtualizedList";
 
 const PATCH_EDIT_PAGE_SIZE = 50;
 const PATCH_FACT_CARD_ESTIMATED_HEIGHT = 172;
+
+function usePatchMutationBlockReason() {
+  const [experiments] = experimentResource.use();
+  return patchMutationBlockReason(experiments);
+}
 
 export function PatchHistory({
   patches,
@@ -22,6 +29,9 @@ export function PatchHistory({
   runtime?: ModelRuntimeStatus[];
   onPatchesChanged?: () => void | Promise<void>;
 }) {
+  const [totals] = historyResource.use();
+  const blockedReason = usePatchMutationBlockReason();
+  const savedPatchCount = Math.max(totals.patches, patches.length);
   const [busyPatchId, setBusyPatchId] = useState("");
   const [savingPatchId, setSavingPatchId] = useState("");
   const [loadingPatchId, setLoadingPatchId] = useState("");
@@ -76,6 +86,7 @@ export function PatchHistory({
   }, [loadedModelIds, loadedPatchModelId]);
 
   async function discardPatch(patchId: string) {
+    if (blockedReason) { setError(blockedReason); return; }
     setBusyPatchId(patchId);
     setError("");
     try {
@@ -89,6 +100,7 @@ export function PatchHistory({
   }
 
   async function revertToPatch(patchId: string) {
+    if (blockedReason) { setError(blockedReason); return; }
     setBusyPatchId(patchId);
     setError("");
     try {
@@ -120,6 +132,7 @@ export function PatchHistory({
   }
 
   async function loadPatch(patch: Patch) {
+    if (blockedReason) { setError(blockedReason); return; }
     setLoadingPatchId(patch.patch_id);
     setMessage("");
     setError("");
@@ -137,6 +150,8 @@ export function PatchHistory({
   }
 
   async function deletePatch(patch: Patch) {
+    const deletionBlocked = patchDeletionBlockReason(patch.patch_id, patches);
+    if (deletionBlocked) { setError(deletionBlocked); return; }
     setDeletingPatchId(patch.patch_id);
     setMessage("");
     setError("");
@@ -154,6 +169,7 @@ export function PatchHistory({
   }
 
   async function clearHistory() {
+    if (blockedReason) { setError(blockedReason); return; }
     setClearingHistory(true);
     setMessage("");
     setError("");
@@ -175,13 +191,13 @@ export function PatchHistory({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h2 className="text-base font-semibold">Patch History</h2>
-          <span className="label whitespace-nowrap">{activePatches.length} active / {patches.length} saved</span>
+          <span className="label whitespace-nowrap">{activePatches.length} active / {savedPatchCount} saved</span>
         </div>
         <button
           className="ghost-button min-h-8 px-2 py-1 text-xs"
-          disabled={patches.length === 0 || clearingHistory}
+          disabled={Boolean(blockedReason) || patches.length === 0 || clearingHistory}
           onClick={() => setConfirmingClear(true)}
-          title="Delete all saved patch records and tensor deltas"
+          title={blockedReason || "Delete all saved patch records and tensor deltas"}
           type="button"
         >
           <Trash2 size={14} />
@@ -256,7 +272,7 @@ export function PatchHistory({
       {confirmingClear ? (
         <ClearPatchHistoryDialog
           clearing={clearingHistory}
-          patchCount={patches.length}
+          patchCount={savedPatchCount}
           onCancel={() => setConfirmingClear(false)}
           onConfirm={clearHistory}
         />
@@ -310,10 +326,11 @@ function PatchTable({
   mode: "active" | "library";
   scrollable?: boolean;
 }) {
+  const blockedReason = usePatchMutationBlockReason();
   if (patches.length === 0) return null;
   const lineageGraph = mode === "library" ? buildLineageGraph(patches) : null;
   return (
-    <div className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
+    <div onScroll={(event) => { const node = event.currentTarget; if (scrollable && node.scrollHeight - node.scrollTop - node.clientHeight < 240) void loadMorePatches().catch(() => undefined); }} className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
       <table className="w-full table-fixed border-collapse text-sm">
         <colgroup>
           {lineageGraph ? <col className="w-14" /> : null}
@@ -339,6 +356,7 @@ function PatchTable({
         </thead>
         <tbody>
           {patches.map((patch) => {
+            const deletionBlocked = patchDeletionBlockReason(patch.patch_id, patches);
             const graphRow = lineageGraph?.rowsByPatchId[patch.patch_id];
             const latestIndex = latestActiveIndexByModel[patch.base_model] ?? -1;
             const isLatestActive = Boolean(patch.active && patch.active_index === latestIndex);
@@ -409,9 +427,9 @@ function PatchTable({
                           <button
                             aria-label={`Revert to patch ${patch.patch_id}`}
                             className="ghost-button grid size-9 place-items-center p-0"
-                            disabled={busyPatchId === patch.patch_id}
+                            disabled={Boolean(blockedReason) || busyPatchId === patch.patch_id}
                             onClick={() => onRevertTo(patch.patch_id)}
-                            title="Keep this patch and discard every patch applied after it"
+                            title={blockedReason || "Keep this patch and discard every patch applied after it"}
                             type="button"
                           >
                             <RotateCcw className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
@@ -420,9 +438,9 @@ function PatchTable({
                         <button
                           aria-label={`Discard patch ${patch.patch_id}`}
                           className="ghost-button grid size-9 place-items-center p-0"
-                          disabled={!canDiscard || busyPatchId === patch.patch_id}
+                          disabled={Boolean(blockedReason) || !canDiscard || busyPatchId === patch.patch_id}
                           onClick={() => onDiscard(patch.patch_id)}
-                          title={actionTitle}
+                          title={blockedReason || actionTitle}
                           type="button"
                         >
                           <XCircle className={busyPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
@@ -433,9 +451,9 @@ function PatchTable({
                         <button
                           aria-label={`Load patch ${patch.patch_id} into model`}
                           className="ghost-button grid size-9 place-items-center p-0"
-                          disabled={!canLoad || loadingPatchId === patch.patch_id}
+                          disabled={Boolean(blockedReason) || !canLoad || loadingPatchId === patch.patch_id}
                           onClick={() => onLoadPatch(patch)}
-                          title={loadTitle}
+                          title={blockedReason || loadTitle}
                           type="button"
                         >
                           <Layers className={loadingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
@@ -444,9 +462,9 @@ function PatchTable({
                           <button
                             aria-label={`Delete saved patch ${patch.patch_id}`}
                             className="ghost-button grid size-9 place-items-center p-0 text-rust hover:text-rust"
-                            disabled={deletingPatchId === patch.patch_id}
+                            disabled={Boolean(deletionBlocked) || deletingPatchId === patch.patch_id}
                             onClick={() => onDeletePatch(patch)}
-                            title="Delete this saved patch and its tensor deltas"
+                            title={deletionBlocked || "Delete this saved patch and its tensor deltas"}
                             type="button"
                           >
                             <Trash2 className={deletingPatchId === patch.patch_id ? "animate-pulse" : undefined} size={18} />
@@ -593,6 +611,7 @@ function PatchDetailsDialog({
   onClose: () => void;
   onLoad: () => void;
 }) {
+  const blockedReason = usePatchMutationBlockReason();
   const tensorDeltas = (patch.delta_paths ?? []).filter((path) => path.endsWith(".safetensors"));
   const bakedIntoModel = Boolean(patch.lineage_only || patch.baked_into_model);
   const canLoad = !patch.active && !bakedIntoModel && tensorDeltas.length > 0 && modelLoaded;
@@ -668,8 +687,8 @@ function PatchDetailsDialog({
         </section>
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-          <div className="text-xs text-ink/60">{loadTitle}</div>
-          <button className="tool-button min-h-9 px-3 py-1" disabled={!canLoad || loading} onClick={onLoad} title={loadTitle} type="button">
+          <div className="text-xs text-ink/60">{blockedReason || loadTitle}</div>
+          <button className="tool-button min-h-9 px-3 py-1" disabled={Boolean(blockedReason) || !canLoad || loading} onClick={onLoad} title={blockedReason || loadTitle} type="button">
             <Layers size={15} />
             {loading ? "Loading" : "Load into Model"}
           </button>
@@ -738,6 +757,7 @@ function ClearPatchHistoryDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const blockedReason = usePatchMutationBlockReason();
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 p-4" onMouseDown={onCancel} role="presentation">
       <section aria-labelledby="clear-patches-title" aria-modal="true" className="w-full max-w-md rounded-lg border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
@@ -748,7 +768,7 @@ function ClearPatchHistoryDialog({
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button className="ghost-button min-h-9 px-3 py-1" disabled={clearing} onClick={onCancel} type="button">Cancel</button>
-          <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={clearing} onClick={onConfirm} type="button">
+          <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={Boolean(blockedReason) || clearing} onClick={onConfirm} title={blockedReason || undefined} type="button">
             <Trash2 size={15} />
             {clearing ? "Clearing" : "Clear History"}
           </button>
@@ -769,6 +789,8 @@ function DeletePatchDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const [patches] = patchResource.use();
+  const blockedReason = patchDeletionBlockReason(patch.patch_id, patches);
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 p-4" onMouseDown={onCancel} role="presentation">
       <section aria-labelledby="delete-patch-title" aria-modal="true" className="w-full max-w-md rounded-lg border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
@@ -779,7 +801,7 @@ function DeletePatchDialog({
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button className="ghost-button min-h-9 px-3 py-1" disabled={deleting} onClick={onCancel} type="button">Cancel</button>
-          <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={deleting} onClick={onConfirm} type="button">
+          <button className="tool-button min-h-9 bg-rust px-3 py-1 hover:bg-rust/90" disabled={Boolean(blockedReason) || deleting} onClick={onConfirm} title={blockedReason || undefined} type="button">
             <Trash2 size={15} />
             {deleting ? "Deleting" : "Delete Patch"}
           </button>

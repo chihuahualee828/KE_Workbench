@@ -3,10 +3,13 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import { api } from "@/lib/api";
+import { api, invalidateApiReads } from "@/lib/api";
 import { getBackendConnection, saveBackendConnection, type BackendConnection } from "@/lib/backendConnection";
 import { announceModelRuntimeConnected, announceModelRuntimeDisconnected, announceModelRuntimeStatuses, applyRuntimeJobToRuntime, applyRuntimeStatusToRuntime, listenForModelRuntimeLoads, listenForModelRuntimeStatuses, listenForModelRuntimeStream } from "@/lib/modelRuntimeEvents";
-import type { Experiment, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import { cacheResource, downloadResource, experimentResource, historyResource, modelResource, patchResource, runtimeResource, refreshTransfers, refreshExperimentHistory, refreshPatchHistory, reconcilePatchesAfterRuntimeUpdate, resetWorkbenchResources } from "@/lib/workbenchResources";
+import { listenForExperimentStarts, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { listenForModelDownloads, listenForModelCacheStatuses, applyDownloadJobToCache, applyCacheStatusToCache, upsertModelDownloadJob } from "@/lib/modelDownloadEvents";
+import type { Experiment, ModelRuntimeStatus, EditJob } from "@/lib/types";
 
 type WorkbenchData = ReturnType<typeof useWorkbenchDataStore>;
 
@@ -24,28 +27,36 @@ export function useWorkbenchData() {
 }
 
 function useWorkbenchDataStore() {
-  const [models, setModels] = useState<SupportedModel[]>([]);
-  const [patches, setPatches] = useState<Patch[]>([]);
-  const [experiments, setExperiments] = useState<Experiment[]>([]);
-  const [runtime, setRuntime] = useState<ModelRuntimeStatus[]>([]);
+  const [models, setModels] = modelResource.use();
+  const [patches, setPatches] = patchResource.use();
+  const [experiments, setExperiments] = experimentResource.use();
+  const [runtime, setRuntime] = runtimeResource.use();
+  const [, setCache] = cacheResource.use();
+  const [downloadJobs, setDownloadJobs] = downloadResource.use();
+  const [totals] = historyResource.use();
+  const connectionVersion = useRef(0);
   const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
   const [backend, setBackend] = useState<BackendConnection>(() => getBackendConnection());
   const [backendHydrated, setBackendHydrated] = useState(false);
   const reconnecting = useRef(false);
   const runtimeSnapshot = useRef<ModelRuntimeStatus[]>([]);
-  const runtimePatchRefreshPending = useRef(false);
+  const broadcastingRuntime = useRef(false);
 
   const refresh = useCallback(async () => {
+    const version = connectionVersion.current;
     try {
-      const [modelResult, patchResult, experimentResult, runtimeResult] = await Promise.all([api.models(), api.patches(), api.experiments(), api.modelRuntime()]);
+      const [modelResult, runtimeResult] = await Promise.all([api.models(), api.modelRuntime(), refreshExperimentHistory(), refreshPatchHistory(), refreshTransfers()]);
+      if (version !== connectionVersion.current) return;
       setModels(modelResult);
-      setPatches(patchResult.patches.filter((patch) => patch.patch_id));
-      setExperiments(experimentResult.filter((experiment) => experiment.id?.startsWith("exp_")));
       setRuntime(runtimeResult);
+      const previousRuntime = runtimeSnapshot.current;
       runtimeSnapshot.current = runtimeResult;
+      await reconcilePatchesAfterRuntimeUpdate(previousRuntime, runtimeResult);
+      if (version !== connectionVersion.current) return;
       announceModelRuntimeConnected();
       setStatus("ready");
     } catch (error) {
+      if (version !== connectionVersion.current) return;
       setModels([]);
       setPatches([]);
       setExperiments([]);
@@ -56,18 +67,11 @@ function useWorkbenchDataStore() {
     }
   }, []);
 
-  const refreshPatchesAfterRuntimeUnload = useCallback(() => {
-    if (runtimePatchRefreshPending.current) return;
-    runtimePatchRefreshPending.current = true;
-    void refresh()
-      .catch(() => undefined)
-      .finally(() => {
-        runtimePatchRefreshPending.current = false;
-      });
-  }, [refresh]);
-
   const changeBackend = useCallback(async (connection: BackendConnection) => {
     const saved = saveBackendConnection(connection);
+    connectionVersion.current += 1;
+    invalidateApiReads();
+    resetWorkbenchResources();
     setBackend(saved);
     setStatus("loading");
     setModels([]);
@@ -100,27 +104,22 @@ function useWorkbenchDataStore() {
       }
     });
     const stopListeningForStatuses = listenForModelRuntimeStatuses((runtimeStatus) => {
-      const previousStatus = runtimeSnapshot.current.find((status) => status.model_id === runtimeStatus.model_id);
-      runtimeSnapshot.current = applyRuntimeStatusToRuntime(runtimeSnapshot.current, runtimeStatus);
+      if (broadcastingRuntime.current) return;
+      const previousRuntime = runtimeSnapshot.current;
+      runtimeSnapshot.current = applyRuntimeStatusToRuntime(previousRuntime, runtimeStatus);
       setRuntime((current) => applyRuntimeStatusToRuntime(current, runtimeStatus));
-      if (previousStatus?.loaded && !runtimeStatus.loaded) {
-        refreshPatchesAfterRuntimeUnload();
-      }
+      void reconcilePatchesAfterRuntimeUpdate(previousRuntime, [runtimeStatus]).catch(() => undefined);
     });
     const stopListeningForRuntimeStream = listenForModelRuntimeStream(
       (statuses) => {
-        const unloadedModel = statuses.some((status) =>
-          runtimeSnapshot.current.find((previous) => previous.model_id === status.model_id)?.loaded
-          && !status.loaded
-        );
+        const previousRuntime = runtimeSnapshot.current;
         runtimeSnapshot.current = statuses;
         announceModelRuntimeConnected();
-        announceModelRuntimeStatuses(statuses);
+        broadcastingRuntime.current = true;
+        try { announceModelRuntimeStatuses(statuses); } finally { broadcastingRuntime.current = false; }
         setRuntime(statuses);
         setStatus("ready");
-        if (unloadedModel) {
-          refreshPatchesAfterRuntimeUnload();
-        }
+        void reconcilePatchesAfterRuntimeUpdate(previousRuntime, statuses).catch(() => undefined);
       },
       () => {
         reconnecting.current = true;
@@ -143,9 +142,54 @@ function useWorkbenchDataStore() {
       stopListeningForStatuses();
       stopListeningForRuntimeStream();
     };
-  }, [backend.baseUrl, backend.token, backendHydrated, refresh, refreshPatchesAfterRuntimeUnload]);
+  }, [backend.baseUrl, backend.token, backendHydrated, refresh]);
 
-  return { models, patches, experiments, runtime, status, backend, changeBackend, refresh };
+  useEffect(() => {
+    if (!backendHydrated) return;
+    const stopDownloads = listenForModelDownloads((job) => {
+      setDownloadJobs((current) => upsertModelDownloadJob(current, job));
+      setCache((current) => applyDownloadJobToCache(current, job));
+    });
+    const stopCache = listenForModelCacheStatuses((value) => setCache((current) => applyCacheStatusToCache(current, value)));
+    const stopStarts = listenForExperimentStarts(() => { invalidateApiReads(); void refreshExperimentHistory().catch(() => undefined); });
+    const stopCanceled = listenForExperimentCanceled(() => { invalidateApiReads(); void refreshExperimentHistory().catch(() => undefined); });
+    return () => { stopDownloads(); stopCache(); stopStarts(); stopCanceled(); };
+  }, [backendHydrated]);
+
+  const activeTransfers = downloadJobs.filter((job) => ["queued", "downloading", "validating", "registering", "canceling"].includes(job.status)).map((job) => job.job_id).sort().join(",");
+  useEffect(() => {
+    if (!activeTransfers) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try { await refreshTransfers(); } catch { /* The next cycle retries. */ }
+      if (!stopped) timer = setTimeout(poll, 1500);
+    };
+    timer = setTimeout(poll, 1500);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [activeTransfers, backend.baseUrl, backend.token]);
+
+  const activeJobs = experiments.filter((item) => item.status === "running" && item.job?.id).map((item) => item.job!.id).sort().join(",");
+  useEffect(() => {
+    if (!activeJobs) return;
+    const stops = activeJobs.split(",").map((id) => api.subscribeToEvents(`/api/edit/jobs/${id}/events?include_result=false`, {
+      onEvent: (event, data) => {
+        if (event !== "job") return;
+        const job = JSON.parse(data) as EditJob;
+        setExperiments((current) => current.map((item) => item.id === job.experiment_id ? {
+          ...item, status: job.status as Experiment["status"], job: item.job ? { ...item.job, status: job.status as Experiment["status"], progress: job.progress, progress_current: job.progress_current, progress_total: job.progress_total } : item.job
+        } : item));
+        if (job.status !== "running") {
+          invalidateApiReads();
+          if (experiments.find((item) => item.id === job.experiment_id)?.type !== "evaluation") void refreshPatchHistory().catch(() => undefined);
+          void refreshExperimentHistory().catch(() => undefined);
+        }
+      }
+    }));
+    return () => stops.forEach((stop) => stop());
+  }, [activeJobs, backend.baseUrl, backend.token]);
+
+  return { models, patches, experiments, runtime, status, backend, changeBackend, refresh, totals };
 }
 
 export function ApiStatus({ status }: { status: "loading" | "ready" | "offline" }) {

@@ -17,12 +17,12 @@ const workflows = [
 ];
 
 export default function HomePage() {
-  const { models, patches, experiments, runtime, status, refresh } = useWorkbenchData();
+  const { models, patches, experiments, runtime, status, refresh, totals } = useWorkbenchData();
   const loadedModels = runtime.filter((model) => model.loaded);
   const stats = [
     { label: "Models loaded", value: loadedModels.length, note: loadedModels.length ? "Ready for inference" : "Choose a model to begin", icon: Cpu, href: "#models" },
-    { label: "Saved patches", value: patches.length, note: `${patches.filter((patch) => patch.active).length} currently active`, icon: Box, href: "#patches" },
-    { label: "Experiments", value: experiments.length, note: `${experiments.filter((experiment) => experiment.status === "completed").length} completed`, icon: FlaskConical, href: "/jobs" }
+    { label: "Saved patches", value: totals.patches, note: `${patches.filter((patch) => patch.active).length} currently active`, icon: Box, href: "#patches" },
+    { label: "Experiments", value: totals.experiments, note: `${totals.completed} completed`, icon: FlaskConical, href: "/jobs" }
   ];
 
   return (

@@ -5,7 +5,8 @@ import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { watchReliabilityTestJob } from "@/lib/reliabilityJobProgress";
+import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling } from "@/lib/experimentEvents";
 import { type FactEditDraft, type IndexedFactDataset, useIndexedFactDataset } from "@/lib/factDataset";
 import { isModelRuntimeConnected, listenForModelRuntimeConnection } from "@/lib/modelRuntimeEvents";
 import type { EditJob, ModelRuntimeStatus, Patch, ReliabilityTestResultItem, ReliabilityTestResultPage, SupportedModel } from "@/lib/types";
@@ -64,7 +65,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
 
     async function resume() {
       try {
-        const current = await api.editJob(jobId);
+        const current = await api.editJob(jobId!);
         if (controller.signal.aborted) return;
         setJob(current);
         if (current.status !== "running") {
@@ -294,7 +295,7 @@ async function watchEditJob(
   return new Promise<EditJob>((resolve, reject) => {
     let current = initial;
     let settled = false;
-    let stopSubscription = () => undefined;
+    let stopSubscription: () => void = () => undefined;
     const finish = () => {
       stopSubscription();
       options.signal?.removeEventListener("abort", stop);
@@ -317,7 +318,7 @@ async function watchEditJob(
       return;
     }
     options.signal?.addEventListener("abort", stop, { once: true });
-    stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${initial.job_id}/events`, {
+    stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${initial.job_id}/events?include_result=false`, {
       onEvent: (event, data) => {
         if (event === "job") {
           try {
@@ -326,7 +327,10 @@ async function watchEditJob(
             if (current.status === "running") return;
             clearActiveEditJob();
             if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Edit job failed"));
-            else succeed(current);
+            else if (current.status === "completed") {
+              stopSubscription();
+              void api.editJob(current.job_id).then(succeed, (error) => fail(error instanceof Error ? error : new Error(String(error))));
+            } else succeed(current);
           } catch (error) {
             fail(error instanceof Error ? error : new Error(String(error)));
           }
@@ -1421,56 +1425,6 @@ function useFactEvaluationPromptPreview(dataset: IndexedFactDataset<FactEditDraf
   return prompts;
 }
 
-async function watchReliabilityTestJob(initial: EditJob, onUpdate: (job: EditJob) => void): Promise<EditJob> {
-  announceExperimentStarted(initial.experiment_id);
-  return new Promise<EditJob>((resolve, reject) => {
-    let current = initial;
-    let timer: number | null = null;
-    let settled = false;
-    let stopCanceledListener: () => void = () => undefined;
-    const finish = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      stopCanceledListener();
-    };
-    const succeed = (job: EditJob) => {
-      if (settled) return;
-      settled = true;
-      finish();
-      resolve(job);
-    };
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      finish();
-      reject(error);
-    };
-    stopCanceledListener = listenForExperimentCanceled(({ jobId }) => {
-      if (jobId !== initial.job_id) return;
-      current = { ...current, status: "canceled" };
-      onUpdate(current);
-      succeed(current);
-    });
-    const poll = () => {
-      if (settled) return;
-      onUpdate(current);
-      if (current.status !== "running") {
-        if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Reliability evaluation failed."));
-        else succeed(current);
-        return;
-      }
-      timer = window.setTimeout(() => {
-        void api.easyEditReliabilityJob(current.job_id)
-          .then((job) => {
-            if (settled) return;
-            current = job;
-            poll();
-          })
-          .catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
-      }, 500);
-    };
-    poll();
-  });
-}
 
 function useReliabilityTestCancellation() {
   const [jobId, setJobId] = useState<string | null>(null);
