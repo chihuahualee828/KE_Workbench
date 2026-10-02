@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { getBackendConnection } from "@/lib/backendConnection";
 import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
 import { readFactOverrides, writeFactOverride } from "@/lib/factDataset";
-import type { EvaluationFact, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import type { EditJob, EvaluationFact, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelCacheManager } from "./ModelCacheManager";
@@ -171,7 +171,8 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     // clean model and would discard the tab-scoped experiment id.
     if (apiStatus !== "ready") return;
     let cancelled = false;
-    let retryTimer: number | null = null;
+    let stopSubscription: () => void = () => undefined;
+    let finishing = false;
     const restoreEvaluation = async () => {
       try {
         const experiment = await api.experimentStatus(evaluationExperimentId);
@@ -192,7 +193,21 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
             current: experiment.job?.progress_current ?? 0,
             total: experiment.job?.progress_total ?? 0,
           });
-          retryTimer = window.setTimeout(() => void restoreEvaluation(), 1500);
+          const jobId = experiment.job?.id;
+          if (!jobId) throw new Error("Running evaluation has no job ID.");
+          stopSubscription = api.subscribeToEvents(`/api/edit/jobs/${jobId}/events?include_result=false`, {
+            onEvent: (event, data) => {
+              if (cancelled || finishing || event !== "job") return;
+              const job = JSON.parse(data) as EditJob;
+              setEvaluationProgress({ current: job.progress_current ?? 0, total: job.progress_total ?? 0 });
+              if (job.status !== "running") {
+                finishing = true;
+                stopSubscription();
+                // Fetch final metadata/results once, after the terminal event.
+                void restoreEvaluation();
+              }
+            }
+          });
           return;
         }
         setBusy(false);
@@ -227,7 +242,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     void restoreEvaluation();
     return () => {
       cancelled = true;
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      stopSubscription();
     };
   }, [activePatchSignature, apiStatus, evaluationExperimentId, modelId, setEvaluationExperimentId]);
 
