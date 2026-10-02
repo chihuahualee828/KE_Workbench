@@ -148,11 +148,11 @@ def wait_edit_job(
 
 
 @router.get("/edit/jobs/{job_id}/events")
-def stream_edit_job(job_id: str) -> StreamingResponse:
+def stream_edit_job(job_id: str, include_result: bool = True) -> StreamingResponse:
     def events():
         after_log_count = 0
         for job in experiment_service.job_events(job_id):
-            response = _job_response(job, after_log_count=after_log_count)
+            response = _job_response(job, after_log_count=after_log_count, include_result=include_result)
             after_log_count = response.log_count
             yield f"event: job\ndata: {response.model_dump_json()}\n\n"
         yield "event: complete\ndata: {}\n\n"
@@ -391,7 +391,7 @@ class _JobLogStream:
             )
 
 
-def _job_response(job: dict, after_log_count: int | None = None) -> JobResponse:
+def _job_response(job: dict, after_log_count: int | None = None, include_result: bool = True) -> JobResponse:
     total_log_count = int(job.get("log_count", len(job.get("logs", []))))
     retained_logs = job.get("logs", [])
     retained_start = total_log_count - len(retained_logs)
@@ -410,7 +410,9 @@ def _job_response(job: dict, after_log_count: int | None = None) -> JobResponse:
         logs=logs,
         log_count=total_log_count,
         log_start_count=log_start_count,
-        result=_job_result(job),
+        result_item_count=int(job.get("result_item_count") or 0),
+        result_page_size=job.get("result_page_size"),
+        result=_job_result(job) if include_result else job.get("partial_result"),
     )
 
 
@@ -442,6 +444,27 @@ def _job_result(job: dict) -> dict | None:
 @router.get("/patches", response_model=PatchListResponse)
 def list_patches() -> PatchListResponse:
     return PatchListResponse(patches=patch_service.list_patch_summaries())
+
+
+@router.get("/patches/page")
+def list_patch_page(offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=200),
+                    model_id: str | None = None) -> dict:
+    return patch_service.list_patch_page(offset, limit, model_id)
+
+
+@router.get("/patches/active")
+def list_active_patches() -> dict:
+    active = patch_service.active_patches_by_model()
+    items = []
+    for model_id, patch_ids in active.items():
+        for index, patch_id in enumerate(patch_ids):
+            patch_service.get_patch_edits_page(patch_id, 0, 0)
+            from app.storage.catalog import catalog
+            with catalog() as db:
+                row = db.execute("SELECT summary FROM records WHERE kind='patch' AND id=?", (patch_id,)).fetchone()
+            if row:
+                items.append({**json.loads(row[0]), "active": True, "active_index": index})
+    return {"patches": items}
 
 
 @router.get("/patches/{patch_id}/edits")

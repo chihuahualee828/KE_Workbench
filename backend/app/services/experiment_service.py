@@ -59,17 +59,12 @@ class ExperimentService:
         return experiment
 
     def list_experiments(self) -> list[dict[str, Any]]:
-        records = local_store.list_json("experiments")
-        jobs = {str(item.get("experiment_id")): _job_summary(item) for item in records if item.get("id", "").startswith("job_")}
-        experiments = [
-            {
-                **_experiment_list_summary(item),
-                **({"job": jobs[item["id"]]} if item.get("id") in jobs else {}),
-            }
-            for item in records
-            if item.get("id", "").startswith("exp_")
-        ]
-        return sorted(experiments, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return self.list_experiment_page(limit=None)["items"]
+
+    def list_experiment_page(self, offset: int = 0, limit: int | None = 50,
+                             model_id: str | None = None, status: str | None = None) -> dict:
+        from app.storage.catalog import history_page
+        return history_page("experiment", offset, limit, model_id, status)
 
     def job_events(self, job_id: str):
         cursor = 0
@@ -90,19 +85,20 @@ class ExperimentService:
         except FileNotFoundError:
             return None
 
-    def get_experiment_details(self, experiment_id: str) -> dict[str, Any] | None:
+    def get_experiment_details(self, experiment_id: str, include_result: bool = True) -> dict[str, Any] | None:
         experiment = self.get_experiment(experiment_id)
         if experiment is None:
             return None
-
-        job = next(
-            (
-                item
-                for item in local_store.list_json("experiments")
-                if item.get("experiment_id") == experiment_id and item.get("id", "").startswith("job_")
-            ),
-            None,
-        )
+        job = self.get_job(experiment["job_id"]) if experiment.get("job_id") else None
+        if job is None:
+            # Older records predate job_id. Consult the compact index once.
+            from app.storage.catalog import catalog, sync_collection
+            with catalog() as db:
+                sync_collection(db, "experiment")
+                row = db.execute("SELECT id FROM records WHERE kind='job' AND experiment=? ORDER BY created DESC LIMIT 1", (experiment_id,)).fetchone()
+            job = self.get_job(row[0]) if row else None
+        if not include_result:
+            return {**_experiment_list_summary(experiment), "job": _job_summary(job) if job else None}
         result = None
         result_path = experiment.get("result_path")
         if result_path:

@@ -299,6 +299,12 @@ def list_active_evaluation_facts(
     }
 
 
+@router.get("/evaluate/active-facts/page")
+def list_active_evaluation_facts_page(model_id: str, offset: int = Query(default=0, ge=0),
+                                     limit: int = Query(default=50, ge=1, le=200), query: str = "") -> dict:
+    return patch_service.active_evaluation_facts_page(model_id, offset, limit, query)
+
+
 @router.post("/evaluate/active-model", response_model=JobResponse)
 def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
     try:
