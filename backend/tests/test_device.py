@@ -7,6 +7,7 @@ import pytest
 from app.ml import device
 from app.ml.adapters.gpt2_adapter import GPT2Adapter
 from app.ml.editing.easyedit_runtime import _override_easyedit_device
+from app.services.model_runtime_service import HardUnloadModelRuntimeService
 
 
 @pytest.mark.parametrize(
@@ -150,3 +151,16 @@ def test_cache_profile_matches_runtime_precision(monkeypatch, tmp_path, target, 
     worker_hparams.mom2_dtype = "float64"
     runtime._override_easyedit_device(worker_hparams, target)
     assert runtime._mom2_statistics_path(profile, None, 0) == runtime._mom2_statistics_path(worker_hparams, None, 0)
+
+
+def test_worker_memory_is_process_usage_not_vram_capacity():
+    runtime = HardUnloadModelRuntimeService()
+    runtime._worker_memory = [1024, 2048, 8192, 123.0]
+    memory = runtime._gpu_memory()
+    assert memory["mps_available"]
+    assert memory["allocated_bytes"] == 1024
+    assert memory["driver_allocated_bytes"] == 2048
+    assert memory["recommended_max_bytes"] == 8192
+    assert memory["sampled_at"] == 123.0
+    assert "total_bytes" not in memory
+    assert "free_bytes" not in memory

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import threading
+import time
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -19,12 +21,36 @@ class _WorkerLogStream:
         return None
 
 
-def model_worker_entry(connection: Any) -> None:
-    """Run model-owning commands in a disposable CUDA process."""
+def _sample_mps_memory(memory: Any, stop: threading.Event) -> None:
+    from app.ml.device import mps_available, mps_memory
+
+    if not mps_available():
+        return
+    while not stop.is_set():
+        try:
+            sample = mps_memory()
+            # One writer, best-effort snapshot. No lock that a killed worker
+            # could leave held, and no command-pipe traffic during inference.
+            memory[:] = [
+                sample["allocated_bytes"], sample["driver_allocated_bytes"],
+                sample["recommended_max_bytes"], time.time(),
+            ]
+        except RuntimeError:
+            pass  # Retain the last sample (and its timestamp) during teardown.
+        stop.wait(1.0)
+
+
+def model_worker_entry(connection: Any, memory: Any = None) -> None:
+    """Run model-owning commands in a disposable accelerator process."""
     import app.services.model_runtime_service as runtime_module
 
     runtime = runtime_module.ModelRuntimeService()
     runtime_module.model_runtime_service = runtime
+    telemetry_stop = threading.Event()
+    telemetry = None
+    if memory is not None:
+        telemetry = threading.Thread(target=_sample_mps_memory, args=(memory, telemetry_stop), daemon=True)
+        telemetry.start()
     connection.send({"type": "ready"})
 
     try:
@@ -44,7 +70,7 @@ def model_worker_entry(connection: Any) -> None:
                         command.get("payload") or {},
                         progress_callback=lambda progress: connection.send({"type": "progress", "progress": progress}),
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- report third-party failures across the worker boundary
                 connection.send(
                     {
                         "type": "result",
@@ -57,6 +83,9 @@ def model_worker_entry(connection: Any) -> None:
             else:
                 connection.send({"type": "result", "ok": True, "result": result})
     finally:
+        telemetry_stop.set()
+        if telemetry is not None:
+            telemetry.join(timeout=2.0)
         runtime.unload_all()
         connection.close()
 

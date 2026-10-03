@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-import gc
 import contextlib
+import gc
+import json
 import multiprocessing
-from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+import zipfile
 from collections.abc import Callable
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
-import zipfile
 
 from app.ml.adapters.gpt2_adapter import adapter_runtime_lock, get_gpt2_adapter, unload_all_adapters, unload_other_adapters
 from app.services.model_cache_service import model_cache_service
@@ -377,7 +380,9 @@ def _runtime_memory() -> dict[str, Any]:
     except ImportError:
         return {"cuda_available": False}
     if not torch.cuda.is_available():
-        return {"cuda_available": False}
+        from app.ml.device import mps_memory
+
+        return mps_memory()
     device = torch.cuda.current_device()
     free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     smi_memory = _nvidia_smi_memory(device)
@@ -468,10 +473,10 @@ def _nvidia_smi_memory(device: int) -> dict[str, Any] | None:
 
 
 class HardUnloadModelRuntimeService:
-    """Controller for one disposable process that owns all CUDA model state.
+    """Controller for one disposable process that owns all accelerator model state.
 
     The FastAPI process deliberately never loads model weights. Stopping this
-    worker therefore releases every CUDA allocation made by a loaded model,
+    worker therefore releases every accelerator allocation made by a loaded model,
     including allocations held by third-party editing code.
     """
 
@@ -491,6 +496,7 @@ class HardUnloadModelRuntimeService:
         self._loaded_model_id: str | None = None
         self._loaded_device = "not_loaded"
         self._model_vram_bytes = 0
+        self._worker_memory: Any | None = None
 
     def list_runtime_statuses(self) -> list[dict[str, Any]]:
         self._reconcile_worker_liveness()
@@ -511,11 +517,27 @@ class HardUnloadModelRuntimeService:
             "tokenizer_loaded": loaded,
             "device": device,
             "model_vram_bytes": model_vram_bytes,
-            "gpu": _controller_runtime_memory(),
+            "gpu": self._gpu_memory(),
             "runtime_state": active_job["status"] if active_job else ("loaded" if loaded else "not_loaded"),
             "active_job": active_job,
             "hard_unload": True,
         }
+
+    def _gpu_memory(self) -> dict[str, Any]:
+        memory = self._worker_memory
+        if memory is not None:
+            allocated, driver, recommended, sampled_at = memory[:]
+            if sampled_at:
+                return {
+                    "cuda_available": False, "mps_available": True,
+                    "device": "mps", "device_name": "Apple GPU (MPS)",
+                    "memory_source": "torch.mps (worker process)",
+                    "allocated_bytes": int(allocated),
+                    "driver_allocated_bytes": int(driver),
+                    "recommended_max_bytes": int(recommended),
+                    "sampled_at": sampled_at,
+                }
+        return _controller_runtime_memory()
 
     def start_load(self, model_id: str) -> dict[str, Any]:
         model = model_registry.get(model_id)
@@ -570,7 +592,7 @@ class HardUnloadModelRuntimeService:
         status["hard_unloaded"] = True
         status["discarded_patches_by_model"] = discarded
         self._publish_runtime_update()
-        print("Model worker stopped; CUDA model memory was released with its process.")
+        print("Model worker stopped; accelerator model memory was released with its process.")
         return status
 
     def unload_all(self) -> None:
@@ -593,6 +615,7 @@ class HardUnloadModelRuntimeService:
                 loaded_model_id = self._loaded_model_id
                 self._process = None
                 self._connection = None
+                self._worker_memory = None
                 self._loaded_model_id = None
                 self._loaded_device = "not_loaded"
                 self._model_vram_bytes = 0
@@ -633,7 +656,7 @@ class HardUnloadModelRuntimeService:
                 changed = observed_version != self._runtime_version
                 observed_version = self._runtime_version
             self._reconcile_worker_liveness()
-            if changed:
+            if changed or self._worker_memory is not None:
                 yield {"type": "runtime", "statuses": self.list_runtime_statuses()}
             else:
                 yield {"type": "keepalive"}
@@ -747,9 +770,10 @@ class HardUnloadModelRuntimeService:
 
         context = multiprocessing.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=True)
+        self._worker_memory = context.Array("d", 4, lock=False) if sys.platform == "darwin" else None
         process = context.Process(
             target=model_worker_entry,
-            args=(child_connection,),
+            args=(child_connection, self._worker_memory),
             name="kew-model-worker",
         )
         process.start()
@@ -844,6 +868,7 @@ class HardUnloadModelRuntimeService:
         connection = self._connection
         self._process = None
         self._connection = None
+        self._worker_memory = None
         if connection is not None:
             try:
                 connection.close()
@@ -914,6 +939,8 @@ def _controller_runtime_memory() -> dict[str, Any]:
     """Read GPU totals without initializing PyTorch/CUDA in the API process."""
     smi_memory = _nvidia_smi_memory(0)
     if smi_memory is None:
+        if sys.platform == "darwin":
+            return dict(_mac_gpu_capability())
         return {"cuda_available": False}
     used_bytes = int(smi_memory["used_bytes"])
     total_bytes = int(smi_memory["total_bytes"])
@@ -927,6 +954,30 @@ def _controller_runtime_memory() -> dict[str, Any]:
         "reserved_bytes": 0,
         "free_bytes": max(0, total_bytes - used_bytes),
         "total_bytes": total_bytes,
+    }
+
+
+@lru_cache(maxsize=1)
+def _mac_gpu_capability() -> dict[str, Any]:
+    """Probe in a short-lived process, never initialize Metal in the API server."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import json, torch; "
+                "available = torch.backends.mps.is_available(); "
+                "print(json.dumps({'mps_available': available, 'recommended_max_bytes': "
+                "torch.mps.recommended_max_memory() if available else 0}))"
+            )],
+            capture_output=True, text=True, timeout=20, check=True,
+        )
+        capability = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"cuda_available": False, "mps_available": False}
+    return {
+        **capability, "cuda_available": False,
+        "device": "mps", "device_name": "Apple GPU (MPS)",
+        "memory_source": "torch.mps (no model worker)",
+        "allocated_bytes": 0, "driver_allocated_bytes": 0,
     }
 
 

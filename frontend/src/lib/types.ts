@@ -177,6 +177,10 @@ export type ModelRuntimeStatus = {
   model_vram_bytes?: number;
   gpu?: {
     cuda_available: boolean;
+    mps_available?: boolean;
+    driver_allocated_bytes?: number;
+    recommended_max_bytes?: number;
+    sampled_at?: number;
     device?: string;
     device_name?: string;
     memory_source?: string;

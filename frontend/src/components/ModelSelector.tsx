@@ -246,7 +246,7 @@ export function ModelSelector({
               {modelStatusReady && selectedRuntime?.loaded ? (
                 <span>
                   <span>{`Loaded · ${selectedRuntime.device ?? "cpu"}`}</span>
-                  <span className="mt-1 block font-mono text-[10px] text-ink/50">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} VRAM</span>
+                  <span className="mt-1 block font-mono text-[10px] text-ink/50">{formatBytes(selectedRuntime.model_vram_bytes ?? 0)} {selectedRuntime.device?.startsWith("mps") ? "unified memory" : "VRAM"}</span>
                 </span>
               ) : modelStatusReady && selectedRuntimeUnloading ? "Unloading model" : modelStatusReady && selectedRuntimeActive ? "Loading weights" : modelStatusReady && runtimeJob?.model_id === value && runtimeJob.status === "failed" && runtimeJob.message !== "Failed to fetch" ? runtimeJob.message : "Not loaded in memory"}
             </span>

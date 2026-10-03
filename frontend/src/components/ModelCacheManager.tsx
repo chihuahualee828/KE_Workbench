@@ -443,7 +443,7 @@ export function ModelCacheManager({
                     {loaded ? (
                       <div>
                         <div>{`Loaded (${runtimeStatus?.device ?? "cpu"})`}</div>
-                        <div className="mt-1 text-xs text-ink/60">{formatBytes(runtimeStatus?.model_vram_bytes ?? 0)} model VRAM</div>
+                        <div className="mt-1 text-xs text-ink/60">{formatBytes(runtimeStatus?.model_vram_bytes ?? 0)} model {runtimeStatus?.device?.startsWith("mps") ? "unified memory" : "VRAM"}</div>
                       </div>
                     ) : unloading ? "Unloading" : loading ? "Loading" : runtimeError || "Not loaded"}
                   </td>
