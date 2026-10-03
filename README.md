@@ -251,7 +251,16 @@ Settings also provides a backend connection editor, runtime configuration detail
 To store downloaded models elsewhere, set `HF_HUB_CACHE=/absolute/path/to/huggingface/hub`
 in the repository or backend `.env` for native runs. For Docker Compose, set
 `HF_CACHE_HOST_DIR` to the host directory instead; the container uses `/hf-cache`.
-Downloads, cache status/deletion, and model/tokenizer loading share this directory.
+
+Settings > Model Cache Location can override the download folder without restarting
+the backend. This setting is saved in `DATA_DIR/settings/model_cache.json`; resetting
+it restores the environment default. Changing folders does not move existing files:
+the app searches the default and previously used folders when loading cached models.
+The new folder is created if needed and must be writable. Changes are rejected while
+a model download is active. Docker paths refer to the container filesystem; external
+folders must be mounted in the container to remain accessible.
+Downloads use the selected destination; cache status/deletion and model/tokenizer
+loading use the same set of known cache folders.
 `HF_HUB_CACHE` takes precedence over legacy `HUGGINGFACE_HUB_CACHE` and
 `TRANSFORMERS_CACHE`; otherwise the default follows `HF_HOME` or `XDG_CACHE_HOME`.
 Changing directories does not move or delete existing downloads. Stop the backend

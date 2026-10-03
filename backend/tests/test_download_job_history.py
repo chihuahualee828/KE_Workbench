@@ -30,7 +30,7 @@ def test_finished_download_keeps_its_progress_after_delete_redownload_and_restar
     service = history_service
     cache = {"size_bytes": size, "cached": outcome == "completed", "cache_state": "cached" if outcome == "completed" else "partial"}
     monkeypatch.setattr(service, "_cache_status", lambda *args, **kwargs: {**cache, "hub_size_bytes": kwargs.get("hub_size_bytes")})
-    monkeypatch.setattr(service, "_delete_download_cache", lambda _: cache.update(size_bytes=0, cached=False, cache_state="not_cached"))
+    monkeypatch.setattr(service, "_delete_download_cache", lambda *_: cache.update(size_bytes=0, cached=False, cache_state="not_cached"))
     job = {"job_id": "model_download_old", "model_id": "test", "hf_id": "test", "status": "queued", "created_at": "2026-01-01", "updated_at": "2026-01-01"}
     service._jobs[job["job_id"]] = job
 
@@ -67,7 +67,7 @@ def test_detached_download_freezes_partial_progress(history_service, monkeypatch
     service = history_service
     cache = {"size_bytes": 35, "cached": False, "cache_state": "partial"}
     monkeypatch.setattr(service, "_cache_status", lambda *args, **kwargs: dict(cache))
-    monkeypatch.setattr(service, "_delete_download_cache", lambda _: cache.update(size_bytes=0))
+    monkeypatch.setattr(service, "_delete_download_cache", lambda *_: cache.update(size_bytes=0))
     job = {"job_id": "model_download_detached", "model_id": "test", "status": "canceling" if canceling else "downloading", "progress_total_bytes": 100}
     result = service._reconcile_persisted_job(job, detached=True)
     assert result["status"] == ("canceled" if canceling else "failed")

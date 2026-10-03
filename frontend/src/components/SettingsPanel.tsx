@@ -1,6 +1,6 @@
 "use client";
 
-import { Database, KeyRound, Loader2, RefreshCw, Settings, Upload } from "lucide-react";
+import { Database, Folder, KeyRound, Loader2, RefreshCw, RotateCcw, Save, Settings, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -8,6 +8,7 @@ import { getDefaultBackendUrl, type BackendConnection } from "@/lib/backendConne
 import { announceExperimentStarted } from "@/lib/experimentEvents";
 import type { AppSettings, EditJob, ModelRuntimeStatus, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { refreshTransfers } from "@/lib/workbenchResources";
 import { AccentThemeSettings } from "./AccentTheme";
 import { ApiStatus } from "./DataState";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
@@ -33,6 +34,10 @@ export function SettingsPanel({
   const [busy, setBusy] = useState(false);
   const [backendBusy, setBackendBusy] = useState(false);
   const [error, setError] = useState("");
+  const [cacheDirectory, setCacheDirectory] = useState("");
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheError, setCacheError] = useState("");
+  const [cacheSaved, setCacheSaved] = useState(false);
 
   useEffect(() => {
     setBackendUrl(backend.baseUrl);
@@ -76,6 +81,23 @@ export function SettingsPanel({
     }
   }
 
+  async function saveCacheDirectory(value: string) {
+    setCacheError("");
+    setCacheSaved(false);
+    setCacheBusy(true);
+    try {
+      const location = await api.setModelCacheLocation({ download_dir: value });
+      setSettings((current) => current ? { ...current, model_cache: location } : current);
+      setCacheDirectory(location.download_dir);
+      setCacheSaved(true);
+      void refreshTransfers().catch(() => undefined);
+    } catch (err) {
+      setCacheError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCacheBusy(false);
+    }
+  }
+
   async function saveBackend() {
     setError("");
     setBackendBusy(true);
@@ -104,8 +126,24 @@ export function SettingsPanel({
   }
 
   useEffect(() => {
-    refresh();
-  }, []);
+    let active = true;
+    setSettings(null);
+    setError("");
+    setCacheError("");
+    setCacheSaved(false);
+    if (apiStatus === "ready") {
+      api.settings().then((value) => {
+        if (active) setSettings(value);
+      }).catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    }
+    return () => { active = false; };
+  }, [apiStatus, backend.baseUrl, backend.token]);
+
+  useEffect(() => {
+    setCacheDirectory(settings?.model_cache.download_dir ?? "");
+  }, [settings?.model_cache.download_dir]);
 
   return (
     <div className="grid gap-4">
@@ -177,6 +215,57 @@ export function SettingsPanel({
             Clear
           </button>
         </div>
+      </section>
+
+      <section className="panel grid min-w-0 gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Folder size={17} />
+            <h2 className="text-base font-semibold">Model Cache Location</h2>
+          </div>
+          <span className="text-xs text-ink/60">{settings ? settings.model_cache.source === "settings" ? "Custom folder" : "Backend default" : "Unavailable"}</span>
+        </div>
+        <label className="grid min-w-0 gap-1">
+          <span className="label" title="Absolute path on the backend machine. In Docker, use a path inside the container, such as /hf-cache.">Backend Download Folder</span>
+          <input
+            className="control min-w-0 font-mono text-sm"
+            value={cacheDirectory}
+            placeholder={settings?.model_cache.environment_dir ?? "/absolute/path/to/model-cache"}
+            onChange={(event) => { setCacheDirectory(event.target.value); setCacheSaved(false); setCacheError(""); }}
+            disabled={apiStatus !== "ready" || !settings || cacheBusy}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="ghost-button min-h-9 px-3 py-1"
+            type="button"
+            onClick={() => saveCacheDirectory("")}
+            disabled={apiStatus !== "ready" || !settings || cacheBusy || settings.model_cache.source !== "settings"}
+            title={`Restore the backend default: ${settings?.model_cache.environment_dir ?? "HF_HUB_CACHE"}`}
+          >
+            <RotateCcw size={16} />
+            Reset to Default
+          </button>
+          <button
+            className="tool-button min-h-9 px-3 py-1"
+            type="button"
+            onClick={() => saveCacheDirectory(cacheDirectory)}
+            disabled={apiStatus !== "ready" || !settings || cacheBusy || !cacheDirectory.trim() || cacheDirectory.trim() === settings.model_cache.download_dir}
+          >
+            {cacheBusy ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+            Apply
+          </button>
+        </div>
+        {settings ? <div className="grid min-w-0 gap-1">
+          <span className="label">Cache Search Folders</span>
+          <ul className="max-h-32 overflow-y-auto text-xs text-ink/60">
+            {settings.model_cache.search_dirs.map((directory) => <li className="break-all py-1 font-mono" key={directory}>{directory}</li>)}
+          </ul>
+        </div> : null}
+        {cacheError ? <p className="break-words text-sm text-rust" role="alert">{cacheError}</p> : null}
+        {cacheSaved ? <p className="text-xs text-ink/60" role="status">Download folder saved.</p> : null}
       </section>
 
       <Mom2StatisticsPanel models={models} runtime={runtime} />

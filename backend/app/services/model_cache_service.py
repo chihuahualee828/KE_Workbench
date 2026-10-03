@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from app.config import settings
 from app.services.model_registry import model_registry
+from app.services.model_cache_paths import model_cache_paths
 from app.storage.local_store import local_store
 
 MODEL_DOWNLOAD_IGNORE_PATTERNS = [
@@ -45,6 +46,7 @@ from huggingface_hub.utils import disable_progress_bars
 disable_progress_bars()
 snapshot_download(
     repo_id=os.environ["KEW_HF_REPO_ID"],
+    cache_dir=os.environ["KEW_HF_CACHE_DIR"],
     ignore_patterns=json.loads(os.environ["KEW_HF_IGNORE_PATTERNS"]),
     token=os.getenv("HF_TOKEN") or None,
 )
@@ -62,6 +64,40 @@ class ModelCacheService:
         self._hub_sizes = _read_hub_size_cache()
         self._lock = threading.Lock()
         self._local_import_lock = threading.RLock()
+        model_cache_paths.remember_environment()
+
+    def cache_location(self) -> dict[str, Any]:
+        return model_cache_paths.configuration()
+
+    def set_cache_location(self, download_dir: str) -> dict[str, Any]:
+        with self._lock:
+            if any(job["status"] in ACTIVE_DOWNLOAD_STATUSES
+                   and job.get("job_type") != "local_import" for job in self._jobs.values()):
+                raise RuntimeError("Wait for active model downloads to finish before changing the cache folder.")
+            return model_cache_paths.set_directory(download_dir)
+
+    def cache_root_for_model(self, hf_id: str) -> Path:
+        if Path(hf_id).is_dir():
+            return _hf_cache_root()
+        path, inspection = self._cache_inspection(hf_id)
+        return path.parent if inspection["complete"] else _hf_cache_root()
+
+    def _cache_inspection(self, hf_id: str) -> tuple[Path, dict[str, Any]]:
+        fallback = None
+        for root in model_cache_paths.roots():
+            path = root / f"models--{hf_id.replace('/', '--')}"
+            try:
+                inspection = _inspect_model_cache(path)
+            except OSError:
+                continue
+            if inspection["complete"]:
+                return path, inspection
+            if fallback is None or (not fallback[1]["size_bytes"] and inspection["size_bytes"]):
+                fallback = (path, inspection)
+        if fallback is not None:
+            return fallback
+        path = self._model_cache_path(hf_id)
+        return path, _inspect_model_cache(path)
 
     def list_cache_statuses(self) -> list[dict[str, Any]]:
         return [self.cache_status(model["id"]) for model in model_registry.list_models()]
@@ -101,13 +137,19 @@ class ModelCacheService:
         model_id: str,
         include_active_job: bool,
         hub_size_bytes: int | None = None,
+        cache_root: Path | None = None,
     ) -> dict[str, Any]:
         model = model_registry.get(model_id)
         if model.get("source") == "local":
             return _local_model_cache_status(model, include_active_job=False)
-        cache_path = self._model_cache_path(model["hf_id"])
-        inspection = _inspect_model_cache(cache_path)
         active_job = self._active_job_for_model(model_id) if include_active_job else None
+        if active_job:
+            cache_root = _download_cache_root(active_job)
+        if cache_root is not None:
+            cache_path = cache_root / f"models--{model['hf_id'].replace('/', '--')}"
+            inspection = _inspect_model_cache(cache_path)
+        else:
+            cache_path, inspection = self._cache_inspection(model["hf_id"])
         if active_job:
             cache_state = active_job["status"]
             cached = False
@@ -205,6 +247,7 @@ class ModelCacheService:
         }
         job.update(_download_progress_snapshot(job, cache_status))
         with self._lock:
+            job["cache_dir"] = str(_hf_cache_root())
             self._jobs[job_id] = job
             _write_job(job)
 
@@ -315,9 +358,10 @@ class ModelCacheService:
         model = model_registry.get(model_id)
         if model.get("source") == "local":
             raise RuntimeError("Local model files are not deleted by cache management. Remove the registration instead.")
-        cache_path = self._model_cache_path(model["hf_id"])
-        if cache_path.exists():
-            self._delete_with_huggingface_cache_api(model["hf_id"], cache_path)
+        for root in model_cache_paths.roots():
+            cache_path = root / f"models--{model['hf_id'].replace('/', '--')}"
+            if cache_path.exists():
+                self._delete_with_huggingface_cache_api(model["hf_id"], cache_path)
         return self.cache_status(model_id)
 
     def stage_local_model(self, files: list[tuple[str, BinaryIO]]) -> dict[str, Any]:
@@ -691,7 +735,9 @@ class ModelCacheService:
             with self._lock:
                 self._jobs[job_id]["progress_total_bytes"] = total_bytes
             ignore_patterns = self._download_ignore_patterns_for_model(model["hf_id"])
-            process = self._start_snapshot_download_process(model["hf_id"], ignore_patterns)
+            process = self._start_snapshot_download_process(
+                model["hf_id"], ignore_patterns, _download_cache_root(job)
+            )
             with self._lock:
                 self._jobs[job_id]["process_pid"] = process.pid
                 _write_job(self._jobs[job_id])
@@ -721,7 +767,7 @@ class ModelCacheService:
             status = self._capture_download_progress(job_id)
 
             if self._download_cancel_requested(job_id):
-                self._delete_download_cache(model["hf_id"])
+                self._delete_download_cache(model["hf_id"], _download_cache_root(job))
                 with self._lock:
                     self._jobs[job_id].update(
                         {
@@ -784,6 +830,7 @@ class ModelCacheService:
             job["model_id"],
             include_active_job=False,
             hub_size_bytes=job.get("progress_total_bytes"),
+            cache_root=_download_cache_root(job),
         )
         with self._lock:
             current = self._jobs[job_id]
@@ -827,9 +874,11 @@ class ModelCacheService:
         self,
         hf_id: str,
         ignore_patterns: list[str],
+        cache_root: Path | None = None,
     ) -> subprocess.Popen:
         env = os.environ.copy()
         env["KEW_HF_REPO_ID"] = hf_id
+        env["KEW_HF_CACHE_DIR"] = str(cache_root or _hf_cache_root())
         env["KEW_HF_IGNORE_PATTERNS"] = json.dumps(ignore_patterns)
         token = self._hf_token()
         if token:
@@ -849,8 +898,8 @@ class ModelCacheService:
             job = self._jobs.get(job_id)
             return bool(job and job.get("cancel_requested"))
 
-    def _delete_download_cache(self, hf_id: str) -> None:
-        cache_path = self._model_cache_path(hf_id)
+    def _delete_download_cache(self, hf_id: str, cache_root: Path | None = None) -> None:
+        cache_path = (cache_root or _hf_cache_root()) / f"models--{hf_id.replace('/', '--')}"
         if cache_path.exists():
             self._delete_with_huggingface_cache_api(hf_id, cache_path)
 
@@ -858,7 +907,7 @@ class ModelCacheService:
         try:
             from huggingface_hub import scan_cache_dir
 
-            cache_info = scan_cache_dir(cache_dir=_hf_cache_root())
+            cache_info = scan_cache_dir(cache_dir=cache_path.parent)
             repo = next(
                 (
                     repo
@@ -938,9 +987,10 @@ class ModelCacheService:
             return job
         if job["status"] == "canceling":
             model = model_registry.get(job["model_id"])
-            status = self._cache_status(job["model_id"], include_active_job=False)
+            status = self._cache_status(job["model_id"], include_active_job=False,
+                                        cache_root=_download_cache_root(job))
             job.update(_download_progress_snapshot(job, status))
-            self._delete_download_cache(model["hf_id"])
+            self._delete_download_cache(model["hf_id"], _download_cache_root(job))
             job.update(
                 {
                     "status": "canceled",
@@ -952,7 +1002,8 @@ class ModelCacheService:
             job.pop("process_pid", None)
             _write_job(job)
             return job
-        status = self._cache_status(job["model_id"], include_active_job=False)
+        status = self._cache_status(job["model_id"], include_active_job=False,
+                                    cache_root=_download_cache_root(job))
         job.update(_download_progress_snapshot(job, status))
         if status["cached"]:
             job.update(
@@ -996,14 +1047,14 @@ def _download_progress_snapshot(job: dict[str, Any], status: dict[str, Any]) -> 
 
 
 def _hf_cache_root() -> Path:
-    explicit = (
-        os.getenv("HUGGINGFACE_HUB_CACHE")
-        or os.getenv("TRANSFORMERS_CACHE")
-    )
-    if explicit:
-        return Path(explicit).expanduser()
-    hf_home = Path(os.getenv("HF_HOME", "~/.cache/huggingface")).expanduser()
-    return hf_home / "hub"
+    return model_cache_paths.download_dir()
+
+
+def _download_cache_root(job: dict[str, Any]) -> Path:
+    if job.get("cache_dir"):
+        return Path(job["cache_dir"])
+    previous_path = (job.get("cache") or {}).get("cache_path")
+    return Path(previous_path).parent if previous_path else _hf_cache_root()
 
 
 def _local_model_cache_root() -> Path:

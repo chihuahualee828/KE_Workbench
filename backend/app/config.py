@@ -26,6 +26,10 @@ _repo_root = _backend_root.parent
 _load_env_file(_repo_root / ".env")
 _load_env_file(_backend_root / ".env")
 
+# An empty optional override must not become an empty Hub cache path.
+if os.environ.get("HF_HUB_CACHE") == "":
+    os.environ.pop("HF_HUB_CACHE")
+
 
 def _resolve_existing_path(value: str, marker: str | None = None) -> Path:
     path = Path(value).expanduser()
@@ -59,11 +63,32 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_hf_hub_cache_dir() -> Path:
+    explicit = (
+        os.getenv("HF_HUB_CACHE")
+        or os.getenv("HUGGINGFACE_HUB_CACHE")
+        or os.getenv("TRANSFORMERS_CACHE")
+    )
+    if explicit:
+        path = Path(explicit).expanduser()
+    else:
+        return default_hf_hub_cache_dir()
+    return path.resolve() if path.is_absolute() else (_backend_root / path).resolve()
+
+
+def default_hf_hub_cache_dir() -> Path:
+    cache_home = Path(os.getenv("XDG_CACHE_HOME") or "~/.cache").expanduser()
+    hf_home = Path(os.getenv("HF_HOME") or cache_home / "huggingface").expanduser()
+    path = hf_home / "hub"
+    return path.resolve() if path.is_absolute() else (_backend_root / path).resolve()
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./data/workbench.db")
     data_dir: Path = _resolve_data_dir()
+    hf_hub_cache_dir: Path = _resolve_hf_hub_cache_dir()
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     easyedit_root: Path = _resolve_existing_path(os.getenv("EASYEDIT_ROOT", "./EasyEdit"), marker="easyeditor")
     editing_runtime: str = os.getenv("EDITING_RUNTIME", "easyedit")
