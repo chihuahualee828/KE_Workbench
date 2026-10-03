@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
+from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
 from app.services.patch_service import patch_service
@@ -174,8 +176,7 @@ def run_easyedit(
     weights_restored = False
     mom2_model_identity = None
 
-    with model_runtime_service.exclusive_runtime_access():
-        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    with _easyedit_runtime_access(model_id) as runtime_bundle:
         used_loaded_runtime = True
         if patch_mode == "series" and series_context is not None:
             if not series_context.runtime_stack_initialized:
@@ -390,8 +391,7 @@ def evaluate_easyedit_quality(
     _override_model_name(hparams, model_info)
     model_name = str(model_info.get("local_path") or model_info["hf_id"])
 
-    with model_runtime_service.exclusive_runtime_access():
-        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    with _easyedit_runtime_access(model_id) as runtime_bundle:
         patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], model_name, method_key)
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
@@ -697,9 +697,8 @@ def run_easyedit_kn(
     snapshots: list[dict[str, Any]] = []
     weights_restored = False
 
-    with model_runtime_service.exclusive_runtime_access():
+    with _easyedit_runtime_access(model_id) as runtime_bundle:
         active_patch_ids = patch_service.active_patches_for_model(model_id)
-        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
         runtime_model = runtime_bundle["model"]
         runtime_tokenizer = runtime_bundle["tokenizer"]
 
@@ -1150,11 +1149,24 @@ def _restore_loaded_model_mom2_cache_identity(identity: tuple[Any, str] | None) 
     config._name_or_path = previous_name
 
 
+@contextmanager
+def _easyedit_runtime_access(model_id: str):
+    with model_runtime_service.exclusive_runtime_access():
+        bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+        device = str(bundle.get("device") or "cpu")
+        with mps_fp32(device):
+            yield bundle
+
+
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
         return
     if loaded_device and loaded_device.startswith("cuda"):
         setattr(hparams, "device", _cuda_device_index(loaded_device))
+        return
+    if loaded_device and loaded_device.startswith("mps"):
+        configure_mps_hparams(hparams)
+        setattr(hparams, "device", "mps")
         return
     try:
         import torch
@@ -1292,8 +1304,7 @@ def prepare_mom2_statistics(
     hparams, effective_layers = _load_edit_hparams(model_id, method, layers)
     _override_mom2_adjustment(hparams, True)
 
-    with model_runtime_service.exclusive_runtime_access():
-        runtime_bundle = model_runtime_service.require_loaded_runtime_bundle(model_id)
+    with _easyedit_runtime_access(model_id) as runtime_bundle:
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(hparams.model_name), method.lower())
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         mom2_model_identity = _set_loaded_model_mom2_cache_identity(
@@ -1502,13 +1513,22 @@ def _load_mom2_cache_profile(
 
     resolved_source = _resolve_mom2_statistics_source(model, stats_source)
     base_model = _mom2_base_model(model)
+    precision = str(payload["mom2_dtype"])
+    if precision in {"float64", "double"}:
+        # Match preflight/import filenames to the precision actually used by the
+        # worker. runtime_status probes capabilities without loading a model.
+        status = model_runtime_service.runtime_status(model_id)
+        device = str(status.get("device") or "not_loaded")
+        if device == "not_loaded" and status.get("gpu", {}).get("mps_available"):
+            device = "mps"
+        precision = editing_precision(precision, device)
     return (
         SimpleNamespace(
             model_name=_mom2_cache_model_name(model, resolved_source),
             stats_dir=str(_mom2_stats_dir()),
             rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
             mom2_dataset=str(payload["mom2_dataset"]),
-            mom2_dtype=str(payload["mom2_dtype"]),
+            mom2_dtype=precision,
             mom2_n_samples=payload.get("mom2_n_samples"),
             layers=effective_layers,
             mom2_stats_source=resolved_source,
@@ -1715,6 +1735,10 @@ def _collect_runtime_memory() -> None:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        else:
+            from app.ml.device import release_mps_cache
+
+            release_mps_cache()
     except ImportError:
         pass
 

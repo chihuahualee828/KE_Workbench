@@ -6,6 +6,7 @@ import pytest
 
 from app.ml import device
 from app.ml.adapters.gpt2_adapter import GPT2Adapter
+from app.ml.editing.easyedit_runtime import _override_easyedit_device
 
 
 @pytest.mark.parametrize(
@@ -111,3 +112,41 @@ def test_cuda_cleanup_is_unchanged(monkeypatch):
     monkeypatch.setattr(gpt2_adapter, "release_mps_cache", lambda: pytest.fail("MPS cleanup on CUDA"))
     gpt2_adapter._collect_runtime_memory()
     assert calls == ["synchronize", "empty_cache", "ipc_collect"]
+
+
+def test_cuda_easyedit_device_preserves_precision():
+    hparams = SimpleNamespace(device=0, mom2_dtype="float64")
+    _override_easyedit_device(hparams, "cuda:2")
+    assert hparams.device == 2
+    assert hparams.mom2_dtype == "float64"
+
+
+@pytest.mark.parametrize("precision,expected", [("float64", "float32"), ("double", "float32"), ("float32", "float32")])
+def test_mps_easyedit_device_converts_hparams(precision, expected):
+    hparams = SimpleNamespace(device=0, mom2_dtype=precision)
+    _override_easyedit_device(hparams, "mps:0")
+    assert hparams.device == "mps"
+    assert hparams.mom2_dtype == expected
+
+
+@pytest.mark.parametrize("target,precision", [("mps", "float32"), ("cuda:0", "float64"), ("cpu", "float64")])
+def test_cache_profile_matches_runtime_precision(monkeypatch, tmp_path, target, precision):
+    from app.ml.editing import easyedit_runtime as runtime
+
+    path = tmp_path / "memit.yaml"
+    path.write_text("layers: [0]\nrewrite_module_tmp: transformer.h.{}.mlp.c_proj\nmom2_dataset: wikipedia\nmom2_dtype: float64\nmom2_n_samples: 2\n")
+    model = {"id": "demo", "hf_id": "demo", "source": "hub", "supports_memit": True}
+    monkeypatch.setattr(runtime.model_registry, "get", lambda _: model)
+    monkeypatch.setattr(runtime, "_resolve_hparams_path", lambda *_: path)
+    monkeypatch.setattr(runtime, "_mom2_stats_dir", lambda: tmp_path / "stats")
+    monkeypatch.setattr(runtime.model_runtime_service, "runtime_status", lambda _: {
+        "device": "not_loaded" if target == "mps" else target,
+        "gpu": {"mps_available": target == "mps"},
+    })
+    profile, _ = runtime._load_mom2_cache_profile("demo", "memit", None)
+    assert profile.mom2_dtype == precision
+    worker_hparams = SimpleNamespace(**vars(profile))
+    worker_hparams.device = 0
+    worker_hparams.mom2_dtype = "float64"
+    runtime._override_easyedit_device(worker_hparams, target)
+    assert runtime._mom2_statistics_path(profile, None, 0) == runtime._mom2_statistics_path(worker_hparams, None, 0)
