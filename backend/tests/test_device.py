@@ -47,6 +47,7 @@ def test_loading_preserves_cuda_policy(monkeypatch, target):
         return Model()
 
     monkeypatch.setattr(gpt2_adapter, "model_device", lambda: target)
+    monkeypatch.setattr(GPT2Adapter, "_cache_directory", lambda _: "/test/cache")
     monkeypatch.setattr(gpt2_adapter, "_unload_other_adapters_locked", lambda _: None)
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
         float32="fp32", float64="fp64", no_grad=nullcontext,
@@ -56,6 +57,7 @@ def test_loading_preserves_cuda_policy(monkeypatch, target):
     adapter = GPT2Adapter("test")
     adapter.load_model(local_files_only=True)
     common = {
+        "cache_dir": "/test/cache",
         "local_files_only": True,
         "trust_remote_code": False,
     }

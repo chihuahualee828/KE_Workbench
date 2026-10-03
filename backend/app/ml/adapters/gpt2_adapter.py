@@ -29,6 +29,14 @@ class GPT2Adapter(ModelAdapter):
         self._model: Any | None = None
         self._tokenizer: Any | None = None
         self._device: str | None = None
+        self._cache_dir: str | None = None
+
+    def _cache_directory(self) -> str:
+        if self._cache_dir is None:
+            from app.services.model_cache_service import model_cache_service
+
+            self._cache_dir = str(model_cache_service.cache_root_for_model(self.model_id))
+        return self._cache_dir
 
     def load_model(self, local_files_only: bool = False) -> Any:
         with _ADAPTER_LOCK:
@@ -42,6 +50,7 @@ class GPT2Adapter(ModelAdapter):
                 raise RuntimeError("Install backend[ml] to enable real model generation.") from exc
             device = model_device()
             load_kwargs: dict[str, Any] = {
+                "cache_dir": self._cache_directory(),
                 "local_files_only": local_files_only,
                 "trust_remote_code": self.trust_remote_code,
             }
@@ -110,6 +119,7 @@ class GPT2Adapter(ModelAdapter):
     def unload_runtime(self) -> None:
         self.unload_model()
         self.unload_tokenizer()
+        self._cache_dir = None
 
     def model_device(self) -> str | None:
         return self._device
@@ -148,6 +158,7 @@ class GPT2Adapter(ModelAdapter):
                 raise RuntimeError("Install backend[ml] to enable real tokenization.") from exc
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id,
+                cache_dir=self._cache_directory(),
                 local_files_only=local_files_only,
                 trust_remote_code=self.trust_remote_code,
             )
@@ -250,6 +261,7 @@ def unload_all_adapters() -> None:
             adapter._model = None
             adapter._tokenizer = None
             adapter._device = None
+            adapter._cache_dir = None
     released.clear()
     _collect_runtime_memory()
 
@@ -277,6 +289,7 @@ def _unload_other_adapters_locked(active_adapter: GPT2Adapter) -> None:
             adapter._model = None
             adapter._tokenizer = None
             adapter._device = None
+            adapter._cache_dir = None
             unloaded_any = True
     released.clear()
     if unloaded_any:

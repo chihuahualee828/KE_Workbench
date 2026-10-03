@@ -15,11 +15,13 @@ services:
       EASYEDIT_ROOT: /opt/EasyEdit
       EDITING_RUNTIME: easyedit
       HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_CACHE: /hf-cache
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
       - ./data:/app/data
+      - ${HF_CACHE_HOST_DIR:-./data/huggingface/hub}:/hf-cache
 
   frontend:
     build:
