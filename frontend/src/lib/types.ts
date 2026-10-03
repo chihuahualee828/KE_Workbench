@@ -31,6 +31,43 @@ export type SupportedModel = {
   lineage_imported?: number;
 };
 
+export type Mom2Dtype = "float16" | "float32" | "float64";
+
+export type Mom2StatisticsRequest = {
+  model_id: string;
+  method: "rome" | "r_rome" | "memit";
+  layers?: number[] | null;
+  stats_source?: "base" | "model" | null;
+  mom2_dtype?: Mom2Dtype | null;
+};
+
+export type Mom2Profile = {
+  model_id: string;
+  method: string;
+  dataset: string;
+  stats_dir: string;
+  stats_source: "base" | "model";
+  available_stats_sources: Array<"base" | "model">;
+  base_model_id?: string | null;
+  cache_model_id: string;
+  mom2_dtype: Mom2Dtype;
+  default_mom2_dtype: Mom2Dtype;
+  available_mom2_dtypes: Mom2Dtype[];
+  device: string;
+};
+
+export type Mom2StatisticsStatus = Mom2Profile & {
+  mom2_adjustment: boolean;
+  layers: number[];
+  ready: boolean;
+  missing_layers: number[];
+  statistics: Array<{ layer: number; path: string; ready: boolean }>;
+};
+
+export type Mom2Cache = Mom2Profile & {
+  statistics: Array<{ layer: number; path: string; filename: string; size_bytes: number; modified_at: number; mom2_dtype: Mom2Dtype }>;
+};
+
 export type Experiment = {
   id: string;
   type: string;

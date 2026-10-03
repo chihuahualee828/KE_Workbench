@@ -7,6 +7,8 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,6 +77,10 @@ METHODS = {
         "support_key": "supports_kn",
     },
 }
+
+MOM2_DTYPES = ("float16", "float32", "float64")
+_mom2_precision_lock = threading.Lock()
+_mom2_covariance_profiles: dict[tuple[str, tuple[str, str]], tuple[Any, ...]] = {}
 
 
 def build_prompt(subject: str, relation_prompt: str) -> str:
@@ -200,6 +206,8 @@ def run_easyedit(
         else:
             active_patch_ids = patch_service.active_patches_for_model(model_id)
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(easyedit_model_name), method_key)
+        if getattr(hparams, "mom2_adjustment", False):
+            _configure_mom2_precision(hparams, model_id, method_key, str(runtime_bundle.get("device") or "cpu"))
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         hparams.model_name = (runtime_bundle["model"], runtime_bundle["tokenizer"])
         if getattr(hparams, "mom2_adjustment", False):
@@ -237,6 +245,8 @@ def run_easyedit(
             }
             if spec.get("requires_subject", False):
                 edit_args["subject"] = subjects
+            if getattr(hparams, "mom2_adjustment", False):
+                _refresh_mom2_covariance_cache(method_key, hparams, editor.model, runtime_bundle.get("device") or "cpu")
             # Keep this stable marker in the captured job log. It separates
             # setup (hparams, snapshots, and runtime wiring) from EasyEdit's
             # actual update algorithm without modifying EasyEdit itself.
@@ -1202,21 +1212,115 @@ def _override_layers(hparams: Any, layers: list[int] | None) -> None:
         setattr(hparams, "layer", layers[0])
 
 
+def _normalize_mom2_dtype(dtype: str) -> str:
+    dtype = {"half": "float16", "float": "float32", "double": "float64"}.get(dtype, dtype)
+    if dtype not in MOM2_DTYPES:
+        raise EasyEditRuntimeError(f"Unsupported MOM2 precision: {dtype}. Choose float16, float32, or float64.")
+    return dtype
+
+
+def _mom2_precision_device(model_id: str) -> str:
+    status = model_runtime_service.runtime_status(model_id)
+    device = str(status.get("device") or "not_loaded")
+    if device == "not_loaded":
+        gpu = status.get("gpu", {})
+        device = "cuda" if gpu.get("cuda_available") else "mps" if gpu.get("mps_available") else "cpu"
+    return device
+
+
+def _read_mom2_precision_preferences() -> dict[str, Any]:
+    try:
+        return local_store.read_json("settings/mom2_precision.json")
+    except FileNotFoundError:
+        return {}
+
+
+def _resolve_mom2_precision(model_id: str, method: str, default: str, device: str, requested: str | None = None) -> str:
+    if requested is not None:
+        return _normalize_mom2_dtype(requested)
+    with _mom2_precision_lock:
+        selected = _read_mom2_precision_preferences().get(model_id, {}).get(method.lower())
+    # A cache saved on a CPU/CUDA installation may later be opened on MPS.
+    return editing_precision(_normalize_mom2_dtype(selected or default), device)
+
+
+def _configure_mom2_precision(hparams: Any, model_id: str, method: str, device: str, requested: str | None = None) -> None:
+    precision = _resolve_mom2_precision(model_id, method, str(hparams.mom2_dtype), device, requested)
+    if precision == "float64" and device.startswith("mps"):
+        raise EasyEditRuntimeError("FP64 second-moment computation is not supported on MPS. Select FP32 or FP16.")
+    hparams.mom2_dtype = precision
+
+
+def _mom2_precision_metadata(hparams: Any) -> dict[str, Any]:
+    return {
+        "mom2_dtype": hparams.mom2_dtype,
+        "default_mom2_dtype": hparams.default_mom2_dtype,
+        "available_mom2_dtypes": hparams.available_mom2_dtypes,
+        "device": hparams.device,
+    }
+
+
+def set_mom2_statistics_precision(model_id: str, method: str, mom2_dtype: str | None) -> dict[str, Any]:
+    profile, _ = _load_mom2_cache_profile(model_id, method, None, mom2_dtype=mom2_dtype)
+    if mom2_dtype is not None and profile.mom2_dtype not in profile.available_mom2_dtypes:
+        raise EasyEditRuntimeError("FP64 second-moment computation is not supported on MPS. Select FP32 or FP16.")
+    with _mom2_precision_lock:
+        preferences = _read_mom2_precision_preferences()
+        selected = preferences.setdefault(model_id, {})
+        if mom2_dtype is None:
+            selected.pop(method.lower(), None)
+        else:
+            selected[method.lower()] = profile.mom2_dtype
+        local_store.write_json("settings/mom2_precision.json", preferences)
+    return get_mom2_statistics_status(model_id, method)
+
+
+def _refresh_mom2_covariance_cache(method: str, hparams: Any, model: Any, device: str) -> None:
+    module_name, cache_name = (
+        ("easyeditor.models.memit.memit_main", "COV_CACHE") if method == "memit"
+        else (f"easyeditor.models.{method}.compute_u", "inv_mom2_cache")
+    )
+    module = sys.modules.get(module_name)
+    cache = getattr(module, cache_name, None)
+    if not isinstance(cache, dict):
+        return
+    for layer in _hparams_layers(hparams):
+        path = _mom2_statistics_path(hparams, model, layer)
+        key = (str(model.config._name_or_path).replace("/", "_"), hparams.rewrite_module_tmp.format(layer))
+        stamp = path.stat() if path.exists() else None
+        profile = (str(path), stamp.st_mtime_ns if stamp else None, stamp.st_size if stamp else None)
+        profile_key = (module_name, key)
+        # EasyEdit's cache key omits dataset, sample count, precision, and file version.
+        if _mom2_covariance_profiles.get(profile_key) != profile:
+            cache.pop(key, None)
+            _mom2_covariance_profiles[profile_key] = profile
+        if method != "memit" and hparams.mom2_dtype == "float16" and key not in cache:
+            # ROME inverses cannot operate on FP16 tensors. Keep the stored stats
+            # FP16, but perform the inverse in FP32, as EasyEdit returns FP32 anyway.
+            import numpy as np
+            import torch
+
+            with np.load(path, allow_pickle=False) as archive:
+                moment = torch.from_numpy(archive["mom2.mom2"]).float() / int(archive["mom2.count"])
+            cache[key] = torch.linalg.inv(moment.to(device)).float()
+
+
 def get_mom2_statistics_status(
     model_id: str,
     method: str,
     layers: list[int] | None = None,
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> dict[str, Any]:
     """Report the MOM2 cache files EasyEdit will use for this runtime model."""
     hparams, effective_layers = _load_mom2_cache_profile(
-        model_id, method, layers, stats_source
+        model_id, method, layers, stats_source, mom2_dtype
     )
 
     statistics = []
     for layer in effective_layers:
         path = _mom2_statistics_path(hparams, None, layer)
-        statistics.append({"layer": layer, "path": str(path), "ready": path.exists()})
+        statistics.append({"layer": layer, "path": str(path), "ready": path.exists() and _mom2_archive_dtype(path) == hparams.mom2_dtype})
     missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
     return {
         "model_id": model_id,
@@ -1229,6 +1333,7 @@ def get_mom2_statistics_status(
         "available_stats_sources": list(getattr(hparams, "available_mom2_stats_sources")),
         "base_model_id": getattr(hparams, "base_model_id"),
         "cache_model_id": str(getattr(hparams, "mom2_cache_model_name")),
+        **_mom2_precision_metadata(hparams),
         "ready": not missing_layers,
         "missing_layers": missing_layers,
         "statistics": statistics,
@@ -1281,6 +1386,7 @@ def prepare_mom2_statistics(
     method: str,
     layers: list[int] | None = None,
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> dict[str, Any]:
     """Compute the missing EasyEdit MOM2 covariance caches for selected layers."""
     model = model_registry.get(model_id)
@@ -1298,6 +1404,7 @@ def prepare_mom2_statistics(
                 "method": method,
                 "layers": layers,
                 "stats_source": resolved_source,
+                "mom2_dtype": mom2_dtype,
             },
             timeout=7200.0,
         )
@@ -1306,6 +1413,7 @@ def prepare_mom2_statistics(
 
     with _easyedit_runtime_access(model_id) as runtime_bundle:
         _configure_loaded_tokenizer(runtime_bundle["tokenizer"], str(hparams.model_name), method.lower())
+        _configure_mom2_precision(hparams, model_id, method, str(runtime_bundle.get("device") or "cpu"), mom2_dtype)
         _override_easyedit_device(hparams, runtime_bundle.get("device"))
         mom2_model_identity = _set_loaded_model_mom2_cache_identity(
             runtime_bundle["model"], model, resolved_source
@@ -1331,12 +1439,15 @@ def prepare_mom2_statistics(
                     precision=getattr(hparams, "mom2_dtype"),
                     hparams=hparams,
                 )
+                if _mom2_archive_dtype(path) != hparams.mom2_dtype:
+                    path.unlink(missing_ok=True)
+                    raise EasyEditRuntimeError("Computed MOM2 archive does not match the selected precision.")
         finally:
             _restore_loaded_model_mom2_cache_identity(mom2_model_identity)
 
     if model.get("source") == "local" and resolved_source == "model":
         model_registry.set_mom2_statistics_source(model_id, "model")
-    return get_mom2_statistics_status(model_id, method, effective_layers, resolved_source)
+    return get_mom2_statistics_status(model_id, method, effective_layers, resolved_source, hparams.mom2_dtype)
 
 
 def import_mom2_statistics(
@@ -1346,10 +1457,11 @@ def import_mom2_statistics(
     layers: list[int] | None,
     files: list[tuple[str, Any]],
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> dict[str, Any]:
     """Validate and atomically install precomputed MOM2 cache files."""
     hparams, effective_layers = _load_mom2_cache_profile(
-        model_id, method, layers, stats_source
+        model_id, method, layers, stats_source, mom2_dtype
     )
     expected_dataset = str(getattr(hparams, "mom2_dataset"))
     if dataset.strip() != expected_dataset:
@@ -1362,36 +1474,39 @@ def import_mom2_statistics(
         for layer in effective_layers
     }
     imported_layers: list[int] = []
-    for uploaded_name, uploaded_file in files:
-        filename = Path(uploaded_name).name
-        if Path(filename).suffix.lower() != ".npz":
-            raise EasyEditRuntimeError(f"{filename!r} is not an NPZ statistics file.")
-        expected = expected_files.get(filename)
-        if expected is None:
-            raise EasyEditRuntimeError(
-                f"{filename!r} does not match a selected {method.upper()} layer for {model_id}."
-            )
-        layer, destination = expected
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: str | None = None
-        try:
+    staged_files: list[tuple[int, Path, Path]] = []
+    try:
+        for uploaded_name, uploaded_file in files:
+            filename = Path(uploaded_name).name
+            if Path(filename).suffix.lower() != ".npz":
+                raise EasyEditRuntimeError(f"{filename!r} is not an NPZ statistics file.")
+            expected = expected_files.get(filename)
+            if expected is None:
+                raise EasyEditRuntimeError(
+                    f"{filename!r} does not match a selected {method.upper()} layer "
+                    f"at {hparams.mom2_dtype} for {model_id}."
+                )
+            layer, destination = expected
+            destination.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent, delete=False) as temporary:
-                temporary_path = temporary.name
+                temporary_path = Path(temporary.name)
+                staged_files.append((layer, temporary_path, destination))
                 shutil.copyfileobj(uploaded_file, temporary)
-            _validate_mom2_archive(Path(temporary_path), getattr(hparams, "mom2_n_samples"))
+            _validate_mom2_archive(temporary_path, hparams.mom2_n_samples, hparams.mom2_dtype)
+        # Validate every upload before replacing any existing precision-specific file.
+        for layer, temporary_path, destination in staged_files:
             os.replace(temporary_path, destination)
-            temporary_path = None
             imported_layers.append(layer)
-        finally:
-            if temporary_path is not None:
-                Path(temporary_path).unlink(missing_ok=True)
+    finally:
+        for _, temporary_path, _ in staged_files:
+            temporary_path.unlink(missing_ok=True)
 
     if imported_layers and getattr(hparams, "mom2_stats_source") == "model":
         model = model_registry.get(model_id)
         if model.get("source") == "local":
             model_registry.set_mom2_statistics_source(model_id, "model")
     status = get_mom2_statistics_status(
-        model_id, method, effective_layers, getattr(hparams, "mom2_stats_source")
+        model_id, method, effective_layers, getattr(hparams, "mom2_stats_source"), hparams.mom2_dtype
     )
     status["imported_layers"] = sorted(set(imported_layers))
     return status
@@ -1401,9 +1516,10 @@ def list_mom2_statistics(
     model_id: str,
     method: str,
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> dict[str, Any]:
     """List all cached second-moment files that match a model/method hparams profile."""
-    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source, mom2_dtype)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     statistics = []
@@ -1419,6 +1535,7 @@ def list_mom2_statistics(
                 "filename": path.name,
                 "size_bytes": stat.st_size,
                 "modified_at": stat.st_mtime,
+                "mom2_dtype": hparams.mom2_dtype,
             }
         )
     return {
@@ -1430,6 +1547,7 @@ def list_mom2_statistics(
         "available_stats_sources": list(getattr(hparams, "available_mom2_stats_sources")),
         "base_model_id": getattr(hparams, "base_model_id"),
         "cache_model_id": str(getattr(hparams, "mom2_cache_model_name")),
+        **_mom2_precision_metadata(hparams),
         "statistics": statistics,
     }
 
@@ -1439,10 +1557,11 @@ def delete_mom2_statistics(
     method: str,
     layers: list[int],
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> dict[str, Any]:
     if not layers:
         raise EasyEditRuntimeError("Select one or more second-moment statistics files to delete.")
-    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source)
+    hparams, _ = _load_mom2_cache_profile(model_id, method, None, stats_source, mom2_dtype)
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     invalid_layers = [layer for layer in layers if not isinstance(layer, int) or layer < 0 or layer >= layer_count]
@@ -1456,7 +1575,7 @@ def delete_mom2_statistics(
             path.unlink()
             deleted_layers.append(layer)
     result = list_mom2_statistics(
-        model_id, method, getattr(hparams, "mom2_stats_source")
+        model_id, method, getattr(hparams, "mom2_stats_source"), hparams.mom2_dtype
     )
     result["deleted_layers"] = deleted_layers
     return result
@@ -1467,6 +1586,7 @@ def _load_mom2_cache_profile(
     method: str,
     layers: list[int] | None,
     stats_source: Literal["base", "model"] | None = None,
+    mom2_dtype: str | None = None,
 ) -> tuple[SimpleNamespace, list[int]]:
     """Read the hparams fields that determine a MOM2 cache filename.
 
@@ -1513,15 +1633,9 @@ def _load_mom2_cache_profile(
 
     resolved_source = _resolve_mom2_statistics_source(model, stats_source)
     base_model = _mom2_base_model(model)
-    precision = str(payload["mom2_dtype"])
-    if precision in {"float64", "double"}:
-        # Match preflight/import filenames to the precision actually used by the
-        # worker. runtime_status probes capabilities without loading a model.
-        status = model_runtime_service.runtime_status(model_id)
-        device = str(status.get("device") or "not_loaded")
-        if device == "not_loaded" and status.get("gpu", {}).get("mps_available"):
-            device = "mps"
-        precision = editing_precision(precision, device)
+    default_precision = _normalize_mom2_dtype(str(payload["mom2_dtype"]))
+    device = _mom2_precision_device(model_id)
+    precision = _resolve_mom2_precision(model_id, method_key, default_precision, device, mom2_dtype)
     return (
         SimpleNamespace(
             model_name=_mom2_cache_model_name(model, resolved_source),
@@ -1529,6 +1643,9 @@ def _load_mom2_cache_profile(
             rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
             mom2_dataset=str(payload["mom2_dataset"]),
             mom2_dtype=precision,
+            default_mom2_dtype=default_precision,
+            available_mom2_dtypes=[dtype for dtype in MOM2_DTYPES if dtype != "float64" or not device.startswith("mps")],
+            device=device,
             mom2_n_samples=payload.get("mom2_n_samples"),
             layers=effective_layers,
             mom2_stats_source=resolved_source,
@@ -1593,7 +1710,28 @@ def _mom2_statistics_path(hparams: Any, model: Any | None, layer: int) -> Path:
     return Path(str(getattr(hparams, "stats_dir"))) / f"{model_name}/{dataset}_stats/{layer_name}_{precision}_mom2{size_suffix}.npz"
 
 
-def _validate_mom2_archive(path: Path, expected_sample_size: int | None) -> None:
+def _mom2_archive_dtype(path: Path) -> str | None:
+    # Inspect only the NPY header; cache preflight must not load full covariance
+    # matrices into the API process just to verify their stored precision.
+    import numpy as np
+
+    try:
+        with zipfile.ZipFile(path) as archive, archive.open("mom2.mom2.npy") as matrix:
+            version = np.lib.format.read_magic(matrix)
+            if version == (1, 0):
+                shape, _, dtype = np.lib.format.read_array_header_1_0(matrix)
+            elif version == (2, 0):
+                shape, _, dtype = np.lib.format.read_array_header_2_0(matrix)
+            else:
+                return None
+            if len(shape) != 2 or shape[0] != shape[1]:
+                return None
+            return dtype.name
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+        return None
+
+
+def _validate_mom2_archive(path: Path, expected_sample_size: int | None, expected_dtype: str | None = None) -> None:
     try:
         import numpy as np
 
@@ -1611,8 +1749,17 @@ def _validate_mom2_archive(path: Path, expected_sample_size: int | None) -> None
                     f"but this hparams configuration requires {expected_sample_size}."
                 )
             matrix = archive["mom2.mom2"]
+            if int(archive["mom2.count"]) <= 0:
+                raise EasyEditRuntimeError("Statistics archive has no collected samples.")
             if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
                 raise EasyEditRuntimeError("Statistics archive has an invalid second-moment matrix.")
+            if expected_dtype is not None and matrix.dtype != np.dtype(expected_dtype):
+                raise EasyEditRuntimeError(
+                    f"Statistics matrix precision is {matrix.dtype}, but {expected_dtype} was selected. "
+                    "Upload matching files without renaming their precision."
+                )
+            if not np.isfinite(matrix).all():
+                raise EasyEditRuntimeError("Statistics matrix contains non-finite values. Use a higher precision.")
     except EasyEditRuntimeError:
         raise
     except Exception as exc:
