@@ -127,6 +127,13 @@ class Mom2StatisticsRequest(ApiSchema):
     method: Literal["rome", "r_rome", "memit"]
     layers: list[int] | None = None
     stats_source: Literal["base", "model"] | None = None
+    mom2_dtype: Literal["float16", "float32", "float64"] | None = None
+
+
+class Mom2StatisticsPrecisionRequest(ApiSchema):
+    model_id: str
+    method: Literal["rome", "r_rome", "memit"]
+    mom2_dtype: Literal["float16", "float32", "float64"] | None = None
 
 
 class Mom2StatisticsSourceRequest(ApiSchema):
