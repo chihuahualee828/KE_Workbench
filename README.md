@@ -161,7 +161,48 @@ actual integration with:
 
 For a pip-based environment, use `.venv/bin/python -m pip install` explicitly;
 for a uv-managed environment, use `uv pip install --python .venv/bin/python`.
-Restart the backend after repairing its dependencies.
+Restart the backend after repairing its dependencies. On Apple Silicon with
+Python 3.10, if SciPy 1.15.3 fails to load `_spropack` with a
+`__thread_bss` / zero-fill error, SciPy 1.14.1 is a tested workaround on this setup:
+
+```bash
+uv pip install --python .venv/bin/python 'scipy==1.14.1'
+```
+
+### Apple Silicon (MPS)
+
+Run the backend natively on macOS using an ARM64 Python 3.10 environment; the
+NVIDIA Docker configuration remains unchanged. The shared loader automatically
+prefers CUDA, then Apple MPS, then CPU. MPS uses Transformers' automatic dtype
+selection from the model config/checkpoint, preserving FP16, BF16, and FP32 weights.
+Only FP64 parameters and buffers are converted to FP32 before transfer to MPS.
+Lower-precision editing remains dependent on model/method compatibility. Existing model/method restrictions
+still apply, and larger models need enough unified memory for weights and working
+tensors.
+
+For ROME, R-ROME, MEMIT, KN, and EasyEdit evaluation/statistics, install EasyEdit's
+normal dependencies. No changes to the EasyEdit checkout are required. The
+workbench converts requested FP64 MOM2 precision to FP32 before invoking EasyEdit.
+A scoped PyTorch dtype mode also keeps internal FP64 casts (including MEMIT's
+`.double()` calls) in FP32 on MPS. Matrix inverse/solve operations stay on the GPU;
+no CPU compute fallback is enabled by the workbench. CUDA precision is unchanged.
+
+This intentionally reduces precision on MPS, so editing results may differ from
+CUDA/FP64 results. MPS cache preparation and preflight use matching FP32 filenames;
+existing FP64 caches are retained separately. See the [MPS precision notes](backend/compatibility/README.md).
+
+The GPU monitor shows Apple **unified memory**: the model worker's Metal allocation
+against the recommended working-set budget, plus tensor allocation. This is not
+system-wide GPU usage or dedicated VRAM. Samples are collected in the worker once
+per second and published through runtime status updates, including during long
+operations. Hard unload/cancel still stops the owning process and clears its
+runtime patch state; saved model files and patches remain on disk.
+
+Check accelerator availability in the backend environment:
+
+```bash
+python -c 'import torch; print(torch.backends.mps.is_available())'
+```
 
 ### First experiment
 
