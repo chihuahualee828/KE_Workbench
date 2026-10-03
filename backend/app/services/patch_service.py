@@ -43,13 +43,14 @@ class PatchService:
             "method": method,
             "edits": edits,
             "modified_layers": modified_layers,
-            "delta_paths": delta_paths or [f"data/{patch_dir}/metadata_delta.json"],
+            "delta_paths": delta_paths if delta_paths is not None else [f"{patch_dir}/metadata_delta.json"],
             "metrics": metrics or {},
             "created_at": datetime.now(timezone.utc).isoformat(),
             "runtime": runtime,
         }
         if extra_metadata:
             metadata.update(extra_metadata)
+        metadata["delta_paths"] = self._relative_delta_paths(metadata["delta_paths"])
         if delta_paths is None:
             local_store.write_json(
                 f"{patch_dir}/metadata_delta.json",
@@ -81,6 +82,7 @@ class PatchService:
             )
             if extra_metadata:
                 patch.update(extra_metadata)
+            patch["delta_paths"] = self._relative_delta_paths(patch["delta_paths"])
             local_store.write_json(self._metadata_relative_path(patch_id), patch)
             return patch
 
@@ -137,7 +139,13 @@ class PatchService:
 
     def get_patch(self, patch_id: str) -> dict[str, Any]:
         self._migrate_flat_metadata(patch_id)
-        return local_store.read_json(self._metadata_relative_path(patch_id))
+        metadata_path = self._metadata_relative_path(patch_id)
+        patch = local_store.read_json(metadata_path)
+        paths = self._relative_delta_paths(patch.get("delta_paths", []))
+        if paths != patch.get("delta_paths", []):
+            patch["delta_paths"] = paths
+            local_store.write_json(metadata_path, patch)
+        return patch
 
     def active_patches_for_model(self, model_id: str) -> list[str]:
         return self.active_patches_by_model().get(model_id, [])
@@ -549,13 +557,37 @@ class PatchService:
             if not canonical_metadata_path.exists():
                 raise
 
+    def _relative_delta_paths(self, paths: list[str]) -> list[str]:
+        """Persist managed artifacts relative to the data root, including legacy paths."""
+        relative_paths = []
+        for value in paths:
+            path = self.resolve_delta_path(value)
+            try:
+                relative_paths.append(path.relative_to(local_store.root).as_posix())
+            except ValueError:
+                # Preserve legacy references outside the data directory.
+                relative_paths.append(value)
+        return relative_paths
+
     def resolve_delta_path(self, path_value: str) -> Path:
         path = Path(path_value)
         if path.is_absolute():
+            if not path.exists():
+                # Older patches record absolute paths from the machine that saved
+                # them. Keep the patch ID and filename when the data directory moves.
+                for index, part in enumerate(path.parts[:-2]):
+                    if part != "patches" or not path.parts[index + 1].startswith("patch_"):
+                        continue
+                    relative = Path(*path.parts[index:])
+                    if ".." in relative.parts:
+                        continue
+                    relocated = local_store.root / relative
+                    if relocated.is_file():
+                        return relocated
             return path
         if path.parts and path.parts[0] == "data":
-            return settings.data_dir.parent / path
-        return settings.data_dir / path
+            path = Path(*path.parts[1:])
+        return local_store.root / path
 
     @contextmanager
     def applied_to_model(
