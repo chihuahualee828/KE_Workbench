@@ -1,4 +1,4 @@
-import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
+import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
 import { setModelCacheSnapshot, setModelRuntimeSnapshot } from "./modelStatusCache";
@@ -230,6 +230,11 @@ export const api = {
   subscribeToEvents,
   health: () => request<{ status: string }>("/api/health"),
   settings: () => request<AppSettings>("/api/settings"),
+  setModelCacheLocation: (body: { download_dir: string }) =>
+    request<ModelCacheLocation>("/api/settings/model-cache", {
+      method: "PUT",
+      body: JSON.stringify(body)
+    }),
   models: () => request<SupportedModel[]>("/api/models"),
   hfTokenStatus: () => request<HfTokenStatus>("/api/models/hf-token"),
   setHfToken: (body: { token: string }) =>

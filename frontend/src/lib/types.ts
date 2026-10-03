@@ -305,6 +305,13 @@ export type HfTokenStatus = {
   source: "runtime" | "env" | "none";
 };
 
+export type ModelCacheLocation = {
+  download_dir: string;
+  environment_dir: string;
+  search_dirs: string[];
+  source: "settings" | "environment";
+};
+
 export type AppSettings = {
   app_env: string;
   editing_runtime: string;
@@ -313,6 +320,7 @@ export type AppSettings = {
   data_dir: string;
   install_easyedit: string;
   hf_token: HfTokenStatus;
+  model_cache: ModelCacheLocation;
 };
 
 export type LogitLensLayer = {
