@@ -95,7 +95,7 @@ Evaluation resolves facts from the selected model's active patch stack and suppo
 
 Results include aggregate metrics, per-fact details, and generated answers where available. Fact search, paged results, and virtualized lists support larger edit collections. Missing evaluation prompts limit which metrics can be meaningfully assessed.
 
-Experiment and job records retain inputs, results, status, progress, and logs. The Activity page and topbar job menu expose ongoing work. Editing and runtime updates use server-sent events and job-wait endpoints. Edit and evaluation jobs support cancellation; interrupting an edit can stop the model worker and require reloading the model.
+Experiment and job records retain inputs, results, status, progress, and logs. The Activity page and topbar job menu expose ongoing work. Editing and runtime updates use server-sent events and job-wait endpoints. Edit and evaluation cancellation keeps the model loaded. Edit jobs remain **Canceling** until a safe cancellation boundary and cleanup finish: ROME/r-ROME series wait for the current EasyEdit call and retain their last fully saved fact, while MEMIT checks for cancellation before each model forward pass using a temporary workbench hook (no EasyEdit source changes). Canceled MEMIT jobs restore the pre-job weights and active patches without retaining a new patch. Explicit model unload still terminates the worker. Cooperative cancellation cannot interrupt an in-progress backward pass, matrix solve, or stuck accelerator call.
 
 ## Quick start
 
@@ -195,7 +195,7 @@ The GPU monitor shows Apple **unified memory**: the model worker's Metal allocat
 against the recommended working-set budget, plus tensor allocation. This is not
 system-wide GPU usage or dedicated VRAM. Samples are collected in the worker once
 per second and published through runtime status updates, including during long
-operations. Hard unload/cancel still stops the owning process and clears its
+operations. Explicit hard unload still stops the owning process and clears its
 runtime patch state; saved model files and patches remain on disk.
 
 Check accelerator availability in the backend environment:

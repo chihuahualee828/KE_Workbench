@@ -150,6 +150,11 @@ export function ExperimentHistory({
       const canceledJob = experiment.type === "evaluation"
         ? await api.cancelEvaluationJob(experiment.job.id)
         : await api.cancelEditJob(experiment.job.id);
+      if (canceledJob.status === "running" && canceledJob.cancel_requested) {
+        cancelAccepted = true;
+        void Promise.resolve(onChanged()).catch(() => undefined);
+        return;
+      }
       if (canceledJob.status !== "canceled") {
         throw new Error("This experiment is no longer running.");
       }
@@ -202,7 +207,7 @@ export function ExperimentHistory({
         {displayedExperiments.map((experiment) => (
           <ExperimentHistoryCard
             deleting={deletingExperimentId === experiment.id}
-            canceling={cancelingExperimentId === experiment.id}
+            canceling={experiment.status === "running" && (cancelingExperimentId === experiment.id || Boolean(experiment.job?.cancel_requested))}
             canCancel={canCancelEditExperiment(experiment) && !canceledExperimentIds.has(experiment.id)}
             experiment={experiment}
             key={experiment.id}
@@ -295,7 +300,7 @@ function ExperimentHistoryCard({
         <div className="flex shrink-0 items-center gap-2">
           {statusBadge}
           {canCancel ? (
-            <button aria-label={experiment.type === "evaluation" ? "Cancel evaluation" : "Cancel edit"} className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={onCancel} title={experiment.type === "evaluation" ? "Cancel this evaluation; keep its model loaded" : "Cancel this edit and unload its model"} type="button">
+            <button aria-label={experiment.type === "evaluation" ? "Cancel evaluation" : "Cancel edit"} className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={onCancel} title={experiment.type === "evaluation" ? "Cancel this evaluation; keep its model loaded" : "Cancel this edit at a safe boundary; keep its model loaded"} type="button">
               {canceling ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
               {canceling ? "Canceling" : "Cancel"}
             </button>

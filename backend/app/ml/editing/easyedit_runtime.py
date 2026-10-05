@@ -18,6 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
+from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -184,6 +185,11 @@ def run_easyedit(
 
     with _easyedit_runtime_access(model_id) as runtime_bundle:
         used_loaded_runtime = True
+        check_edit_cancellation()
+        transaction = current_edit.get()
+        if transaction is not None:
+            names = [f"{hparams.rewrite_module_tmp.format(layer)}.weight" for layer in _hparams_layers(hparams)]
+            transaction.capture(runtime_bundle["model"], model_id, names)
         if patch_mode == "series" and series_context is not None:
             if not series_context.runtime_stack_initialized:
                 if not series_context.continue_from_active_patches:
@@ -251,7 +257,10 @@ def run_easyedit(
             # setup (hparams, snapshots, and runtime wiring) from EasyEdit's
             # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
-            metrics, edited_model, _ = editor.edit(**edit_args)
+            check_edit_cancellation()
+            with memit_cancellation_hook(editor.model, enabled=method_key == "memit"):
+                metrics, edited_model, _ = editor.edit(**edit_args)
+            check_edit_cancellation()
             patch_id = (
                 series_context.patch_id
                 if patch_mode == "series" and series_context is not None and series_context.patch_id
@@ -259,6 +268,8 @@ def run_easyedit(
             )
             if patch_mode == "series" and series_context is not None:
                 series_context.patch_id = patch_id
+            if transaction is not None:
+                transaction.protect_patch(patch_id)
             delta_baseline_weights = (
                 series_context.initial_baseline_weights
                 if patch_mode == "series" and series_context is not None
@@ -308,6 +319,9 @@ def run_easyedit(
                         patch_id=patch_id,
                     )
                     series_context.patch_created = True
+                    # The model already has this edit; restore before applying
+                    # its newly activated delta, otherwise the first fact doubles.
+                    _restore_weights(edited_model, baseline_weights)
                     patch_service.activate_patch(patch_id, append=True)
                     if used_loaded_runtime:
                         patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
@@ -343,6 +357,8 @@ def run_easyedit(
                 f"patches/{patch['patch_id']}/easyedit_metrics.json",
                 {"metrics": json_metrics},
             )
+            if transaction is not None and patch_mode == "series":
+                transaction.checkpoint()
             return {
                 "patch_id": patch["patch_id"],
                 "metrics": _jsonable(metrics),
@@ -353,8 +369,8 @@ def run_easyedit(
             }
         finally:
             _restore_loaded_model_mom2_cache_identity(mom2_model_identity)
-            if used_loaded_runtime and baseline_weights and edited_model is not None and not weights_restored:
-                _restore_weights(edited_model, baseline_weights)
+            if used_loaded_runtime and baseline_weights and not weights_restored:
+                _restore_weights(runtime_bundle["model"], baseline_weights)
             if used_loaded_runtime:
                 hparams.model_name = easyedit_model_name
                 patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
@@ -584,6 +600,7 @@ def evaluate_easyedit_quality(
 
 def _ensure_evaluation_job_running(job_id: str | None) -> None:
     """Stop at a fact boundary without disrupting the loaded model worker."""
+    check_edit_cancellation()
     if job_id is None:
         return
 
@@ -711,6 +728,9 @@ def run_easyedit_kn(
         active_patch_ids = patch_service.active_patches_for_model(model_id)
         runtime_model = runtime_bundle["model"]
         runtime_tokenizer = runtime_bundle["tokenizer"]
+        transaction = current_edit.get()
+        if transaction is not None:
+            transaction.capture(runtime_model, model_id)
 
         try:
             if not sequential_edit:
@@ -743,6 +763,8 @@ def run_easyedit_kn(
                 )
 
             snapshots = _snapshot_kn_neuron_vectors(kn, refined_neurons)
+            if transaction is not None:
+                transaction.capture(runtime_model, model_id, [item["parameter"] for item in snapshots])
             print("Starting EasyEdit algorithm.")
             metrics, _ = kn.edit_knowledge(
                 prompt,
@@ -750,7 +772,10 @@ def run_easyedit_kn(
                 neurons=refined_neurons,
                 undo_modification=False,
             )
+            check_edit_cancellation()
             patch_id = patch_service.new_patch_id()
+            if transaction is not None:
+                transaction.created_patch_ids.add(patch_id)
             tensor_delta_paths, sparse_delta_specs = _save_kn_sparse_deltas(
                 runtime_model,
                 snapshots,

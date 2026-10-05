@@ -1868,7 +1868,8 @@ function ResultPanel({
 
   useEffect(() => {
     if (job?.status !== "running") setCanceling(false);
-  }, [job?.status]);
+    else if (job.cancel_requested) setCanceling(true);
+  }, [job?.status, job?.cancel_requested]);
 
   async function cancel() {
     if (!job || job.status !== "running" || canceling) return;
@@ -1877,6 +1878,10 @@ function ResultPanel({
     let cancelAccepted = false;
     try {
       const canceledJob = await api.cancelEditJob(job.job_id);
+      if (canceledJob.status === "running" && canceledJob.cancel_requested) {
+        cancelAccepted = true;
+        return; // SSE will acknowledge cancellation after the worker restores weights.
+      }
       if (canceledJob.status !== "canceled") {
         throw new Error("This edit is no longer running.");
       }
@@ -1896,7 +1901,7 @@ function ResultPanel({
           <span className="label">Edit Logs</span>
           <div className="flex items-center gap-2">
             {job?.status === "running" ? (
-              <button className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={() => void cancel()} title="Stop this edit and unload the active model" type="button">
+              <button className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={canceling} onClick={() => void cancel()} title="Cancel this edit at a safe boundary; keep the model loaded" type="button">
                 {canceling ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
                 {canceling ? "Canceling" : "Cancel edit"}
               </button>

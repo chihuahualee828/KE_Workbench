@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
+from app.ml.editing.edit_cancellation import run_cancellable_edit
 from app.api.operation_guard import operation_guard
 from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
 from app.ml.editing.easyedit_runtime import (
@@ -36,8 +37,6 @@ from app.services.patch_service import patch_service
 
 router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
-_active_edit_job_id: str | None = None
-_active_edit_job_lock = threading.Lock()
 
 
 class PatchExportRequest(ApiSchema):
@@ -64,7 +63,6 @@ def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
 def rome_edit(request: RomeEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer] if request.target_layer is not None else None, request.mom2_adjustment)
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
@@ -81,7 +79,6 @@ def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
         [request.target_layer] if request.target_layer is not None else None,
         request.mom2_adjustment,
     )
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("r_rome_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("R-ROME", job["id"], run_r_rome_edit, request.model_dump())
@@ -93,7 +90,6 @@ def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
 def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "rome", [request.target_layer], request.mom2_adjustment)
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("rome_sequential_edits", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("ROME sequential series", job["id"], run_rome_sequential_edits, request.model_dump())
@@ -105,7 +101,6 @@ def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
 def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "r_rome", [request.target_layer], request.mom2_adjustment)
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("r_rome_sequential_edits", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("R-ROME sequential series", job["id"], run_r_rome_sequential_edits, request.model_dump())
@@ -116,7 +111,6 @@ def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
 @operation_guard.protect()
 def kn_edit(request: KnEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("kn_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("KN", job["id"], run_kn_edit, request.model_dump())
@@ -128,7 +122,6 @@ def kn_edit(request: KnEditRequest) -> JobResponse:
 def memit_edit(request: MemitEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
     _require_mom2_statistics(request.model_id, "memit", request.layers, request.mom2_adjustment)
-    _prepare_edit_patch_stack(request.model_id, request.sequential_edit)
     experiment = experiment_service.create("memit_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("MEMIT", job["id"], run_memit_edit, request.model_dump())
@@ -171,24 +164,10 @@ def stream_edit_job(job_id: str, include_result: bool = True) -> StreamingRespon
 @router.post("/edit/jobs/{job_id}/cancel", response_model=JobResponse)
 @operation_guard.protect()
 def cancel_edit_job(job_id: str) -> JobResponse:
-    current_job = experiment_service.get_job(job_id)
-    was_running = current_job is not None and current_job.get("status") == "running"
-    job = experiment_service.cancel_job(job_id, "Edit canceled by user. The loaded model was unloaded.")
+    job = experiment_service.request_edit_cancellation(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Edit job not found")
-    with _active_edit_job_lock:
-        is_active = _active_edit_job_id == job_id
-    if was_running and job.get("status") == "canceled" and is_active:
-        operation_guard.start_thread(target=_stop_canceled_edit_worker, args=(job_id,))
     return _job_response(job)
-
-
-def _stop_canceled_edit_worker(job_id: str) -> None:
-    """Release the worker after responding to a cancellation request."""
-    try:
-        model_runtime_service.cancel_active_operation("Edit canceled by user.")
-    except Exception as exc:
-        experiment_service.append_job_log(job_id, f"Model-worker shutdown warning: {exc}")
 
 
 @router.post("/edit/mom2/status")
@@ -312,27 +291,6 @@ def _require_mom2_statistics(model_id: str, method: str, layers: list[int] | Non
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-def _prepare_edit_patch_stack(model_id: str, continue_from_active_patches: bool) -> None:
-    """Synchronously reset reloadable patches before a fresh edit job starts."""
-    if continue_from_active_patches:
-        return
-
-    previous_active_state = patch_service.active_patches_by_model()
-    patch_service.deactivate_runtime_patches_for_model(model_id)
-    try:
-        model_runtime_service.sync_loaded_model_to_active_patches(model_id)
-    except Exception as exc:
-        patch_service.restore_active_patches(previous_active_state)
-        try:
-            model_runtime_service.sync_loaded_model_to_active_patches(model_id)
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code=503,
-            detail="Could not reset active patches before starting the edit.",
-        ) from exc
-
-
 def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) -> None:
     operation_guard.start_thread(
         target=_run_edit_job,
@@ -341,7 +299,6 @@ def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) ->
 
 
 def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None:
-    global _active_edit_job_id
     try:
         with _edit_job_lock:
             current_job = experiment_service.get_job(job_id)
@@ -349,16 +306,12 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
                 return
             experiment_service.append_job_log(job_id, f"Starting {method_label} edit")
             experiment_service.set_job_progress(job_id, 0.05)
-            with _active_edit_job_lock:
-                _active_edit_job_id = job_id
-            try:
-                with _capture_job_output(job_id):
-                    result = runner(**payload)
+            with _capture_job_output(job_id):
+                result = run_cancellable_edit(job_id, runner, **payload)
+            if result.get("_edit_canceled"):
+                experiment_service.cancel_job(job_id, message=None)
+            else:
                 experiment_service.complete_job(job_id, result)
-            finally:
-                with _active_edit_job_lock:
-                    if _active_edit_job_id == job_id:
-                        _active_edit_job_id = None
     except EasyEditUnsupportedError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except EasyEditRuntimeError as exc:
@@ -433,6 +386,7 @@ def _job_response(job: dict, after_log_count: int | None = None, include_result:
         job_id=job["id"],
         experiment_id=job["experiment_id"],
         status=job["status"],
+        cancel_requested=bool(job.get("cancel_requested")),
         progress=job.get("progress", 0.0),
         progress_current=job.get("progress_current"),
         progress_total=job.get("progress_total"),

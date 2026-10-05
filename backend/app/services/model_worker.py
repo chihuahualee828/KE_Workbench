@@ -96,6 +96,14 @@ def _dispatch(
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, Any]:
+    if "_edit_job_id" in payload:
+        from app.ml.editing.edit_cancellation import run_cancellable_edit
+
+        payload = dict(payload)
+        job_id = payload.pop("_edit_job_id")
+        return run_cancellable_edit(
+            job_id, lambda **values: _dispatch(runtime, action, values, progress_callback), **payload
+        )
     if action == "load":
         job = runtime.start_load(payload["model_id"])
         completed = job
