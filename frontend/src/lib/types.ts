@@ -85,6 +85,7 @@ export type ExperimentJobSummary = {
   id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";
+  cancel_requested?: boolean;
   progress: number;
   progress_current?: number | null;
   progress_total?: number | null;
@@ -96,6 +97,7 @@ export type ExperimentJob = {
   id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";
+  cancel_requested?: boolean;
   progress: number;
   progress_current?: number | null;
   progress_total?: number | null;
@@ -246,6 +248,7 @@ export type EditJob = {
   job_id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";
+  cancel_requested?: boolean;
   progress: number;
   progress_current?: number | null;
   progress_total?: number | null;

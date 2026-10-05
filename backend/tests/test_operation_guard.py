@@ -109,34 +109,26 @@ def test_failed_patch_change_releases_reservation():
         pass
 
 
-def test_cancel_response_does_not_release_guard_before_worker_shutdown(monkeypatch):
+def test_cancel_response_does_not_release_guard_before_edit_cleanup(monkeypatch):
     entered, release = threading.Event(), threading.Event()
     job = {"id": "job_cancel", "experiment_id": "exp_cancel", "status": "running", "logs": []}
-    monkeypatch.setattr(routes_editing.experiment_service, "get_job", lambda _: job)
-    monkeypatch.setattr(routes_editing.experiment_service, "cancel_job", lambda *_: {**job, "status": "canceled"})
-    monkeypatch.setattr(routes_editing, "_active_edit_job_id", job["id"])
-    def stop(_job_id):
+    monkeypatch.setattr(routes_editing.experiment_service, "request_edit_cancellation", lambda *_: {**job, "cancel_requested": True})
+    def edit():
         entered.set()
         assert release.wait(5)
-    monkeypatch.setattr(routes_editing, "_stop_canceled_edit_worker", stop)
-    threads = []
-    original_start = operation_guard.start_thread
-    def start(**kwargs):
-        thread = original_start(**kwargs)
-        threads.append(thread)
-        return thread
-    monkeypatch.setattr(operation_guard, "start_thread", start)
+    thread = operation_guard.start_thread(target=edit)
     try:
-        assert routes_editing.cancel_edit_job(job["id"]).status == "canceled"
         assert entered.wait(5)
+        response = routes_editing.cancel_edit_job(job["id"])
+        assert response.status == "running"
+        assert response.cancel_requested
         with pytest.raises(HTTPException) as error:
             routes_editing.load_patch("patch_test")
         assert error.value.status_code == 409
     finally:
         release.set()
-        for thread in threads:
-            thread.join(5)
-            assert not thread.is_alive()
+        thread.join(5)
+        assert not thread.is_alive()
     with operation_guard.reserve(patch_change=True):
         pass
 

@@ -687,6 +687,11 @@ class HardUnloadModelRuntimeService:
         timeout: float = 3600.0,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        from app.ml.editing.edit_cancellation import current_edit
+
+        transaction = current_edit.get()
+        if transaction is not None:
+            payload = {**payload, "_edit_job_id": transaction.job_id}
         model_id = payload.get("model_id")
         if not isinstance(model_id, str):
             raise ValueError("Model worker commands require model_id.")

@@ -136,6 +136,7 @@ class ExperimentService:
             related_jobs = _related_experiment_job_ids(experiment_id, job_id)
             for job_id in related_jobs:
                 (experiments_root / f"{job_id}.json").unlink(missing_ok=True)
+                shutil.rmtree(experiments_root / job_id, ignore_errors=True)
             (experiments_root / f"{experiment_id}.json").unlink(missing_ok=True)
             shutil.rmtree(experiments_root / experiment_id, ignore_errors=True)
             self._condition.notify_all()
@@ -365,6 +366,25 @@ class ExperimentService:
             local_store.write_json(f"experiments/{experiment['id']}.json", experiment)
             self._condition.notify_all()
 
+    def request_edit_cancellation(self, job_id: str) -> dict[str, Any] | None:
+        """Request rollback; leave the job busy until its worker acknowledges it."""
+        from app.ml.editing.edit_cancellation import request_cancel
+
+        with self._condition:
+            try:
+                job = local_store.read_json(f"experiments/{job_id}.json")
+            except FileNotFoundError:
+                return None
+            if job.get("status") != "running" or job.get("cancel_requested"):
+                return job
+            if request_cancel(job_id):
+                job["cancel_requested"] = True
+                job["updated_at"] = _now()
+                _append_job_logs(job, ["Canceling edit at the next safe boundary…"])
+                local_store.write_json(f"experiments/{job_id}.json", job)
+                self._condition.notify_all()
+            return job
+
     def cancel_job(self, job_id: str, message: str | None = "Canceled by user.") -> dict[str, Any] | None:
         """Make cancellation terminal before the running worker returns."""
         with self._condition:
@@ -494,7 +514,7 @@ def _append_job_logs(job: dict[str, Any], lines: list[str]) -> None:
 
 
 def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
-    return {key: job.get(key) for key in ("id", "experiment_id", "status", "progress", "progress_current", "progress_total", "created_at", "updated_at")}
+    return {key: job.get(key) for key in ("id", "experiment_id", "status", "cancel_requested", "progress", "progress_current", "progress_total", "created_at", "updated_at")}
 
 
 def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:

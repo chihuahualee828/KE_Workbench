@@ -176,6 +176,7 @@ class JobResponse(ApiSchema):
     job_id: str
     experiment_id: str
     status: str
+    cancel_requested: bool = False
     progress: float = 0.0
     progress_current: int | None = None
     progress_total: int | None = None
