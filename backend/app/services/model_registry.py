@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import settings
@@ -245,7 +245,13 @@ SUPPORTED_MODELS = [
 
 class ModelRegistry:
     def list_models(self) -> list[dict]:
-        return [*SUPPORTED_MODELS, *self.list_local_models()]
+        # Registrations can be copied between servers with the data directory.
+        # Expose only local models present on this backend, but retain all saved
+        # records for registry updates and for when their folders return.
+        local_models = [
+            model for model in self.list_local_models() if _local_model_is_available(model)
+        ]
+        return [*SUPPORTED_MODELS, *local_models]
 
     def get(self, model_id: str) -> dict:
         for model in self.list_models():
@@ -293,8 +299,13 @@ class ModelRegistry:
         if _migrate_managed_local_models(models):
             _write_local_models(models)
         for model in models:
+            relative_path = _managed_local_model_relative_path(model)
+            if relative_path is not None:
+                resolved_path = str(settings.data_dir / relative_path)
+                model["local_path"] = resolved_path
+                model["hf_id"] = resolved_path
             local_path = model.get("local_path")
-            if not local_path:
+            if not isinstance(local_path, str) or not local_path.strip():
                 continue
             configured_layers = _architecture_layer_count(Path(local_path))
             if configured_layers is not None:
@@ -543,6 +554,34 @@ class ModelRegistry:
         return removed or {}
 
 
+def _managed_local_model_relative_path(model: dict[str, Any]) -> Path | None:
+    """Recognize managed imports in portable and legacy absolute path formats."""
+    if not model.get("managed_local"):
+        return None
+    model_id = model.get("id")
+    local_path = model.get("local_path")
+    if not isinstance(model_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]+", model_id):
+        return None
+    if not isinstance(local_path, str) or not local_path or "\0" in local_path:
+        return None
+    parts = PurePosixPath(local_path.replace("\\", "/")).parts
+    relative_path = Path("models") / "imported_models" / model_id
+    if ".." in parts or parts[-3:] != relative_path.parts:
+        return None
+    return relative_path
+
+
+def _local_model_is_available(model: dict[str, Any]) -> bool:
+    local_path = model.get("local_path")
+    if not isinstance(local_path, str) or not local_path.strip():
+        return False
+    try:
+        path = Path(local_path)
+        return path.is_dir() and (path / "config.json").is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def _local_models_path() -> Path:
     path = settings.data_dir / "models" / "local_models.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -550,13 +589,23 @@ def _local_models_path() -> Path:
 
 
 def _write_local_models(models: list[dict[str, Any]]) -> None:
+    # Runtime consumers use absolute paths, but persisted managed imports must
+    # survive moving DATA_DIR to a different server or container mount.
+    stored_models = []
+    for model in models:
+        stored = dict(model)
+        relative_path = _managed_local_model_relative_path(stored)
+        if relative_path is not None:
+            stored["local_path"] = relative_path.as_posix()
+            stored["hf_id"] = relative_path.as_posix()
+        stored_models.append(stored)
     path = _local_models_path()
     descriptor, temporary_path = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            json.dump(models, file, indent=2)
+            json.dump(stored_models, file, indent=2)
             file.write("\n")
             file.flush()
             os.fsync(file.fileno())
@@ -595,6 +644,13 @@ def _migrate_managed_local_models(models: list[dict[str, Any]]) -> bool:
         model_id = model.get("id")
         if not isinstance(model_id, str):
             continue
+        relative_path = _managed_local_model_relative_path(model)
+        if relative_path is not None:
+            portable_path = relative_path.as_posix()
+            if model.get("local_path") != portable_path or model.get("hf_id") != portable_path:
+                model["local_path"] = portable_path
+                model["hf_id"] = portable_path
+                changed = True
         if not isinstance(model.get("import_metadata"), dict):
             job = import_jobs.get(model_id)
             if job:
