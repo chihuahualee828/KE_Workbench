@@ -131,6 +131,7 @@ def run_easyedit(
     mom2_adjustment: bool | None = None,
     patch_mode: Literal["individual", "series"] = "individual",
     series_context: EasyEditSeriesContext | None = None,
+    batch_size: int = 1,
 ) -> dict[str, Any]:
     if patch_mode not in {"individual", "series"}:
         raise ValueError(f"Unsupported EasyEdit patch mode: {patch_mode}")
@@ -138,6 +139,11 @@ def run_easyedit(
         raise ValueError("EasyEdit series mode requires a shared series context.")
 
     method_key = method.lower()
+    if method_key == "memit":
+        if type(batch_size) is not int or batch_size < 1:
+            raise ValueError("MEMIT batch size must be a positive integer.")
+        if not edits:
+            raise ValueError("Provide at least one MEMIT edit fact.")
     spec = METHODS.get(method_key)
     if spec is None:
         raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
@@ -153,6 +159,8 @@ def run_easyedit(
     BaseEditor, hparams_cls = _load_easyedit(spec["hparams_class"])
     hparams_path = _resolve_hparams_path(model, spec["hparams_key"])
     hparams = hparams_cls.from_hparams(str(hparams_path))
+    if method_key == "memit":
+        hparams.batch_size = batch_size
     print(f"Loaded EasyEdit hparams from {hparams_path}.")
 
     _override_model_name(hparams, model)
@@ -259,7 +267,14 @@ def run_easyedit(
             print("Starting EasyEdit algorithm.")
             check_edit_cancellation()
             with memit_cancellation_hook(editor.model, enabled=method_key == "memit"):
-                metrics, edited_model, _ = editor.edit(**edit_args)
+                if method_key == "memit":
+                    # Always accumulate chunks within this job, independently of
+                    # whether the job started from clean or already patched weights.
+                    # One pre-job snapshot/delta keeps cancellation all-or-nothing.
+                    print(f"MEMIT batch size: {batch_size}; facts: {len(edits)}.")
+                    metrics, edited_model, _ = editor.batch_edit(**edit_args)
+                else:
+                    metrics, edited_model, _ = editor.edit(**edit_args)
             check_edit_cancellation()
             patch_id = (
                 series_context.patch_id
@@ -347,6 +362,7 @@ def run_easyedit(
                         "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
                         "mom2_adjustment": bool(getattr(hparams, "mom2_adjustment", False)),
                         "used_loaded_runtime": used_loaded_runtime,
+                        **({"batch_size": batch_size} if method_key == "memit" else {}),
                     },
                     patch_id=patch_id,
                 )

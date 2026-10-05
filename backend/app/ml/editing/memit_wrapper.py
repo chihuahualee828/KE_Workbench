@@ -12,6 +12,7 @@ def run_memit_edit(
     portability_inputs: dict | None,
     sequential_edit: bool,
     mom2_adjustment: bool,
+    batch_size: int = 1,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -27,12 +28,13 @@ def run_memit_edit(
                 "portability_inputs": portability_inputs,
                 "sequential_edit": sequential_edit,
                 "mom2_adjustment": mom2_adjustment,
+                "batch_size": batch_size,
             },
             timeout=7200.0,
         )
     normalized_edits = [
         edit.model_dump() if hasattr(edit, "model_dump") else dict(edit)
-        for edit in edits[:100]
+        for edit in edits
     ]
     rephrase_prompts = _single_rephrase_per_edit(normalized_edits)
     result = run_easyedit(
@@ -45,6 +47,7 @@ def run_memit_edit(
         portability_inputs=portability_inputs,
         sequential_edit=sequential_edit,
         mom2_adjustment=mom2_adjustment,
+        batch_size=batch_size,
     )
     result["edited_facts"] = len(normalized_edits)
     result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits))
