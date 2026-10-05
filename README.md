@@ -58,6 +58,8 @@ Each intervention restores the clean activation from the **same token and layer*
 
 Editing controls include method-compatible model selection, layer configuration where supported, and the option to continue from the active patch lineage. ROME/r-ROME sequential series accumulate their edits in one cumulative patch.
 
+MEMIT exposes a **Batch Size** setting (default `1`): each batch jointly edits up to that many facts through EasyEdit's `batch_edit()`. Batches accumulate within the job and are saved as one patch; **Continue from active patches** controls only the starting model state. Larger batches can change edit quality and memory requirements. Cancellation rolls back the entire MEMIT job, including completed batches.
+
 For sequential series and MEMIT batches, the fact editor supports:
 
 - Editable fact cards and a JSON editor.

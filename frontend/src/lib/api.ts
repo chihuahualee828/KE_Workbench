@@ -526,6 +526,7 @@ export const api = {
     }),
   memitEdit: (body: {
     model_id: string;
+    batch_size?: number;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     layers?: number[] | null;
     evaluation_prompts: string[];

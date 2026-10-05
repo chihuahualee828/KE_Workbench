@@ -1045,6 +1045,9 @@ function MemitForm({
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
   const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
+  const [batchSize, setBatchSize] = usePersistentState("kew:edit:memit:batchSize", "1");
+  const parsedBatchSize = Number(batchSize);
+  const validBatchSize = /^\d+$/.test(batchSize) && Number.isSafeInteger(parsedBatchSize) && parsedBatchSize >= 1;
   const mom2Adjustment = true;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1116,6 +1119,9 @@ function MemitForm({
       if (!parsedEdits.length) {
         throw new Error("Batch Edits needs at least one MEMIT fact.");
       }
+      if (!validBatchSize) {
+        throw new Error("Batch size must be a positive whole number.");
+      }
       const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
       if (invalidEdit >= 0) {
         throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
@@ -1125,6 +1131,7 @@ function MemitForm({
       }
       const response = await api.memitEdit({
         model_id: modelId,
+        batch_size: parsedBatchSize,
         edits: parsedEdits.map((edit) => ({
           ...edit,
           ground_truth: edit.ground_truth.trim() || null
@@ -1210,6 +1217,23 @@ function MemitForm({
           uploadTitle="MEMIT edits JSON"
         />
         <label className="grid gap-2">
+          <span className="label">Batch Size</span>
+          <input
+            className="control"
+            type="number"
+            min={1}
+            step={1}
+            value={batchSize}
+            disabled={busy}
+            onChange={(event) => setBatchSize(event.target.value)}
+            aria-invalid={!validBatchSize}
+          />
+          <span className="text-xs text-ink/60">
+            Facts edited jointly per batch. Larger batches may use more memory and change edit quality.
+            {validBatchSize && batchDataset.count > 0 ? ` ${Math.ceil(batchDataset.count / parsedBatchSize)} batch(es) for ${batchDataset.count} facts.` : ""}
+          </span>
+        </label>
+        <label className="grid gap-2">
           <span className="label">Edit Layers</span>
           <input
             className="control"
@@ -1254,7 +1278,7 @@ function MemitForm({
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : "Apply MEMIT"}
         </button>

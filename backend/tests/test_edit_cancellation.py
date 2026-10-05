@@ -24,7 +24,7 @@ def editing(monkeypatch, tmp_path):
         for parameter in model.parameters():
             parameter.fill_(1)
     hparams = SimpleNamespace(model_name="demo", layers=[0], rewrite_module_tmp="layers.{}", mom2_adjustment=False)
-    state = SimpleNamespace(model=model, hparams=hparams, callback=None, calls=0)
+    state = SimpleNamespace(model=model, hparams=hparams, callback=None, calls=0, batch_calls=[], batch_args=None)
 
     class Editor:
         def __init__(self):
@@ -37,6 +37,14 @@ def editing(monkeypatch, tmp_path):
                 model.layers[0].weight.add_(2)
             if state.callback:
                 state.callback()
+            return {}, model, {}
+
+        def batch_edit(self, **kwargs):
+            state.batch_args = kwargs
+            assert kwargs["sequential_edit"] is True
+            for offset in range(0, len(kwargs["prompts"]), self.hparams.batch_size):
+                state.batch_calls.append(kwargs["prompts"][offset:offset + self.hparams.batch_size])
+                self.edit(**kwargs)
             return {}, model, {}
 
     monkeypatch.setattr(runtime, "_load_easyedit", lambda _: (
@@ -298,6 +306,54 @@ def test_other_edit_methods_do_not_get_memit_forward_hooks(editing, monkeypatch,
     editing.callback = optimize
     assert _run_local_edit("job_test", lambda: run_fact(method), {}) == {"_edit_canceled": True}
     assert finished_steps == [0, 1, 2]  # Existing post-EasyEdit boundary is unchanged.
+    assert editing.batch_calls == []
+
+
+@pytest.mark.parametrize("continuing", [False, True])
+@pytest.mark.parametrize("batch_size,chunk_sizes", [(1, [1, 1, 1, 1, 1]), (2, [2, 2, 1]), (10, [5])])
+def test_memit_batches_accumulate_in_one_replayable_patch(editing, continuing, batch_size, chunk_sizes):
+    add_old_patch(editing)
+    edits = [{"subject": str(i), "relation_prompt": "{} is", "new_object": "B"} for i in range(5)]
+    result = _run_local_edit("job_test", lambda: runtime.run_easyedit(
+        "memit", "demo", edits, [0], sequential_edit=continuing, batch_size=batch_size,
+        rephrase_prompts=[f"rephrase {i}" for i in range(5)],
+    ), {})
+    assert [len(chunk) for chunk in editing.batch_calls] == chunk_sizes
+    assert editing.batch_args["rephrase_prompts"] == [f"rephrase {i}" for i in range(5)]
+    assert result["patch"]["batch_size"] == batch_size
+    assert len(result["patch"]["edits"]) == 5
+    expected = torch.full((2, 2), float((2 if continuing else 1) + 2 * len(chunk_sizes)))
+    assert torch.equal(editing.model.layers[0].weight, expected)
+    assert patch_service.active_patches_for_model("demo") == (["patch_old"] if continuing else []) + [result["patch_id"]]
+    assert len(patch_service.list_patches()) == 2  # Old patch plus one whole-job patch.
+    # Reloading the saved delta must give the same accumulated result.
+    patch_service.sync_patch_stack_to_model(editing.model, "demo", [])
+    patch_service.sync_active_patches_to_model(editing.model, "demo")
+    assert torch.equal(editing.model.layers[0].weight, expected)
+
+
+@pytest.mark.parametrize("continuing", [False, True])
+def test_memit_cancel_in_later_batch_rolls_back_completed_batches(editing, continuing):
+    add_old_patch(editing)
+    before = {name: tensor.clone() for name, tensor in editing.model.state_dict().items()}
+    def cancel_second_batch():
+        if editing.calls == 2:
+            request_cancel("job_test")
+            # A forward inside the second batch aborts before a third batch.
+            editing.model.layers[0].weight.requires_grad_(False)
+            editing.model(torch.ones(1, 2))
+    editing.model.forward = lambda inputs: editing.model.layers[0](inputs)
+    editing.callback = cancel_second_batch
+    edits = [{"subject": str(i), "relation_prompt": "{} is", "new_object": "B"} for i in range(5)]
+    result = _run_local_edit("job_test", lambda: runtime.run_easyedit(
+        "memit", "demo", edits, [0], sequential_edit=continuing, batch_size=2,
+    ), {})
+    assert result == {"_edit_canceled": True}
+    assert len(editing.batch_calls) == 2
+    for name, tensor in editing.model.state_dict().items():
+        assert torch.equal(tensor, before[name])
+    assert patch_service.active_patches_for_model("demo") == ["patch_old"]
+    assert len(patch_service.list_patches()) == 1
 
 
 @pytest.mark.parametrize("failure", [False, True])

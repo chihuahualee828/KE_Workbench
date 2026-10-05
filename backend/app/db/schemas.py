@@ -113,7 +113,8 @@ class RomeSequentialEditsRequest(ApiSchema):
 
 class MemitEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
-    edits: list[EditSpec]
+    edits: list[EditSpec] = Field(min_length=1)
+    batch_size: int = Field(default=1, ge=1, strict=True)
     layers: list[int] | None = None
     evaluation_prompts: list[str] = Field(default_factory=list)
     locality_inputs: dict[str, dict[str, list[str]]] | None = None
