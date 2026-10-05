@@ -18,7 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
-from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit
+from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -258,7 +258,8 @@ def run_easyedit(
             # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
             check_edit_cancellation()
-            metrics, edited_model, _ = editor.edit(**edit_args)
+            with memit_cancellation_hook(editor.model, enabled=method_key == "memit"):
+                metrics, edited_model, _ = editor.edit(**edit_args)
             check_edit_cancellation()
             patch_id = (
                 series_context.patch_id

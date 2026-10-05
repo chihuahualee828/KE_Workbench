@@ -7,7 +7,8 @@ import torch
 
 from app.ml.editing import easyedit_runtime as runtime
 from app.ml.editing.edit_cancellation import (
-    _run_local_edit, current_edit, request_cancel,
+    EditCanceled, EditTransaction, _run_local_edit, current_edit,
+    memit_cancellation_hook, request_cancel,
 )
 from app.services.experiment_service import ExperimentService
 from app.services.patch_service import patch_service
@@ -232,4 +233,127 @@ def test_parent_attaches_cancellation_context_to_worker_command(monkeypatch):
         assert captured["_edit_job_id"] == "job_parent"
         assert "_edit_job_id" not in payload
     finally:
+        current_edit.reset(token)
+
+
+@pytest.mark.parametrize("continuing", [False, True])
+def test_memit_hook_cancels_inside_edit_and_model_remains_usable(editing, continuing):
+    add_old_patch(editing)
+    model = editing.model
+    model.forward = lambda inputs: model.layers[1](model.layers[0](inputs))
+    model.layers[0].weight.requires_grad_(False)
+    model.eval()
+    model.layers[1].train()
+    original_weights = {name: value.clone() for name, value in model.state_dict().items()}
+    original_gradients = [parameter.requires_grad for parameter in model.parameters()]
+    original_training = [module.training for module in model.modules()]
+    forward_calls = []
+    existing_hook = model.register_forward_pre_hook(lambda *_: forward_calls.append(True))
+    original_hooks = dict(model._forward_pre_hooks)
+    finished_steps = []
+
+    def optimize():
+        # Model the repeated forwards and parameter freezing in MEMIT compute_z.
+        model.requires_grad_(False)
+        model.train()
+        for step in range(5):
+            model(torch.ones(1, 2))
+            finished_steps.append(step)
+            request_cancel("job_test")
+        pytest.fail("MEMIT must stop before finishing its remaining iterations")
+
+    editing.callback = optimize
+    try:
+        result = _run_local_edit("job_test", lambda: run_fact(sequential_edit=continuing), {})
+        assert result == {"_edit_canceled": True}
+        assert finished_steps == [0]
+        assert forward_calls == [True]  # Cancellation precedes existing hooks.
+        assert model._forward_pre_hooks == original_hooks
+        assert [parameter.requires_grad for parameter in model.parameters()] == original_gradients
+        assert [module.training for module in model.modules()] == original_training
+        for name, value in model.state_dict().items():
+            assert torch.equal(value, original_weights[name])
+        assert patch_service.active_patches_for_model("demo") == ["patch_old"]
+        assert [patch["patch_id"] for patch in patch_service.list_patches()] == ["patch_old"]
+        # The cancel marker still exists, but no hook leaks into later inference.
+        assert torch.isfinite(model(torch.ones(1, 2))).all()
+    finally:
+        existing_hook.remove()
+
+
+@pytest.mark.parametrize("method", ["rome", "r_rome"])
+def test_other_edit_methods_do_not_get_memit_forward_hooks(editing, monkeypatch, method):
+    monkeypatch.setattr(runtime.model_registry, "get", lambda _: {
+        "hf_id": "demo", "supports_rome": True, "supports_r_rome": True})
+    editing.model.forward = lambda inputs: editing.model.layers[0](inputs)
+    finished_steps = []
+
+    def optimize():
+        request_cancel("job_test")
+        assert not editing.model._forward_pre_hooks
+        for step in range(3):
+            editing.model(torch.ones(1, 2))
+            finished_steps.append(step)
+
+    editing.callback = optimize
+    assert _run_local_edit("job_test", lambda: run_fact(method), {}) == {"_edit_canceled": True}
+    assert finished_steps == [0, 1, 2]  # Existing post-EasyEdit boundary is unchanged.
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_memit_hook_restores_flags_and_hooks_on_success_or_error(editing, failure):
+    model = editing.model
+    model.layers[0].weight.requires_grad_(False)
+    model.layers[1].eval()
+    gradients = [parameter.requires_grad for parameter in model.parameters()]
+    training = [module.training for module in model.modules()]
+
+    def algorithm():
+        assert len(model._forward_pre_hooks) == 1
+        model.requires_grad_(False)
+        model.eval()
+        if failure:
+            raise RuntimeError("optimizer failure")
+
+    editing.callback = algorithm
+    if failure:
+        with pytest.raises(RuntimeError, match="optimizer failure"):
+            _run_local_edit("job_test", run_fact, {})
+    else:
+        assert "patch_id" in _run_local_edit("job_test", run_fact, {})
+    assert not model._forward_pre_hooks
+    assert [parameter.requires_grad for parameter in model.parameters()] == gradients
+    assert [module.training for module in model.modules()] == training
+
+
+def test_memit_hook_does_nothing_without_a_cancellable_job(editing):
+    with memit_cancellation_hook(editing.model, enabled=True):
+        assert not editing.model._forward_pre_hooks
+
+
+def test_cancellation_unwinds_unmodified_easyedit_trace_hooks(editing):
+    import runpy
+    from app.config import settings
+
+    source = settings.easyedit_root / "easyeditor" / "util" / "nethook.py"
+    if not source.exists():
+        pytest.skip("Requires the EasyEdit checkout (read-only)")
+    trace_dict = runpy.run_path(str(source))["TraceDict"]
+    model = editing.model
+    model.forward = lambda inputs: model.layers[0](inputs)
+    token = current_edit.set(EditTransaction("job_test"))
+    existing_hook = model.layers[0].register_forward_hook(lambda *_: None)
+    original_hooks = dict(model.layers[0]._forward_hooks)
+    try:
+        with pytest.raises(EditCanceled):
+            with memit_cancellation_hook(model, enabled=True):
+                # Real EasyEdit context removes its own instrumentation when the
+                # model's pre-hook raises. Existing user hooks must survive.
+                with trace_dict(model, ["layers.0"]):
+                    request_cancel("job_test")
+                    model(torch.ones(1, 2))
+        assert model.layers[0]._forward_hooks == original_hooks
+        assert not model._forward_pre_hooks
+    finally:
+        existing_hook.remove()
         current_edit.reset(token)

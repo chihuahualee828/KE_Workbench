@@ -51,6 +51,41 @@ def check_edit_cancellation() -> None:
         transaction.check()
 
 
+@contextmanager
+def memit_cancellation_hook(model: Any, *, enabled: bool):
+    """Interrupt MEMIT at forward boundaries without modifying EasyEdit.
+
+    Use a model-local hook, not a global hook or a patched EasyEdit function.
+    The exception unwinds EasyEdit's TraceDict contexts before our transaction
+    restores weights. Backward passes and matrix solves already in progress
+    still finish before the next check. No hook is installed for other methods
+    or for calls that do not belong to a cancellable edit job.
+    """
+    transaction = current_edit.get()
+    if not enabled or transaction is None:
+        yield
+        return
+
+    transaction.check()
+    # MEMIT freezes model parameters to optimize its separate delta tensor.
+    # Preserve mixed flags rather than unconditionally unfreezing the model.
+    gradient_flags = [(parameter, parameter.requires_grad) for parameter in model.parameters()]
+    training_flags = [(module, module.training) for module in model.modules()]
+
+    def before_forward(_module, _args):
+        transaction.check()
+
+    handle = model.register_forward_pre_hook(before_forward, prepend=True)
+    try:
+        yield
+    finally:
+        handle.remove()
+        for parameter, requires_grad in gradient_flags:
+            parameter.requires_grad_(requires_grad)
+        for module, training in training_flags:
+            module.training = training
+
+
 class EditTransaction:
     def __init__(self, job_id: str):
         self.job_id = job_id
