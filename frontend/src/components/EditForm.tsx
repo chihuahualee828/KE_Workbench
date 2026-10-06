@@ -7,6 +7,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from "@/lib/api";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
 import { TrainingHyperparameterFields } from "./TrainingHyperparameterFields";
+import { formatLayerRanges } from "@/lib/layerRanges";
 import { watchReliabilityTestJob } from "@/lib/reliabilityJobProgress";
 import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling } from "@/lib/experimentEvents";
 import { type FactEditDraft, type IndexedFactDataset, useIndexedFactDataset } from "@/lib/factDataset";
@@ -667,7 +668,16 @@ function RomeForm({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
-            <span>EasyEdit default: {runtimeConnected ? easyEditDefaultLayer ?? "Loading..." : "Unknown"}</span>
+            <EasyEditLayerDefaults
+              layers={easyEditDefaultLayer === undefined ? undefined : [easyEditDefaultLayer]}
+              connected={runtimeConnected}
+              disabled={busy || locatingLayer}
+              onRestore={() => {
+                if (easyEditDefaultLayer === undefined) return;
+                setTargetLayers((current) => ({ ...current, [modelId]: String(easyEditDefaultLayer) }));
+                setLayerNotice("");
+              }}
+            />
           </div>
           {isSeriesEdit ? <span className="text-xs text-ink/60">Each fact in this series uses the selected layer.</span> : null}
           {layerNotice ? <span className="text-xs text-cyan">{layerNotice}</span> : null}
@@ -1254,7 +1264,15 @@ function MemitForm({
           />
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
-            <span>EasyEdit default: {runtimeConnected ? easyEditDefaultLayerValues?.join(",") ?? "Loading..." : "Unknown"}</span>
+            <EasyEditLayerDefaults
+              layers={easyEditDefaultLayerValues}
+              connected={runtimeConnected}
+              disabled={busy}
+              onRestore={() => {
+                if (!easyEditDefaultLayerValues?.length) return;
+                setLayersByModel((current) => ({ ...current, [modelId]: easyEditDefaultLayerValues.join(",") }));
+              }}
+            />
           </div>
         </label>
         <DerivedEvaluationPrompts
@@ -1531,7 +1549,7 @@ function TrainingForm({
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
             <span className="inline-flex min-w-0 max-w-full items-center gap-2">
-              <span className="min-w-0 [overflow-wrap:anywhere]">EasyEdit default: {!runtimeConnected ? "Unknown" : easyEditDefaultLayerValues === undefined ? "Loading..." : easyEditDefaultLayerValues.length ? easyEditDefaultLayerValues.join(",") : "All matching layers (YAML: [])"}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">EasyEdit default: {!runtimeConnected ? "Unknown" : easyEditDefaultLayerValues === undefined ? "Loading..." : easyEditDefaultLayerValues.length ? formatLayerRanges(easyEditDefaultLayerValues) : "All matching layers (YAML: [])"}</span>
               <button type="button" className="ghost-button h-7 min-h-7 w-7 shrink-0 p-0" aria-label="Restore EasyEdit default layers" disabled={busy || !runtimeConnected || easyEditDefaultLayerValues === undefined} onClick={() => setLayersByModel((current) => ({ ...current, [modelId]: easyEditDefaultLayerValues?.join(",") ?? "" }))}><RotateCcw size={16} /></button>
             </span>
           </div>
@@ -1572,6 +1590,30 @@ function TrainingForm({
       </section>
       <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
     </div>
+  );
+}
+
+function EasyEditLayerDefaults({ layers, connected, disabled, onRestore }: {
+  layers?: number[];
+  connected: boolean;
+  disabled: boolean;
+  onRestore: () => void;
+}) {
+  const defaultText = !connected ? "Unknown" : layers?.length ? formatLayerRanges(layers) : "Loading...";
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+      <span className="min-w-0 [overflow-wrap:anywhere]">EasyEdit default: {defaultText}</span>
+      <button
+        aria-label="Restore EasyEdit default layers"
+        className="ghost-button h-7 min-h-7 w-7 shrink-0 px-0 py-0"
+        disabled={disabled || !connected || !layers?.length}
+        onClick={onRestore}
+        title="Restore EasyEdit default layers"
+        type="button"
+      >
+        <RotateCcw size={16} />
+      </button>
+    </span>
   );
 }
 
