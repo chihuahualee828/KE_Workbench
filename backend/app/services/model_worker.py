@@ -124,6 +124,12 @@ def _dispatch(
     if action == "export_model_archive":
         archive_path, temporary_root = runtime.export_active_model_archive(payload["model_id"])
         return {"archive_path": str(archive_path), "temporary_root": str(temporary_root)}
+    if action == "lora_modules":
+        from app.ml.editing.lora_modules import inspect_lora_modules
+
+        with runtime.exclusive_runtime_access():
+            bundle = runtime.require_loaded_runtime_bundle(payload["model_id"])
+            return inspect_lora_modules(bundle["model"], payload["model_id"])
     if action == "generate":
         from app.ml.inference.generate import generate_text
 
@@ -167,6 +173,10 @@ def _dispatch(
         from app.ml.editing.memit_wrapper import run_memit_edit
 
         return run_memit_edit(**payload)
+    if action in {"ft_edit", "lora_edit"}:
+        from app.ml.editing.training_wrapper import run_training_edit
+
+        return run_training_edit(method=action.removesuffix("_edit"), **payload)
     if action == "kn_edit":
         from app.ml.editing.kn_wrapper import run_kn_edit
 

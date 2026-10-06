@@ -72,6 +72,16 @@ METHODS = {
         "support_key": "supports_memit",
         "requires_subject": True,
     },
+    "ft": {
+        "hparams_class": "FTHyperParams",
+        "hparams_key": "ft_hparams",
+        "support_key": "supports_ft",
+    },
+    "lora": {
+        "hparams_class": "LoRAHyperParams",
+        "hparams_key": "lora_hparams",
+        "support_key": "supports_lora",
+    },
     "kn": {
         "hparams_class": "KNHyperParams",
         "hparams_key": "kn_hparams",
@@ -113,7 +123,7 @@ def get_easyedit_default_layers(model_id: str, method: str) -> dict[str, Any]:
         layers = [int(configured_layers)]
     else:
         layers = []
-    if not layers:
+    if not layers and method_key != "lora":
         raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers: {hparams_path}")
     return {"layers": layers, "hparams_path": str(hparams_path)}
 
@@ -1211,6 +1221,10 @@ def _easyedit_runtime_access(model_id: str):
 
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
+        return
+    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA"}:
+        # Training profiles often contain a machine-specific CUDA index.
+        hparams.device = "cpu"
         return
     if loaded_device and loaded_device.startswith("cuda"):
         setattr(hparams, "device", _cuda_device_index(loaded_device))

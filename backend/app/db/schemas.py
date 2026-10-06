@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ml.editing.training_hparams import TrainingHyperparameters
+
 
 class ApiSchema(BaseModel):
     """Base schema for API payloads with model identifier fields."""
@@ -123,6 +125,18 @@ class MemitEditRequest(ApiSchema):
     mom2_adjustment: Literal[True] = True
 
 
+class TrainingEditRequest(ApiSchema):
+    model_id: str = "gpt2-xl"
+    edits: list[EditSpec] = Field(min_length=1)
+    hparams: TrainingHyperparameters = Field(default_factory=TrainingHyperparameters)
+    batch_size: int = Field(default=1, ge=1, strict=True)
+    layers: list[int] | None = None
+    evaluation_prompts: list[str] = Field(default_factory=list)
+    locality_inputs: dict[str, dict[str, list[str]]] | None = None
+    portability_inputs: dict[str, dict[str, list[str]]] | None = None
+    sequential_edit: bool = False
+
+
 class Mom2StatisticsRequest(ApiSchema):
     model_id: str
     method: Literal["rome", "r_rome", "memit"]
@@ -152,7 +166,7 @@ class ReliabilityEvaluationRequest(ApiSchema):
     """Evaluate edit quality on the current active model without editing it."""
 
     model_id: str = "gpt2-xl"
-    method: Literal["rome", "r_rome", "memit", "kn"]
+    method: Literal["rome", "r_rome", "memit", "kn", "ft", "lora"]
     edits: list[EditSpec] = Field(min_length=1)
     include_generations: bool = False
     evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)

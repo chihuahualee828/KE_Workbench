@@ -36,6 +36,10 @@ class LocalModelRequest(ApiSchema):
     supports_rome: bool = False
     supports_r_rome: bool = False
     supports_memit: bool = False
+    supports_ft: bool = False
+    ft_hparams: str | None = None
+    supports_lora: bool = False
+    lora_hparams: str | None = None
     supports_kn: bool = False
     rome_hparams: str | None = None
     r_rome_hparams: str | None = None
