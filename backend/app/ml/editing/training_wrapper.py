@@ -158,6 +158,14 @@ def _training_targets(model: Any, hparams: Any, method: str) -> tuple[list[str],
     for target in hparams.target_modules:
         if not any(name == target or name.endswith(f".{target}") for name in modules):
             raise ValueError(f"LoRA target module '{target}' does not match the selected model/layers.")
+    from app.ml.editing.lora_modules import lora_module_support
+
+    support = lora_module_support(model)
+    for name in modules:
+        if name not in support:
+            raise ValueError(f"LoRA target '{name}' must be a linear projection module.")
+        if support[name] is not None:
+            raise ValueError(f"LoRA target '{name}': {support[name]}")
     names = [f"{name}.weight" for name in modules]
     return names, modules
 

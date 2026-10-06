@@ -1,9 +1,12 @@
 "use client";
 
+import { LoraTargetModules } from "./LoraTargetModules";
 import { trainingFields } from "@/lib/trainingHyperparameters";
 
-export function TrainingHyperparameterFields({ method, values, ready, disabled, warning, onChange, onReset }: {
+export function TrainingHyperparameterFields({ method, modelId, modelLoaded, values, ready, disabled, warning, onChange, onReset }: {
   method: "ft" | "lora";
+  modelId: string;
+  modelLoaded: boolean;
   values: Record<string, string>;
   ready: boolean;
   disabled: boolean;
@@ -22,7 +25,9 @@ export function TrainingHyperparameterFields({ method, values, ready, disabled, 
         {warning ? <p role="status" className="text-xs text-rust [overflow-wrap:anywhere]">{warning} Correct the affected fields before applying an edit.</p> : null}
         {!ready ? <p className="text-xs text-ink/60">Waiting for model defaults…</p> : trainingFields(method).map(({ key, label, hint }) => (
           <div key={key} className="grid min-w-0 grid-cols-1 gap-2">
-            <label className="grid min-w-0 grid-cols-1 gap-1">
+            {key === "target_modules" ? (
+              <LoraTargetModules key={modelId} modelId={modelId} modelLoaded={modelLoaded} disabled={disabled} value={values[key] ?? ""} onChange={(value) => onChange(key, value)} />
+            ) : <label className="grid min-w-0 grid-cols-1 gap-1">
               <span className="label">{label}</span>
               {key === "objective_optimization" ? (
                 <select className="control" value={values[key] ?? ""} disabled={disabled} onChange={(event) => onChange(key, event.target.value)}>
@@ -34,7 +39,7 @@ export function TrainingHyperparameterFields({ method, values, ready, disabled, 
                 <input className="control" value={values[key] ?? ""} disabled={disabled} onChange={(event) => onChange(key, event.target.value)} spellCheck={false} />
               )}
               <span className="text-xs text-ink/60 [overflow-wrap:anywhere]">{hint}</span>
-            </label>
+            </label>}
           </div>
         ))}
         {method === "lora" ? <p className="text-xs text-ink/60">Uses standard LoRA. Layers restrict where the target modules receive adapters.</p> : null}

@@ -1,3 +1,4 @@
+import type { LoraModuleCatalog } from "./loraModules";
 import type { TrainingHyperparameters } from "./trainingHyperparameters";
 import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
@@ -544,6 +545,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  loraModules: (body: { model_id: string }) =>
+    request<LoraModuleCatalog>("/api/edit/lora/modules", { method: "POST", body: JSON.stringify(body) }),
   trainingDefaults: (body: { model_id: string; method: "ft" | "lora" }) =>
     request<{ layers: number[]; hparams: TrainingHyperparameters; warning?: string | null }>("/api/edit/training-defaults", { method: "POST", body: JSON.stringify(body) }),
   trainingEdit: (method: "ft" | "lora", body: {

@@ -32,6 +32,7 @@ from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
 from app.ml.editing.r_rome_wrapper import run_r_rome_edit, run_r_rome_sequential_edits
+from app.ml.editing.lora_modules import get_lora_modules
 from app.ml.editing.training_hparams import get_training_defaults, validate_training_hparams
 from app.ml.editing.training_wrapper import run_training_edit
 from app.services.experiment_service import experiment_service
@@ -49,6 +50,24 @@ class PatchExportRequest(ApiSchema):
 class EditDefaultLayersRequest(ApiSchema):
     model_id: str
     method: str
+
+
+class LoraModulesRequest(ApiSchema):
+    model_id: str
+
+
+@router.post("/edit/lora/modules")
+@operation_guard.protect()
+def lora_modules(request: LoraModulesRequest) -> dict:
+    try:
+        return get_lora_modules(request.model_id)
+    except ModelNotLoadedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 
 
 @router.post("/edit/training-defaults")

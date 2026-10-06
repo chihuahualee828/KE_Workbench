@@ -1538,6 +1538,8 @@ function TrainingForm({
         </label>
         <TrainingHyperparameterFields
           method={method}
+          modelId={modelId}
+          modelLoaded={modelLoaded && runtimeConnected}
           values={hparamValues}
           warning={hparamWarnings[modelId]}
           ready={Boolean(defaultHparams)}
