@@ -329,28 +329,36 @@ function PatchTable({
 }) {
   const blockedReason = usePatchMutationBlockReason();
   if (patches.length === 0) return null;
-  const lineageGraph = mode === "library" ? buildLineageGraph(patches) : null;
+  const lineageGraph = buildLineageGraph(patches);
   return (
-    <div onScroll={(event) => { const node = event.currentTarget; if (scrollable && node.scrollHeight - node.scrollTop - node.clientHeight < 240) void loadMorePatches().catch(() => undefined); }} className={scrollable ? "max-h-[34rem] overflow-auto pb-1" : "overflow-x-auto pb-1"}>
-      <table className="w-full table-fixed border-collapse text-sm">
+    <div onScroll={(event) => { const node = event.currentTarget; if (scrollable && node.scrollHeight - node.scrollTop - node.clientHeight < 240) void loadMorePatches().catch(() => undefined); }} className={`overflow-auto pb-1 [scrollbar-gutter:stable] ${scrollable ? "max-h-[34rem]" : ""}`}>
+      <table className="w-full min-w-[518px] table-fixed border-collapse text-sm lg:min-w-[724px] 2xl:min-w-[912px]">
         <colgroup>
-          {lineageGraph ? <col className="w-14" /> : null}
+          <col className="w-14" />
+          <col className="w-[130px]" />
+          <col className="w-[88px]" />
+          <col className="w-[72px]" />
+          <col className="hidden w-[188px] 2xl:table-column" />
+          <col className="hidden w-[64px] lg:table-column" />
+          <col className="w-[48px]" />
+          <col className="hidden w-[142px] lg:table-column" />
+          <col className="w-[124px]" />
         </colgroup>
         <thead>
           <tr className="border-b border-line text-left">
             {lineageGraph ? (
-              <th className="sticky top-0 z-10 w-14 bg-white py-2 text-left" title="Sequential edit lineage">
+              <th className="sticky top-0 z-10 bg-white py-2 text-left" title="Sequential edit lineage">
                 <GitBranch className="ml-0.5 text-ink/60" size={16} />
               </th>
             ) : null}
-            <th className="sticky top-0 z-10 w-[130px] bg-white py-2 pr-3">Patch</th>
-            <th className="sticky top-0 z-10 w-[88px] bg-white py-2 pr-3">State</th>
-            <th className="sticky top-0 z-10 w-[72px] bg-white py-2 pr-3">Method</th>
-            <th className="sticky top-0 z-10 hidden w-[188px] bg-white py-2 pr-3 2xl:table-cell">Model</th>
-            <th className="sticky top-0 z-10 hidden w-[64px] bg-white py-2 pr-3 lg:table-cell">Layers</th>
-            <th className="sticky top-0 z-10 w-[48px] bg-white py-2 pr-3">Edits</th>
-            <th className="sticky top-0 z-10 hidden w-[142px] bg-white py-2 pr-3 lg:table-cell">Created</th>
-            <th className="sticky top-0 z-10 w-[124px] bg-white py-2">
+            <th className="sticky top-0 z-10 bg-white py-2 pr-3">Patch</th>
+            <th className="sticky top-0 z-10 bg-white py-2 pr-3">State</th>
+            <th className="sticky top-0 z-10 bg-white py-2 pr-3">Method</th>
+            <th className="sticky top-0 z-10 hidden bg-white py-2 pr-3 2xl:table-cell">Model</th>
+            <th className="sticky top-0 z-10 hidden bg-white py-2 pr-3 lg:table-cell">Layers</th>
+            <th className="sticky top-0 z-10 bg-white py-2 pr-3">Edits</th>
+            <th className="sticky top-0 z-10 hidden bg-white py-2 pr-3 lg:table-cell">Created</th>
+            <th className="sticky top-0 z-10 bg-white py-2">
               <div className="ml-auto w-[7.25rem] text-left">Actions</div>
             </th>
           </tr>
