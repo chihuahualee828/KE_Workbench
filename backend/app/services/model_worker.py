@@ -167,6 +167,10 @@ def _dispatch(
         from app.ml.editing.memit_wrapper import run_memit_edit
 
         return run_memit_edit(**payload)
+    if action in {"ft_edit", "lora_edit"}:
+        from app.ml.editing.training_wrapper import run_training_edit
+
+        return run_training_edit(method=action.removesuffix("_edit"), **payload)
     if action == "kn_edit":
         from app.ml.editing.kn_wrapper import run_kn_edit
 

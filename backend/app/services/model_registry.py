@@ -49,6 +49,8 @@ def _hub_model(
     r_rome_hparams: str | None = None,
     memit_hparams: str | None = None,
     kn_hparams: str | None = None,
+    ft_hparams: str | None = None,
+    lora_hparams: str | None = None,
     estimated_vram_gb: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     easyedit = {
@@ -58,6 +60,8 @@ def _hub_model(
             "r_rome_hparams": r_rome_hparams,
             "memit_hparams": memit_hparams,
             "kn_hparams": kn_hparams,
+            "ft_hparams": ft_hparams,
+            "lora_hparams": lora_hparams,
             "estimated_vram_gb": estimated_vram_gb,
         }.items()
         if value
@@ -77,6 +81,8 @@ def _hub_model(
         "supports_r_rome": bool(r_rome_hparams),
         "supports_memit": bool(memit_hparams),
         "supports_kn": bool(kn_hparams),
+        "supports_ft": bool(ft_hparams),
+        "supports_lora": bool(lora_hparams),
         "easyedit": easyedit,
         "source": "hub",
     }
@@ -91,6 +97,8 @@ SUPPORTED_MODELS = [
         supports_logit_lens=True,
         supports_causal_trace=True,
         rome_hparams="hparams/ROME/gpt2-xl.yaml",
+        ft_hparams="hparams/FT/gpt2-xl.yaml",
+        lora_hparams="hparams/LoRA/gpt2-xl.yaml",
         r_rome_hparams="hparams/R-ROME/gpt2-xl.yaml",
         memit_hparams="hparams/MEMIT/gpt2-xl.yaml",
         kn_hparams="hparams/KN/gpt2-xl.yaml",
@@ -103,6 +111,8 @@ SUPPORTED_MODELS = [
         model_type="gptj",
         n_layers=28,
         rome_hparams="hparams/ROME/gpt-j-6B.yaml",
+        ft_hparams="hparams/FT/gpt-j-6B.yaml",
+        lora_hparams="hparams/LoRA/gpt-j-6B.yaml",
         r_rome_hparams="hparams/R-ROME/gpt-j-6B.yaml",
         memit_hparams="hparams/MEMIT/gpt-j-6B.yaml",
         kn_hparams="hparams/KN/gpt-j-6B.yaml",
@@ -116,6 +126,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         trust_remote_code=True,
         rome_hparams="hparams/ROME/baichuan-7b.yaml",
+        ft_hparams="hparams/FT/baichuan-7b.yaml",
         memit_hparams="hparams/MEMIT/baichuan-7b.yaml",
         kn_hparams="hparams/KN/baichuan-7b.yaml",
     ),
@@ -127,6 +138,8 @@ SUPPORTED_MODELS = [
         n_layers=28,
         trust_remote_code=True,
         rome_hparams="hparams/ROME/chatglm2-6b.yaml",
+        ft_hparams="hparams/FT/chatglm2-6b.yaml",
+        lora_hparams="hparams/LoRA/chatglm2-6b.yaml",
         memit_hparams="hparams/MEMIT/chatglm2-6b.yaml",
         kn_hparams="hparams/KN/chatglm2-6b.yaml",
     ),
@@ -138,6 +151,8 @@ SUPPORTED_MODELS = [
         n_layers=40,
         trust_remote_code=True,
         rome_hparams="hparams/ROME/chatglm4-9b.yaml",
+        ft_hparams="hparams/FT/chatglm4-9b.yaml",
+        lora_hparams="hparams/LoRA/chatglm4-9b.yaml",
         r_rome_hparams="hparams/R-ROME/chatglm4-9b.yaml",
     ),
     _hub_model(
@@ -149,6 +164,7 @@ SUPPORTED_MODELS = [
         trust_remote_code=True,
         generation_use_cache=False,
         rome_hparams="hparams/ROME/internlm-7b.yaml",
+        ft_hparams="hparams/FT/internlm-7b.yaml",
         memit_hparams="hparams/MEMIT/internlm-7b.yaml",
         kn_hparams="hparams/KN/internlm-7b.yaml",
     ),
@@ -159,6 +175,8 @@ SUPPORTED_MODELS = [
         model_type="llama",
         n_layers=32,
         rome_hparams="hparams/ROME/llama-7b.yaml",
+        ft_hparams="hparams/FT/llama-7b.yaml",
+        lora_hparams="hparams/LoRA/llama-7b.yaml",
         r_rome_hparams="hparams/R-ROME/llama-7b.yaml",
         memit_hparams="hparams/MEMIT/llama-7b.yaml",
         kn_hparams="hparams/KN/llama-7b.yaml",
@@ -170,6 +188,8 @@ SUPPORTED_MODELS = [
         model_type="llama",
         n_layers=32,
         rome_hparams="hparams/ROME/llama3-8b.yaml",
+        ft_hparams="hparams/FT/llama3-8b.yaml",
+        lora_hparams="hparams/LoRA/llama3-8b.yaml",
         kn_hparams="hparams/KN/llama3-8b.yaml",
         estimated_vram_gb={"rome": 18},
     ),
@@ -180,6 +200,8 @@ SUPPORTED_MODELS = [
         model_type="llama",
         n_layers=28,
         rome_hparams="hparams/ROME/llama3.2-3b.yaml",
+        ft_hparams="hparams/FT/llama3.2-3b.yaml",
+        lora_hparams="hparams/LoRA/llama3.2-3b.yaml",
         r_rome_hparams="hparams/R-ROME/llama3.2-3b.yaml",
         memit_hparams="hparams/MEMIT/llama3.2-3b.yaml",
         kn_hparams="hparams/KN/llama3.2-3b.yaml",
@@ -192,6 +214,7 @@ SUPPORTED_MODELS = [
         model_type="mistral",
         n_layers=32,
         rome_hparams="hparams/ROME/mistral-7b.yaml",
+        ft_hparams="hparams/FT/mistral-7b.yaml",
         memit_hparams="hparams/MEMIT/mistral-7b.yaml",
         kn_hparams="hparams/KN/mistral-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
@@ -203,6 +226,8 @@ SUPPORTED_MODELS = [
         model_type="qwen",
         n_layers=28,
         rome_hparams="hparams/ROME/qwen2.5-7b.yaml",
+        ft_hparams="hparams/FT/qwen2.5-7b.yaml",
+        lora_hparams="hparams/LoRA/qwen2.5-7b.yaml",
         r_rome_hparams="hparams/R-ROME/qwen2.5-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen2.5-7b.yaml",
         kn_hparams="hparams/KN/qwen2.5-7b.yaml",
@@ -215,6 +240,7 @@ SUPPORTED_MODELS = [
         model_type="qwen",
         n_layers=28,
         rome_hparams="hparams/ROME/qwen2-7b.yaml",
+        ft_hparams="hparams/FT/qwen2-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen2-7b.yaml",
         kn_hparams="hparams/KN/qwen2-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
@@ -227,6 +253,7 @@ SUPPORTED_MODELS = [
         n_layers=32,
         trust_remote_code=True,
         rome_hparams="hparams/ROME/qwen-7b.yaml",
+        ft_hparams="hparams/FT/qwen-7b.yaml",
         memit_hparams="hparams/MEMIT/qwen-7b.yaml",
         kn_hparams="hparams/KN/qwen-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
@@ -238,6 +265,7 @@ SUPPORTED_MODELS = [
         model_type="qwen",
         n_layers=32,
         rome_hparams="hparams/ROME/qwen3.5-9b.yaml",
+        ft_hparams="hparams/FT/qwen3.5-9b.yaml",
         r_rome_hparams="hparams/R-ROME/qwen3.5-9b.yaml",
     ),
 ]
@@ -293,6 +321,12 @@ class ModelRegistry:
         if _migrate_managed_local_models(models):
             _write_local_models(models)
         for model in models:
+            profile = next((item for item in SUPPORTED_MODELS if item["id"] == model.get("base_model_id")), {})
+            for method in ("ft", "lora"):
+                model.setdefault(f"supports_{method}", bool(profile.get(f"supports_{method}")))
+                path = profile.get("easyedit", {}).get(f"{method}_hparams")
+                if path and model.get(f"supports_{method}"):
+                    model.setdefault("easyedit", {}).setdefault(f"{method}_hparams", path)
             local_path = model.get("local_path")
             if not local_path:
                 continue
@@ -340,6 +374,10 @@ class ModelRegistry:
             raise ValueError("R-ROME local models need an R-ROME hparams path.")
         if model.get("supports_memit") and not model.get("memit_hparams"):
             raise ValueError("MEMIT local models need a MEMIT hparams path.")
+        if model.get("supports_ft") and not model.get("ft_hparams"):
+            raise ValueError("FT local models need a hparams path.")
+        if model.get("supports_lora") and not model.get("lora_hparams"):
+            raise ValueError("LORA local models need a hparams path.")
         if model.get("supports_kn") and not model.get("kn_hparams"):
             raise ValueError("KN local models need a KN hparams path.")
         if model.get("supports_kn") and model_type not in {
@@ -365,6 +403,8 @@ class ModelRegistry:
             "supports_rome": bool(model.get("supports_rome", False)),
             "supports_r_rome": bool(model.get("supports_r_rome", False)),
             "supports_memit": bool(model.get("supports_memit", False)),
+            "supports_ft": bool(model.get("supports_ft", False)),
+            "supports_lora": bool(model.get("supports_lora", False)),
             "supports_kn": bool(model.get("supports_kn", False)),
             "trust_remote_code": bool(model.get("trust_remote_code", False)),
             "generation_use_cache": bool(model.get("generation_use_cache", True)),
@@ -379,6 +419,8 @@ class ModelRegistry:
                     "rome_hparams": model.get("rome_hparams") or None,
                     "r_rome_hparams": model.get("r_rome_hparams") or None,
                     "memit_hparams": model.get("memit_hparams") or None,
+                    "ft_hparams": model.get("ft_hparams") or None,
+                    "lora_hparams": model.get("lora_hparams") or None,
                     "kn_hparams": model.get("kn_hparams") or None,
                 }.items()
                 if value
@@ -465,6 +507,8 @@ class ModelRegistry:
             "supports_rome": bool(profile and profile.get("supports_rome")),
             "supports_r_rome": bool(profile and profile.get("supports_r_rome")),
             "supports_memit": bool(profile and profile.get("supports_memit")),
+            "supports_ft": bool(profile and profile.get("supports_ft")),
+            "supports_lora": bool(profile and profile.get("supports_lora")),
             "supports_kn": bool(profile and profile.get("supports_kn")),
             "easyedit": easyedit,
             "trust_remote_code": bool(config.get("auto_map")) and model_type in _REMOTE_CODE_MODEL_TYPES,
@@ -516,6 +560,8 @@ class ModelRegistry:
             "supports_rome": metadata["supports_rome"],
             "supports_r_rome": metadata["supports_r_rome"],
             "supports_memit": metadata["supports_memit"],
+            "supports_ft": metadata["supports_ft"],
+            "supports_lora": metadata["supports_lora"],
             "supports_kn": metadata["supports_kn"],
             "trust_remote_code": metadata["trust_remote_code"],
             "generation_use_cache": metadata["generation_use_cache"],

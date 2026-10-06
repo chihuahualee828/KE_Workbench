@@ -258,10 +258,14 @@ export const api = {
     supports_rome?: boolean;
     supports_r_rome?: boolean;
     supports_memit?: boolean;
+    supports_ft?: boolean;
+    supports_lora?: boolean;
     supports_kn?: boolean;
     rome_hparams?: string | null;
     r_rome_hparams?: string | null;
     memit_hparams?: string | null;
+    ft_hparams?: string | null;
+    lora_hparams?: string | null;
     kn_hparams?: string | null;
     import_job_id?: string | null;
   }) =>
@@ -418,7 +422,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  editDefaultLayers: (body: { model_id: string; method: "rome" | "r_rome" | "memit" }) =>
+  editDefaultLayers: (body: { model_id: string; method: "rome" | "r_rome" | "memit" | "ft" | "lora" }) =>
     request<{ layers: number[]; hparams_path: string }>("/api/edit/default-layers", {
       method: "POST",
       body: JSON.stringify(body)
@@ -539,6 +543,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  trainingEdit: (method: "ft" | "lora", body: {
+    model_id: string;
+    batch_size: number;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    layers?: number[] | null;
+    evaluation_prompts: string[];
+    locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    sequential_edit?: boolean;
+  }) => request<EditJob>(`/api/edit/${method}`, { method: "POST", body: JSON.stringify(body) }),
   knEdit: (body: {
     model_id: string;
     subject: string;
@@ -566,7 +580,7 @@ export const api = {
     }),
   easyEditReliability: (body: {
     model_id: string;
-    method: "rome" | "r_rome" | "memit" | "kn";
+    method: "rome" | "r_rome" | "memit" | "kn" | "ft" | "lora";
     edits: Array<{
       subject: string;
       relation_prompt: string;

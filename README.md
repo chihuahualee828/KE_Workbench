@@ -2,7 +2,7 @@
 
 A local, full-stack workspace for exploring and editing factual knowledge in Hugging Face language models. Generate text, inspect layer predictions, trace activations, apply EasyEdit knowledge edits, and evaluate the resulting model—all from one interface.
 
-The workbench runs inference against real model weights and integrates **ROME, r-ROME, Knowledge Neurons (KN), and MEMIT** through EasyEdit. Edits are tracked as saved patches with an active model lineage, so you can compare states, reload edits, revert changes, and export an edited model.
+The workbench runs inference against real model weights and integrates **ROME, r-ROME, Knowledge Neurons (KN), MEMIT, FT, and LoRA** through EasyEdit. Edits are tracked as saved patches with an active model lineage, so you can compare states, reload edits, revert changes, and export an edited model.
 
 ## What you can do
 
@@ -12,7 +12,7 @@ The workbench runs inference against real model weights and integrates **ROME, r
 | **Generate** | Run prompts with greedy decoding, sampling, or beam search against the loaded model and its active edits. |
 | **Logit lens** | Inspect layer-by-layer next-token predictions, top candidates, and a target token's rank, logit, and probability. |
 | **Causal tracing** | Run a token × layer activation-restoration sweep and explore the results in an interactive heatmap. |
-| **Knowledge edits** | Apply single-fact edits, sequential ROME/r-ROME series, or MEMIT batches; import fact datasets and test edit reliability. |
+| **Knowledge edits** | Apply single-fact edits, sequential ROME/r-ROME series, or MEMIT/FT/LoRA batches; import fact datasets and test edit reliability. |
 | **Evaluation** | Evaluate active edit facts for reliability, generalization, and locality; inspect scores and generated answers. |
 | **Activity** | Follow experiment history, job progress, logs, and supported cancellation actions. |
 | **Settings** | Configure the backend connection, Hugging Face token, patch export directory, and second-moment statistics. |
@@ -55,12 +55,16 @@ Each intervention restores the clean activation from the **same token and layer*
 | **r-ROME** | EasyEdit's rebuilding-ROME implementation, with single-fact and sequential-series workflows. |
 | **Knowledge Neurons (KN)** | Single-fact editing with a required original answer (`ground_truth`). |
 | **MEMIT** | Batch editing of multiple facts, with configured or explicitly selected layers. |
+| **FT** | Fine-tune configured layers, with a configurable batch size. |
+| **LoRA** | Train low-rank adapters in batches and save reversible merged weight deltas. |
 
 Editing controls include method-compatible model selection, layer configuration where supported, and the option to continue from the active patch lineage. ROME/r-ROME sequential series accumulate their edits in one cumulative patch.
 
 MEMIT exposes a **Batch Size** setting (default `1`): each batch jointly edits up to that many facts through EasyEdit's `batch_edit()`. Batches accumulate within the job and are saved as one patch; **Continue from active patches** controls only the starting model state. Larger batches can change edit quality and memory requirements. Cancellation rolls back the entire MEMIT job, including completed batches.
 
-For sequential series and MEMIT batches, the fact editor supports:
+FT and LoRA use EasyEdit's `FTHyperParams` / `LoRAHyperParams` and `BaseEditor.batch_edit()` on the already loaded model. Both expose **Batch Size** (default `1`) and edit layers in the same batch form. Batches accumulate into one reversible patch; cancellation restores the pre-job weights and active patches. FT preserves all changed parameters, including biases. LoRA uses standard LoRA (overriding upstream profiles that select AdaLoRA), then merges the adapters into a saved weight delta so patch replay and model export use the existing workflow. LoRA accepts an empty layer field (`[]`), preserving EasyEdit's no-layer-restriction behavior; target modules still determine which projections receive adapters. Training settings come from the model's EasyEdit YAML. Model choices are limited to configured method-specific profiles; inherited local models use their base profile.
+
+For sequential series and MEMIT/FT/LoRA batches, the fact editor supports:
 
 - Editable fact cards and a JSON editor.
 - JSON file import with attribute mapping and automatic matching of common field aliases.
@@ -297,7 +301,7 @@ The frontend uses **Next.js 14, React 18, TypeScript, Tailwind CSS, and Recharts
 | `frontend/src/lib/` | API access, shared resources, browser persistence, and job progress helpers. |
 | `backend/app/api/` | REST routes, job-wait endpoints, and event streams. |
 | `backend/app/services/` | Model registry/cache/runtime, patches, experiments, and evaluation orchestration. |
-| `backend/app/ml/editing/` | EasyEdit runtime integration and ROME, r-ROME, KN, and MEMIT wrappers. |
+| `backend/app/ml/editing/` | EasyEdit runtime integration and ROME, r-ROME, KN, MEMIT, FT, and LoRA wrappers. |
 | `backend/app/ml/tracing/` | Activation corruption, restoration, and causal-effect computation. |
 | `backend/app/ml/lens/` | Logit lens projections. |
 | `backend/app/storage/` | Local artifact storage and the query catalog. |

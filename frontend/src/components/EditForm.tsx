@@ -48,7 +48,7 @@ type PendingFactImport = {
 };
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
-  const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "patches">("kew:edit:tab", "rome");
+  const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "ft" | "lora" | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
   const setResult = useCallback((result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result })), [setEdit]);
   const setJob = useCallback((job: EditJob | null) => setEdit((current) => ({ ...current, job })), [setEdit]);
@@ -105,13 +105,15 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
           ["rome", "ROME"],
           ["r_rome", "r-ROME"],
           ["kn", "KN"],
-          ["memit", "MEMIT"]
+          ["memit", "MEMIT"],
+          ["ft", "FT"],
+          ["lora", "LoRA"]
         ].map(([id, label]) => (
           <button
             key={id}
             aria-pressed={tab === id}
             className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit")}
+            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit" | "ft" | "lora")}
           >
             {label}
           </button>
@@ -121,6 +123,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "r_rome" ? <RomeForm method="r_rome" models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab === "ft" || tab === "lora" ? <TrainingForm key={tab} method={tab} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
     </div>
   );
@@ -1288,6 +1291,259 @@ function MemitForm({
       <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function TrainingForm({
+  method,
+  models,
+  runtime,
+  result,
+  job,
+  setResult,
+  setJob,
+  onPatchesChanged
+}: {
+  method: "ft" | "lora";
+  models: SupportedModel[];
+  runtime: ModelRuntimeStatus[];
+  result: Record<string, unknown> | null;
+  job: EditJob | null;
+  setResult: (result: Record<string, unknown> | null) => void;
+  setJob: (job: EditJob | null) => void;
+  onPatchesChanged?: () => void | Promise<void>;
+}) {
+  const methodLabel = method === "ft" ? "FT" : "LoRA";
+  const trainingModels = useMemo(() => models.filter((model) => method === "ft" ? model.supports_ft : model.supports_lora), [method, models]);
+  const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, trainingModels[0]?.id ?? "gpt2-xl");
+  const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
+  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
+  const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
+  const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
+  const [batchSize, setBatchSize] = usePersistentState(`kew:edit:${method}:batchSize`, "1");
+  const parsedBatchSize = Number(batchSize);
+  const validBatchSize = /^\d+$/.test(batchSize) && Number.isSafeInteger(parsedBatchSize) && parsedBatchSize >= 1;
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [testingReliability, setTestingReliability] = useState(false);
+  const [reliabilityTestProgress, setReliabilityTestProgress] = useState<ReliabilityTestProgress>(null);
+  const [reliabilityResult, setReliabilityResult] = useState<Record<string, unknown> | null>(null);
+  const reliabilityTestCancellation = useReliabilityTestCancellation();
+  const batchDataset = useIndexedFactDataset({
+    datasetId: `kew:edit:${method}:batch-facts`,
+    initialValues: DEFAULT_FACT_EDIT_DRAFTS,
+    legacyStorageKey: `kew:edit:${method}:edits`,
+    normalize: normalizeFactEditDraft
+  });
+  const selectedModel = useMemo(() => trainingModels.find((model) => model.id === modelId), [trainingModels, modelId]);
+  const selectedModelId = selectedModel?.id;
+  const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
+  const layers = layersByModel[modelId] ?? "";
+  const selectedLayers = method === "lora" && !layers.trim() ? [] : parseMemitLayers(layers, maxLayer);
+  const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
+  const modelLoaded = Boolean(selectedModel) && runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const runtimeConnected = useRuntimeConnection();
+  const evaluationPrompts = useFactEvaluationPromptPreview(batchDataset, true);
+
+  useLoadedModelSelection(trainingModels, runtime, setModelId);
+
+  useEffect(() => {
+    if (trainingModels.length === 0) return;
+    if (!trainingModels.some((model) => model.id === modelId)) {
+      setModelId(trainingModels[0].id);
+    }
+  }, [trainingModels, modelId, setModelId]);
+
+  useEffect(() => {
+    setReliabilityResult(null);
+  }, [batchDataset.revision, modelId]);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedModelId) return;
+    api.editDefaultLayers({ model_id: selectedModelId, method })
+      .then((result) => {
+        const defaults = result.layers.filter((layer) => Number.isInteger(layer) && layer >= 0 && layer <= maxLayer);
+        if (!active) return;
+        const defaultValue = defaults.join(",");
+        setEasyEditDefaultLayers((current) => ({ ...current, [selectedModelId]: defaults }));
+        setLayersByModel((current) => {
+          if (current[selectedModelId] !== undefined) return current;
+          return { ...current, [selectedModelId]: defaultValue };
+        });
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, [maxLayer, method, selectedModelId, setLayersByModel]);
+
+  async function run() {
+    if (!modelLoaded || busy) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    setJob(null);
+    try {
+      const parsedEdits = await batchDataset.getAll();
+      if (!parsedEdits.length) {
+        throw new Error(`Batch Edits needs at least one ${methodLabel} fact.`);
+      }
+      if (!validBatchSize) {
+        throw new Error("Batch size must be a positive whole number.");
+      }
+      const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
+      if (invalidEdit >= 0) {
+        throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
+      }
+      if (!selectedLayers || (method === "ft" && !selectedLayers.length)) {
+        throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
+      }
+      const response = await api.trainingEdit(method, {
+        model_id: modelId,
+        batch_size: parsedBatchSize,
+        edits: parsedEdits.map((edit) => ({
+          ...edit,
+          ground_truth: edit.ground_truth.trim() || null
+        })),
+        layers: selectedLayers,
+        evaluation_prompts: buildFactEvaluationPrompts(parsedEdits),
+        sequential_edit: sequentialEdit
+      });
+      if (!sequentialEdit) await onPatchesChanged?.();
+      const completed = await watchEditJob(response, setJob);
+      const completedResult = completed.result ?? null;
+      setResult(completedResult);
+      setReliabilityResult(reliabilityFromEditResult(completedResult));
+      await onPatchesChanged?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testReliability() {
+    if (!modelLoaded || batchDataset.count === 0 || busy || testingReliability) return;
+    setTestingReliability(true);
+    setError("");
+    setReliabilityResult(null);
+    setReliabilityTestProgress(null);
+    reliabilityTestCancellation.reset();
+    setResult(null);
+    try {
+      const edits = await batchDataset.getAll();
+      const response = await api.easyEditReliability({
+        model_id: modelId,
+        method,
+        edits: edits.map((edit) => ({
+          subject: edit.subject,
+          relation_prompt: edit.relation_prompt,
+          new_object: edit.new_object,
+          ground_truth: edit.ground_truth || null
+        })),
+        include_generations: true,
+      });
+      reliabilityTestCancellation.setJobId(response.job_id);
+      await watchReliabilityTestJob(response, (job) => {
+        const reliability = job.result;
+        if (!reliability) return;
+        setReliabilityResult(reliability);
+        setReliabilityTestProgress(reliabilityTestJobProgress(job));
+        setResult({
+          reliability,
+          reliability_test_job_id: job.job_id,
+          reliability_test_item_count: job.result_item_count ?? 0,
+          reliability_test_page_size: job.result_page_size ?? null,
+          evaluation_only: true,
+          model_id: modelId
+        });
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestingReliability(false);
+      reliabilityTestCancellation.reset();
+    }
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <section className="panel grid grid-cols-1 gap-4">
+        <ModelSelector models={trainingModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        {!trainingModels.length ? <p className="text-sm text-ink/60">No models are configured for {methodLabel}.</p> : null}
+        <FactDatasetEditor
+          label="Batch Edits"
+          dataset={batchDataset}
+          editorMode={inputMode}
+          onEditorModeChange={setInputMode}
+          onError={setError}
+          uploadTitle={`${methodLabel} edits JSON`}
+        />
+        <label className="grid gap-2">
+          <span className="label">Batch Size</span>
+          <input
+            className="control"
+            type="number"
+            min={1}
+            step={1}
+            value={batchSize}
+            disabled={busy}
+            onChange={(event) => setBatchSize(event.target.value)}
+            aria-invalid={!validBatchSize}
+          />
+          <span className="text-xs text-ink/60">
+            Facts edited jointly per batch. Larger batches may use more memory and change edit quality.
+            {validBatchSize && batchDataset.count > 0 ? ` ${Math.ceil(batchDataset.count / parsedBatchSize)} batch(es) for ${batchDataset.count} facts.` : ""}
+          </span>
+        </label>
+        <label className="grid gap-2">
+          <span className="label">Edit Layers</span>
+          <input
+            className="control"
+            inputMode="numeric"
+            placeholder={method === "lora" ? "All matching layers (leave empty)" : undefined}
+            value={layers}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (isEditableMemitLayerInput(value, maxLayer)) {
+                setLayersByModel((current) => ({ ...current, [modelId]: value }));
+              }
+            }}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
+            <span>Valid layers: 0-{maxLayer}</span>
+            <span>EasyEdit default: {!runtimeConnected ? "Unknown" : easyEditDefaultLayerValues === undefined ? "Loading..." : easyEditDefaultLayerValues.length ? easyEditDefaultLayerValues.join(",") : "All matching layers (YAML: [])"}</span>
+          </div>
+        </label>
+        <DerivedEvaluationPrompts
+          prompts={evaluationPrompts}
+          totalPromptCount={batchDataset.count}
+          onTest={testReliability}
+          onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
+          reliabilityResult={reliabilityResult}
+          testProgress={reliabilityTestProgress}
+          testing={testingReliability}
+          testCancelable={Boolean(reliabilityTestCancellation.jobId)}
+          testCanceling={reliabilityTestCancellation.canceling}
+          testDisabled={busy || !modelLoaded || batchDataset.status !== "ready" || batchDataset.count === 0}
+        />
+        <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
+          <span>Continue from active patches</span>
+          <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
+        </label>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers || (method === "ft" && !selectedLayers.length) || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? `Apply ${methodLabel} edit at the selected layers` : "Load the selected model before editing"}>
+          <Layers size={16} />
+          {busy ? "Editing" : `Apply ${methodLabel}`}
+        </button>
+        <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
+        {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
+      </section>
+      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }

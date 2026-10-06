@@ -20,11 +20,15 @@ export type SupportedModel = {
   supports_rome: boolean;
   supports_r_rome: boolean;
   supports_memit: boolean;
+  supports_ft: boolean;
+  supports_lora: boolean;
   supports_kn: boolean;
   easyedit?: {
     rome_hparams?: string;
     r_rome_hparams?: string;
     memit_hparams?: string;
+    ft_hparams?: string;
+    lora_hparams?: string;
     kn_hparams?: string;
     estimated_vram_gb?: Record<string, number>;
   };
@@ -198,12 +202,16 @@ export type LocalModelImportPreview = {
   supports_rome: boolean;
   supports_r_rome: boolean;
   supports_memit: boolean;
+  supports_ft: boolean;
+  supports_lora: boolean;
   supports_kn: boolean;
   trust_remote_code?: boolean;
   generation_use_cache?: boolean;
   rome_hparams?: string | null;
   r_rome_hparams?: string | null;
   memit_hparams?: string | null;
+  ft_hparams?: string | null;
+  lora_hparams?: string | null;
   kn_hparams?: string | null;
 };
 

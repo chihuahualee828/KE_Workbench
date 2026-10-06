@@ -16,6 +16,8 @@ const CANCELABLE_EDIT_EXPERIMENT_TYPES = new Set([
   "r_rome_edit",
   "r_rome_sequential_edits",
   "memit_edit",
+  "ft_edit",
+  "lora_edit",
   "kn_edit",
   "prepare_mom2_statistics",
   "evaluation"

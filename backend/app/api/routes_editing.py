@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import threading
+from functools import partial
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -13,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.config import settings
 from app.ml.editing.edit_cancellation import run_cancellable_edit
 from app.api.operation_guard import operation_guard
-from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse
+from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse, TrainingEditRequest
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -31,6 +32,7 @@ from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
 from app.ml.editing.r_rome_wrapper import run_r_rome_edit, run_r_rome_sequential_edits
+from app.ml.editing.training_wrapper import run_training_edit
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
 from app.services.patch_service import patch_service
@@ -126,6 +128,29 @@ def memit_edit(request: MemitEditRequest) -> JobResponse:
     job = experiment_service.create_job(experiment["id"])
     _start_edit_thread("MEMIT", job["id"], run_memit_edit, request.model_dump())
     return _job_response(job)
+
+
+@router.post("/edit/ft", response_model=JobResponse)
+@operation_guard.protect()
+def ft_edit(request: TrainingEditRequest) -> JobResponse:
+    return _start_training_edit("ft", request)
+
+
+
+@router.post("/edit/lora", response_model=JobResponse)
+@operation_guard.protect()
+def lora_edit(request: TrainingEditRequest) -> JobResponse:
+    return _start_training_edit("lora", request)
+
+
+
+def _start_training_edit(method: str, request: TrainingEditRequest) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    experiment = experiment_service.create(f"{method}_edit", request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    _start_edit_thread(method.upper(), job["id"], partial(run_training_edit, method=method), request.model_dump())
+    return _job_response(job)
+
 
 
 @router.get("/edit/jobs/{job_id}", response_model=JobResponse)

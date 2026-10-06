@@ -319,7 +319,7 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
     if not active_patch_ids:
         raise HTTPException(status_code=400, detail="Load at least one patch before evaluating its edit facts.")
     method = str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
-    if method not in {"rome", "r_rome", "memit", "kn"}:
+    if method not in {"rome", "r_rome", "memit", "kn", "ft", "lora"}:
         raise HTTPException(status_code=400, detail="The active patch method does not support this evaluation.")
 
     modes = list(dict.fromkeys(request.evaluation_modes))

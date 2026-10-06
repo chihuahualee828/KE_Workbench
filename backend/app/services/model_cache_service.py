@@ -534,6 +534,8 @@ class ModelCacheService:
                             "supports_rome",
                             "supports_r_rome",
                             "supports_memit",
+                            "supports_ft",
+                            "supports_lora",
                             "supports_kn",
                         )
                     },
@@ -688,12 +690,16 @@ class ModelCacheService:
             "supports_rome": metadata["supports_rome"],
             "supports_r_rome": metadata["supports_r_rome"],
             "supports_memit": metadata["supports_memit"],
+            "supports_ft": metadata["supports_ft"],
+            "supports_lora": metadata["supports_lora"],
             "supports_kn": metadata["supports_kn"],
             "trust_remote_code": metadata["trust_remote_code"],
             "generation_use_cache": metadata["generation_use_cache"],
             "rome_hparams": metadata["easyedit"].get("rome_hparams"),
             "r_rome_hparams": metadata["easyedit"].get("r_rome_hparams"),
             "memit_hparams": metadata["easyedit"].get("memit_hparams"),
+            "ft_hparams": metadata["easyedit"].get("ft_hparams"),
+            "lora_hparams": metadata["easyedit"].get("lora_hparams"),
             "kn_hparams": metadata["easyedit"].get("kn_hparams"),
         }
         relative_model_path = model_root.relative_to(_local_import_job_dir(job_id))
