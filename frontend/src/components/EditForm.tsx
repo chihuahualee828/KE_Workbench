@@ -1,10 +1,12 @@
 "use client";
 
-import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, Save, Trash2, Upload, X } from "lucide-react";
+import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, RotateCcw, Save, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
+import { TrainingHyperparameterFields } from "./TrainingHyperparameterFields";
 import { watchReliabilityTestJob } from "@/lib/reliabilityJobProgress";
 import { announceEditJobCanceling, announceExperimentCanceled, announceExperimentStarted, listenForEditJobCanceling } from "@/lib/experimentEvents";
 import { type FactEditDraft, type IndexedFactDataset, useIndexedFactDataset } from "@/lib/factDataset";
@@ -20,6 +22,7 @@ import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
 const EMPTY_LAYER_VALUES: Record<string, string> = {};
+const EMPTY_TRAINING_HPARAMS: Record<string, Record<string, string>> = {};
 const DEFAULT_FACT_EDIT_DRAFTS: FactEditDraft[] = [
   { subject: "Michael Jordan", relation_prompt: "{} plays the sport of", ground_truth: "basketball", new_object: "baseball" },
   { subject: "The Space Needle", relation_prompt: "{} is located in the city of", ground_truth: "Seattle", new_object: "Paris" }
@@ -1319,6 +1322,11 @@ function TrainingForm({
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, trainingModels[0]?.id ?? "gpt2-xl");
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
+  const [hparamWarnings, setHparamWarnings] = useState<Record<string, string | null>>({});
+  const [hparamDefaults, setHparamDefaults] = useState<Record<string, TrainingHyperparameters>>({});
+  const [hparamsByModel, setHparamsByModel] = usePersistentState<Record<string, Record<string, string>>>(`kew:edit:${method}:hparams`, EMPTY_TRAINING_HPARAMS);
+  const defaultHparams = hparamDefaults[modelId];
+  const hparamValues = { ...Object.fromEntries(Object.entries(defaultHparams ?? {}).map(([key, value]) => [key, trainingValueText(value)])), ...hparamsByModel[modelId] };
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
   const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
   const [batchSize, setBatchSize] = usePersistentState(`kew:edit:${method}:batchSize`, "1");
@@ -1362,10 +1370,12 @@ function TrainingForm({
   useEffect(() => {
     let active = true;
     if (!selectedModelId) return;
-    api.editDefaultLayers({ model_id: selectedModelId, method })
+    api.trainingDefaults({ model_id: selectedModelId, method })
       .then((result) => {
         const defaults = result.layers.filter((layer) => Number.isInteger(layer) && layer >= 0 && layer <= maxLayer);
         if (!active) return;
+        setHparamDefaults((current) => ({ ...current, [selectedModelId]: result.hparams }));
+        setHparamWarnings((current) => ({ ...current, [selectedModelId]: result.warning ?? null }));
         const defaultValue = defaults.join(",");
         setEasyEditDefaultLayers((current) => ({ ...current, [selectedModelId]: defaults }));
         setLayersByModel((current) => {
@@ -1402,9 +1412,12 @@ function TrainingForm({
       if (!selectedLayers || (method === "ft" && !selectedLayers.length)) {
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
       }
+      if (!defaultHparams) throw new Error("Wait for the model hyperparameter defaults to load.");
+      const hparams = parseTrainingHyperparameters(method, hparamValues);
       const response = await api.trainingEdit(method, {
         model_id: modelId,
         batch_size: parsedBatchSize,
+        hparams,
         edits: parsedEdits.map((edit) => ({
           ...edit,
           ground_truth: edit.ground_truth.trim() || null
@@ -1472,7 +1485,7 @@ function TrainingForm({
   }
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+    <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid grid-cols-1 gap-4">
         <ModelSelector models={trainingModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         {!trainingModels.length ? <p className="text-sm text-ink/60">No models are configured for {methodLabel}.</p> : null}
@@ -1484,7 +1497,7 @@ function TrainingForm({
           onError={setError}
           uploadTitle={`${methodLabel} edits JSON`}
         />
-        <label className="grid gap-2">
+        <label className="grid min-w-0 grid-cols-1 gap-2">
           <span className="label">Batch Size</span>
           <input
             className="control"
@@ -1501,7 +1514,7 @@ function TrainingForm({
             {validBatchSize && batchDataset.count > 0 ? ` ${Math.ceil(batchDataset.count / parsedBatchSize)} batch(es) for ${batchDataset.count} facts.` : ""}
           </span>
         </label>
-        <label className="grid gap-2">
+        <label className="grid min-w-0 grid-cols-1 gap-2">
           <span className="label">Edit Layers</span>
           <input
             className="control"
@@ -1515,11 +1528,23 @@ function TrainingForm({
               }
             }}
           />
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-xs text-ink/50">
             <span>Valid layers: 0-{maxLayer}</span>
-            <span>EasyEdit default: {!runtimeConnected ? "Unknown" : easyEditDefaultLayerValues === undefined ? "Loading..." : easyEditDefaultLayerValues.length ? easyEditDefaultLayerValues.join(",") : "All matching layers (YAML: [])"}</span>
+            <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+              <span className="min-w-0 [overflow-wrap:anywhere]">EasyEdit default: {!runtimeConnected ? "Unknown" : easyEditDefaultLayerValues === undefined ? "Loading..." : easyEditDefaultLayerValues.length ? easyEditDefaultLayerValues.join(",") : "All matching layers (YAML: [])"}</span>
+              <button type="button" className="ghost-button h-7 min-h-7 w-7 shrink-0 p-0" aria-label="Restore EasyEdit default layers" disabled={busy || !runtimeConnected || easyEditDefaultLayerValues === undefined} onClick={() => setLayersByModel((current) => ({ ...current, [modelId]: easyEditDefaultLayerValues?.join(",") ?? "" }))}><RotateCcw size={16} /></button>
+            </span>
           </div>
         </label>
+        <TrainingHyperparameterFields
+          method={method}
+          values={hparamValues}
+          warning={hparamWarnings[modelId]}
+          ready={Boolean(defaultHparams)}
+          disabled={busy}
+          onChange={(key, value) => setHparamsByModel((current) => ({ ...current, [modelId]: { ...current[modelId], [key]: value } }))}
+          onReset={() => setHparamsByModel((current) => ({ ...current, [modelId]: {} }))}
+        />
         <DerivedEvaluationPrompts
           prompts={evaluationPrompts}
           totalPromptCount={batchDataset.count}
@@ -1536,7 +1561,7 @@ function TrainingForm({
           <span>Continue from active patches</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
         </label>
-        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers || (method === "ft" && !selectedLayers.length) || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? `Apply ${methodLabel} edit at the selected layers` : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !defaultHparams || !selectedLayers || (method === "ft" && !selectedLayers.length) || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? `Apply ${methodLabel} edit at the selected layers` : "Load the selected model before editing"}>
           <Layers size={16} />
           {busy ? "Editing" : `Apply ${methodLabel}`}
         </button>

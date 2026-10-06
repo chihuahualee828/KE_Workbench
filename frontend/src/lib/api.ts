@@ -1,3 +1,4 @@
+import type { TrainingHyperparameters } from "./trainingHyperparameters";
 import type { ActiveEvaluationFacts, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
@@ -543,9 +544,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  trainingDefaults: (body: { model_id: string; method: "ft" | "lora" }) =>
+    request<{ layers: number[]; hparams: TrainingHyperparameters; warning?: string | null }>("/api/edit/training-defaults", { method: "POST", body: JSON.stringify(body) }),
   trainingEdit: (method: "ft" | "lora", body: {
     model_id: string;
     batch_size: number;
+    hparams?: TrainingHyperparameters;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     layers?: number[] | null;
     evaluation_prompts: string[];

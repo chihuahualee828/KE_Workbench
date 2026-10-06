@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ml.editing.training_hparams import TrainingHyperparameters
+
 
 class ApiSchema(BaseModel):
     """Base schema for API payloads with model identifier fields."""
@@ -126,6 +128,7 @@ class MemitEditRequest(ApiSchema):
 class TrainingEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
+    hparams: TrainingHyperparameters = Field(default_factory=TrainingHyperparameters)
     batch_size: int = Field(default=1, ge=1, strict=True)
     layers: list[int] | None = None
     evaluation_prompts: list[str] = Field(default_factory=list)

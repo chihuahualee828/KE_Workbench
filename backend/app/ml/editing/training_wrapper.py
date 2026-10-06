@@ -7,6 +7,7 @@ from typing import Any
 from app.ml.editing import easyedit_runtime as runtime
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit
 from app.ml.editing.memit_wrapper import _single_rephrase_per_edit
+from app.ml.editing.training_hparams import METHOD_FIELDS, validate_training_hparams
 from app.services.model_runtime_service import model_runtime_service
 from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
@@ -22,11 +23,13 @@ def run_training_edit(
     portability_inputs: dict | None = None,
     sequential_edit: bool = False,
     batch_size: int = 1,
+    hparams: dict | None = None,
 ) -> dict:
     if method not in {"ft", "lora"}:
         raise ValueError("Training method must be ft or lora.")
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("Batch size must be a positive integer.")
+    overrides = validate_training_hparams(method, hparams)
     edits = [edit.model_dump() if hasattr(edit, "model_dump") else dict(edit) for edit in edits]
     if not edits or any(not str(edit.get(key) or "").strip() for edit in edits
                         for key in ("subject", "relation_prompt", "new_object")):
@@ -36,7 +39,7 @@ def run_training_edit(
             "model_id": model_id, "edits": edits, "layers": layers,
             "evaluation_prompts": evaluation_prompts, "locality_inputs": locality_inputs,
             "portability_inputs": portability_inputs, "sequential_edit": sequential_edit,
-            "batch_size": batch_size,
+            "batch_size": batch_size, "hparams": overrides,
         }, timeout=7200.0)
 
     spec = runtime.METHODS[method]
@@ -46,6 +49,11 @@ def run_training_edit(
     BaseEditor, hparams_cls = runtime._load_easyedit(spec["hparams_class"])
     path = runtime._resolve_hparams_path(info, spec["hparams_key"])
     hparams = hparams_cls.from_hparams(str(path))
+    for key, value in overrides.items():
+        setattr(hparams, key, value)
+    effective_hparams = validate_training_hparams(
+        method, {key: getattr(hparams, key) for key in METHOD_FIELDS[method]}
+    )
     runtime._override_model_name(hparams, info)
     if layers is not None:
         if (not layers and method == "ft") or any(type(layer) is not int or not 0 <= layer < info["n_layers"] for layer in layers):
@@ -112,6 +120,7 @@ def run_training_edit(
                     "batch_size": batch_size, "sequential_edit": sequential_edit,
                     "parent_patch_ids": parents if sequential_edit else [],
                     "used_loaded_runtime": True,
+                    "training_hparams": effective_hparams,
                     "configured_layers": list(hparams.layers),
                     **({"lora_type": "lora", "merged_lora": True} if method == "lora" else {}),
                 }, patch_id=patch_id,

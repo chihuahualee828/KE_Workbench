@@ -218,3 +218,92 @@ def test_training_reliability_uses_loaded_cpu_model(tiny_training, method):
     assert result["metric_name"] == "rewrite_acc"
     assert len(result["cases"]) == 1
     assert 0 <= result["mean_reliability"] <= 1
+
+
+@pytest.mark.parametrize("values", [
+    {"lr": 0}, {"lr": float("inf")}, {"lr": True}, {"num_steps": 1.5},
+    {"rank": 0}, {"lora_dropout": 1}, {"weight_decay": -1},
+    {"target_modules": []}, {"target_modules": [" "]}, {"device": "cuda:9"},
+    {"norm_constraint": True},
+])
+def test_training_hparams_reject_invalid_values(values):
+    from app.ml.editing.training_hparams import TrainingHyperparameters
+    with pytest.raises(ValidationError):
+        TrainingHyperparameters.model_validate(values)
+
+
+@pytest.mark.parametrize("method,values", [("ft", {"rank": 8}), ("lora", {"objective_optimization": "target_new"})])
+def test_training_hparams_reject_wrong_method(method, values):
+    from app.ml.editing.training_hparams import validate_training_hparams
+    with pytest.raises(ValueError, match="Unsupported"):
+        validate_training_hparams(method, values)
+
+
+@pytest.mark.parametrize("method", ["ft", "lora"])
+def test_real_training_hparam_overrides(tiny_training, method):
+    from app.ml.editing.training_hparams import get_training_defaults
+    defaults = get_training_defaults("tiny", method)
+    assert defaults["hparams"]["lr"] == 0.01
+    overrides = {"lr": 0.002, "num_steps": 2, "weight_decay": 0.01}
+    if method == "ft":
+        overrides.update(objective_optimization="target_new", norm_constraint=False)
+    else:
+        overrides.update(target_modules=["c_fc"], rank=2, lora_alpha=4, lora_dropout=0)
+    result = training.run_training_edit(method, "tiny", [FACT] * 2, [] if method == "lora" else [0],
+                                       batch_size=2, hparams=overrides)
+    assert result["patch"]["training_hparams"] == overrides
+    if method == "lora":
+        assert result["patch"]["configured_layers"] == []
+        from safetensors.torch import load_file
+        deltas = load_file(patch_service.resolve_delta_path(result["patch"]["delta_paths"][0]))
+        assert set(deltas) == {"transformer.h.0.mlp.c_fc.weight", "transformer.h.1.mlp.c_fc.weight"}
+
+
+def test_lora_target_typo_fails_before_any_mutation(tiny_training):
+    before = {name: parameter.clone() for name, parameter in tiny_training.model.state_dict().items()}
+    with pytest.raises(ValueError, match="does not match"):
+        training.run_training_edit("lora", "tiny", [FACT], [], hparams={"target_modules": ["c_attn", "typo"]})
+    assert not hasattr(tiny_training.model, "peft_config")
+    for name, parameter in tiny_training.model.state_dict().items():
+        torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)
+
+
+def test_training_worker_carries_hparam_overrides(monkeypatch):
+    captured = {}
+    def execute(action, payload, **kwargs):
+        captured.update(payload)
+        return {}
+    monkeypatch.setattr(training, "model_runtime_service", SimpleNamespace(uses_hard_worker=True, execute=execute))
+    training.run_training_edit("lora", "demo", [FACT], [], hparams={"lr": 0.001, "target_modules": ["q_proj"]})
+    assert captured["hparams"] == {"lr": 0.001, "target_modules": ["q_proj"]}
+    assert captured["layers"] == []
+
+
+def test_training_defaults_warn_about_invalid_yaml_and_allow_override(tiny_training):
+    path = runtime._resolve_hparams_path({}, "ft_hparams")
+    config = yaml.safe_load(path.read_text())
+    config["objective_optimization"] = "promptz_last"
+    path.write_text(yaml.safe_dump(config))
+    response = routes_editing.training_defaults(routes_editing.EditDefaultLayersRequest(model_id="tiny", method="ft"))
+    assert response["hparams"]["objective_optimization"] == "promptz_last"
+    assert "objective_optimization" in response["warning"]
+    with pytest.raises(ValueError):
+        training.run_training_edit("ft", "tiny", [FACT], [0])
+    result = training.run_training_edit("ft", "tiny", [FACT], [0], hparams={"objective_optimization": "target_new"})
+    assert result["patch"]["training_hparams"]["objective_optimization"] == "target_new"
+
+
+@pytest.mark.parametrize("method", ["ft", "lora"])
+def test_training_route_preserves_hparams_in_job_and_worker(monkeypatch, method):
+    captured = {}
+    monkeypatch.setattr(routes_editing, "_require_loaded_model", lambda _: None)
+    def create(kind, model, payload):
+        captured["experiment"] = payload
+        return {"id": "exp_test"}
+    monkeypatch.setattr(routes_editing.experiment_service, "create", create)
+    monkeypatch.setattr(routes_editing.experiment_service, "create_job", lambda _: {
+        "id": "job_test", "experiment_id": "exp_test", "status": "running", "logs": [],
+    })
+    monkeypatch.setattr(routes_editing, "_start_edit_thread", lambda label, job, runner, payload: captured.update(worker=payload))
+    getattr(routes_editing, f"{method}_edit")(TrainingEditRequest(edits=[FACT], hparams={"lr": 0.002}))
+    assert captured["experiment"]["hparams"]["lr"] == captured["worker"]["hparams"]["lr"] == 0.002

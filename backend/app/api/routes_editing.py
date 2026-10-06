@@ -32,6 +32,7 @@ from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
 from app.ml.editing.r_rome_wrapper import run_r_rome_edit, run_r_rome_sequential_edits
+from app.ml.editing.training_hparams import get_training_defaults, validate_training_hparams
 from app.ml.editing.training_wrapper import run_training_edit
 from app.services.experiment_service import experiment_service
 from app.services.model_runtime_service import ModelNotLoadedError, model_runtime_service
@@ -48,6 +49,17 @@ class PatchExportRequest(ApiSchema):
 class EditDefaultLayersRequest(ApiSchema):
     model_id: str
     method: str
+
+
+@router.post("/edit/training-defaults")
+def training_defaults(request: EditDefaultLayersRequest) -> dict:
+    try:
+        return get_training_defaults(request.model_id, request.method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EasyEditRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 
 
 @router.post("/edit/default-layers")
@@ -145,6 +157,10 @@ def lora_edit(request: TrainingEditRequest) -> JobResponse:
 
 
 def _start_training_edit(method: str, request: TrainingEditRequest) -> JobResponse:
+    try:
+        validate_training_hparams(method, request.hparams)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     _require_loaded_model(request.model_id)
     experiment = experiment_service.create(f"{method}_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
