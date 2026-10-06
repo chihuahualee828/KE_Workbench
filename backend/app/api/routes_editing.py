@@ -506,7 +506,11 @@ def list_active_patches() -> dict:
             with catalog() as db:
                 row = db.execute("SELECT summary FROM records WHERE kind='patch' AND id=?", (patch_id,)).fetchone()
             if row:
-                items.append({**json.loads(row[0]), "active": True, "active_index": index})
+                patch = json.loads(row[0])
+                items.append({
+                    **patch, "active": True, "active_index": index,
+                    "tensor_size_bytes": patch_service.tensor_size_bytes(patch),
+                })
     return {"patches": items}
 
 

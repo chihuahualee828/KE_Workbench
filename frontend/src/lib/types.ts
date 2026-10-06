@@ -141,6 +141,7 @@ export type Patch = {
   created_at: string;
   metrics?: Record<string, unknown>;
   delta_paths?: string[];
+  tensor_size_bytes?: number | null;
   runtime?: string;
   sequential_edit?: boolean;
   mom2_adjustment?: boolean;

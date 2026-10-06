@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+from stat import S_ISREG
 import threading
 from typing import Any
 from uuid import uuid4
@@ -116,7 +117,28 @@ class PatchService:
             stack = active.get(patch.get("base_model"), [])
             patch["active"] = patch["patch_id"] in stack
             patch["active_index"] = stack.index(patch["patch_id"]) if patch["active"] else None
+            patch["tensor_size_bytes"] = self.tensor_size_bytes(patch)
         return page
+
+    def tensor_size_bytes(self, patch: dict[str, Any]) -> int | None:
+        """Measure saved tensors without opening them or decoding edit facts."""
+        try:
+            paths = {
+                self.resolve_delta_path(value)
+                for value in patch.get("delta_paths", [])
+                if Path(value).suffix == ".safetensors"
+            }
+            if not paths:
+                return None
+            total = 0
+            for path in paths:
+                file_stat = path.stat()
+                if not S_ISREG(file_stat.st_mode):
+                    return None
+                total += file_stat.st_size
+            return total
+        except OSError:
+            return None
 
     def get_patch_edits_page(self, patch_id: str, offset: int, limit: int) -> dict[str, Any]:
         from app.storage.catalog import patch_edits_page

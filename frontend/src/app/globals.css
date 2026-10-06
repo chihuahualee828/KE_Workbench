@@ -48,6 +48,25 @@ summary { cursor: pointer; }
   .section { @apply px-4 pb-6 sm:px-6 xl:px-9; }
   .panel { @apply min-w-0 rounded-xl border border-line bg-white p-5 shadow-[0_2px_8px_-4px_rgba(25,35,60,0.12)]; }
   .label { @apply text-[11px] font-semibold uppercase tracking-[0.07em] text-ink/55; }
+  @media (max-height: 500px) {
+    .patch-details-dialog[role="dialog"] { padding: 0.75rem; }
+    .patch-details-dialog > dl {
+      margin-top: 0.5rem;
+      row-gap: 0.25rem;
+      padding-block: 0.5rem;
+    }
+    .patch-details-dialog > section,
+    .patch-details-dialog > footer { margin-top: 0.5rem; }
+    .patch-details-dialog > footer { padding-top: 0.5rem; }
+  }
+  @media (max-height: 500px) and (min-width: 640px) {
+    .patch-details-dialog > dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .patch-details-dialog > dl > div {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+  }
   .eyebrow { @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan; }
   .page-header { @apply flex flex-col items-start justify-between gap-5 px-4 pb-7 pt-8 sm:px-6 md:flex-row md:items-center xl:px-9 xl:pt-10; }
   .panel-heading { @apply mb-5 flex items-center justify-between gap-3; }
