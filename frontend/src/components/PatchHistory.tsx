@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { experimentResource, historyResource, loadMorePatches, patchResource } from "@/lib/workbenchResources";
 import { patchDeletionBlockReason, patchMutationBlockReason } from "@/lib/patchOperations";
 import { api } from "@/lib/api";
+import { formatLayerRanges } from "@/lib/layerRanges";
 import type { ModelRuntimeStatus, Patch, PatchEditPage, SupportedModel } from "@/lib/types";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { VirtualizedList } from "./VirtualizedList";
@@ -406,7 +407,7 @@ function PatchTable({
                 <td className="hidden py-3 pr-3 2xl:table-cell">
                   <span className="block truncate" title={modelLabel(patch.base_model)}>{modelLabel(patch.base_model)}</span>
                 </td>
-                <td className="hidden py-3 pr-3 lg:table-cell">{patch.modified_layers.join(", ") || "-"}</td>
+                <td className="hidden py-3 pr-3 lg:table-cell">{formatLayerRanges(patch.modified_layers) || "-"}</td>
                 <td className="py-3 pr-3">{patch.edit_count ?? patch.edits.length}</td>
                 <td className="hidden py-3 pr-3 font-mono text-xs whitespace-nowrap lg:table-cell">{formatPatchDate(patch.created_at)}</td>
                 <td className="py-3 text-right">
@@ -652,7 +653,7 @@ function PatchDetailsDialog({
           <DetailItem label="Method" value={patch.method.toUpperCase()} />
           <DetailItem label="Base Model" value={modelLabel} />
           <DetailItem label="Created" value={formatPatchDate(patch.created_at)} />
-          <DetailItem label="Modified Layers" value={patch.modified_layers.join(", ") || "Not recorded"} />
+          <DetailItem label="Modified Layers" value={formatLayerRanges(patch.modified_layers) || "Not recorded"} />
           <DetailItem label="Edit Mode" value={patch.sequential_edit ? "Sequential" : "Single edit"} />
           <DetailItem label="Second-Moment Adjustment" value={patch.mom2_adjustment === undefined ? "Not recorded" : patch.mom2_adjustment ? "Enabled" : "Disabled"} />
           <DetailItem label="Tensor Deltas" value={tensorDeltas.length ? `${tensorDeltas.length} saved file${tensorDeltas.length === 1 ? "" : "s"}` : "Not available"} />
