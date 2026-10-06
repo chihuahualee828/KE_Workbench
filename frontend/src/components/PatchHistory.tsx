@@ -638,18 +638,18 @@ function PatchDetailsDialog({
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 p-4" onMouseDown={onClose} role="presentation">
-      <section aria-labelledby="patch-details-title" aria-modal="true" className="max-h-[min(760px,calc(100vh-2rem))] w-full max-w-3xl overflow-y-auto rounded-lg border border-line bg-white p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()} role="dialog">
-        <div className="flex items-start justify-between gap-4">
+      <section aria-labelledby="patch-details-title" aria-modal="true" className="patch-details-dialog flex h-[min(760px,calc(100dvh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-white p-4 shadow-xl sm:p-5" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <div className="flex shrink-0 items-start justify-between gap-4">
           <div className="min-w-0">
             <span className="label">Patch Details</span>
             <h2 id="patch-details-title" className="mt-1 break-all font-mono text-base font-semibold text-ink">{patch.patch_id}</h2>
           </div>
-          <button className="ghost-button min-h-9 w-9 px-0" onClick={onClose} title="Close patch details" type="button">
+          <button className="ghost-button min-h-9 w-9 shrink-0 px-0" onClick={onClose} title="Close patch details" type="button">
             <X size={16} />
           </button>
         </div>
 
-        <dl className="mt-5 grid gap-x-6 gap-y-4 border-y border-line py-4 text-sm sm:grid-cols-2">
+        <dl className="mt-3 grid shrink-0 grid-cols-2 gap-x-4 gap-y-2 border-y border-line py-3 text-sm sm:grid-cols-4">
           <DetailItem label="Method" value={patch.method.toUpperCase()} />
           <DetailItem label="Base Model" value={modelLabel} />
           <DetailItem label="Created" value={formatPatchDate(patch.created_at)} />
@@ -657,19 +657,20 @@ function PatchDetailsDialog({
           <DetailItem label="Edit Mode" value={patch.sequential_edit ? "Sequential" : "Single edit"} />
           <DetailItem label="Second-Moment Adjustment" value={patch.mom2_adjustment === undefined ? "Not recorded" : patch.mom2_adjustment ? "Enabled" : "Disabled"} />
           <DetailItem label="Tensor Deltas" value={tensorDeltas.length ? `${tensorDeltas.length} saved file${tensorDeltas.length === 1 ? "" : "s"}` : "Not available"} />
+          <DetailItem label="Safetensors Size" value={formatTensorSize(patch.tensor_size_bytes)} />
           {patch.sequential_edit ? <DetailItem label="Prior Patches" value={patch.parent_patch_ids ? String(patch.parent_patch_ids.length) : "Not recorded"} /> : null}
           {patch.layer_source ? <DetailItem label="Layer Source" value={patch.layer_source.replace(/_/g, " ")} /> : null}
         </dl>
 
-        <section className="mt-5">
-          <div className="flex items-baseline justify-between gap-3">
+        <section className="mt-3 flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 items-baseline justify-between gap-3">
             <h3 className="text-sm font-semibold">Edited Facts</h3>
             <span className="label whitespace-nowrap">{editCount}</span>
           </div>
           {editCount ? (
             <VirtualizedList
               key={patch.patch_id}
-              className="mt-2 max-h-[min(420px,45vh)] overflow-y-auto border-y border-line"
+              className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain border-y border-line"
               estimatedItemHeight={PATCH_FACT_CARD_ESTIMATED_HEIGHT}
               getItem={editPages.getItem}
               itemCount={editCount}
@@ -683,17 +684,17 @@ function PatchDetailsDialog({
                 </article>
               )}
             />
-          ) : <div className="mt-2 rounded-md border border-line bg-panel p-3 text-sm text-ink/60">No edit facts were saved with this patch.</div>}
-          {editPages.error ? <p className="mt-2 text-xs text-rust" role="alert">{editPages.error}</p> : null}
+          ) : <p className="mt-2 text-sm text-ink/60">No edit facts were saved with this patch.</p>}
+          {editPages.error ? <p className="mt-2 shrink-0 text-xs text-rust" role="alert">{editPages.error}</p> : null}
         </section>
 
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-          <div className="text-xs text-ink/60">{blockedReason || loadTitle}</div>
-          <button className="tool-button min-h-9 px-3 py-1" disabled={Boolean(blockedReason) || !canLoad || loading} onClick={onLoad} title={blockedReason || loadTitle} type="button">
+        <footer className="mt-3 flex shrink-0 items-center justify-between gap-3 border-t border-line pt-3">
+          <div className="min-w-0 flex-1 break-words text-xs text-ink/60">{blockedReason || loadTitle}</div>
+          <button className="tool-button min-h-9 shrink-0 whitespace-nowrap px-3 py-1" disabled={Boolean(blockedReason) || !canLoad || loading} onClick={onLoad} title={blockedReason || loadTitle} type="button">
             <Layers size={15} />
             {loading ? "Loading" : "Load into Model"}
           </button>
-        </div>
+        </footer>
       </section>
     </div>
   );
@@ -814,11 +815,19 @@ function DeletePatchDialog({
 
 function DetailItem({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="grid gap-1">
+    <div className="grid min-w-0 gap-1">
       <dt className="label">{label}</dt>
       <dd className={`${mono ? "font-mono text-xs" : "text-sm"} whitespace-pre-wrap break-words text-ink`}>{value}</dd>
     </div>
   );
+}
+
+function formatTensorSize(bytes: number | null | undefined) {
+  if (bytes == null) return "Not available";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function buildEditPrompt(subject: string, relationPrompt: string) {
