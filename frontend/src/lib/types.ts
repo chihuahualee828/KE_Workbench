@@ -86,6 +86,7 @@ export type Experiment = {
 };
 
 export type ExperimentJobSummary = {
+  progress_phase?: string | null;
   id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";
@@ -98,6 +99,7 @@ export type ExperimentJobSummary = {
 };
 
 export type ExperimentJob = {
+  progress_phase?: string | null;
   id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";
@@ -255,6 +257,7 @@ export type ModelRuntimeJob = {
 
 export type EditJob = {
   patch_state?: { version: number; model_id: string; active_patch_ids: string[] } | null;
+  progress_phase?: string | null;
   job_id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";

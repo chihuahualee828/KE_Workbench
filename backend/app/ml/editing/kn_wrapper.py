@@ -12,6 +12,7 @@ def run_kn_edit(
     ground_truth: str,
     evaluation_prompts: list[str],
     sequential_edit: bool,
+    generate_evaluation: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -26,6 +27,7 @@ def run_kn_edit(
                 "ground_truth": ground_truth,
                 "evaluation_prompts": evaluation_prompts,
                 "sequential_edit": sequential_edit,
+                "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
         )
@@ -36,5 +38,6 @@ def run_kn_edit(
         edit=edit,
         sequential_edit=sequential_edit,
     )
-    result.update(evaluate_post_edit_reliability(model_id, "kn", [edit]))
+    if generate_evaluation:
+        result.update(evaluate_post_edit_reliability(model_id, "kn", [edit]))
     return result

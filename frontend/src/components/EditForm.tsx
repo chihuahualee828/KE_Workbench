@@ -4,8 +4,8 @@ import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, R
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "@/lib/api";
-import { updatePatchesFromEditJob } from "@/lib/workbenchResources";
+import { api, invalidateApiReads } from "@/lib/api";
+import { refreshPatchHistory, updatePatchesFromEditJob } from "@/lib/workbenchResources";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
 import { TrainingHyperparameterFields } from "./TrainingHyperparameterFields";
 import { formatLayerRanges } from "@/lib/layerRanges";
@@ -74,7 +74,7 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
         if (controller.signal.aborted) return;
         setJob(current);
         if (current.status !== "running") {
-          clearActiveEditJob();
+          if (!current.result?.post_edit_evaluation_job_id) clearActiveEditJob();
           setResult(current.result ?? null);
           await onPatchesChanged?.();
           return;
@@ -268,7 +268,7 @@ function KnForm({
           prompts={evaluationPrompts}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
-          reliabilityResult={reliabilityResult}
+          reliabilityResult={reliabilityResult ?? reliabilityFromEditResult(result)}
           testProgress={reliabilityTestProgress}
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
@@ -286,7 +286,7 @@ function KnForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
@@ -294,10 +294,10 @@ function KnForm({
 async function watchEditJob(
   initial: EditJob,
   onUpdate: (job: EditJob) => void,
-  options: { announceStart?: boolean; signal?: AbortSignal } = {}
+  options: { announceStart?: boolean; signal?: AbortSignal; persistActive?: boolean } = {}
 ) {
   if (options.announceStart !== false) announceExperimentStarted(initial.experiment_id);
-  persistActiveEditJob(initial.job_id);
+  if (options.persistActive !== false) persistActiveEditJob(initial.job_id);
   updatePatchesFromEditJob(initial);
   onUpdate(initial);
   return new Promise<EditJob>((resolve, reject) => {
@@ -318,6 +318,11 @@ async function watchEditJob(
       if (settled) return;
       settled = true;
       finish();
+      if (options.persistActive !== false) {
+        if (!job.result?.post_edit_evaluation_job_id) clearActiveEditJob();
+        invalidateApiReads();
+        void refreshPatchHistory().catch(() => undefined);
+      }
       resolve(job);
     };
     const stop = () => fail(new DOMException("Edit job watcher stopped.", "AbortError"));
@@ -334,7 +339,7 @@ async function watchEditJob(
             updatePatchesFromEditJob(current);
             onUpdate(current);
             if (current.status === "running") return;
-            clearActiveEditJob();
+            if (options.persistActive !== false && current.status !== "completed") clearActiveEditJob();
             if (current.status === "failed") fail(new Error(current.logs[current.logs.length - 1] ?? "Edit job failed"));
             else if (current.status === "completed") {
               stopSubscription();
@@ -688,7 +693,7 @@ function RomeForm({
           totalPromptCount={isSeriesEdit ? seriesDataset.count : undefined}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
-          reliabilityResult={reliabilityResult}
+          reliabilityResult={reliabilityResult ?? reliabilityFromEditResult(result)}
           testProgress={reliabilityTestProgress}
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
@@ -717,7 +722,7 @@ function RomeForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -1280,7 +1285,7 @@ function MemitForm({
           totalPromptCount={batchDataset.count}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
-          reliabilityResult={reliabilityResult}
+          reliabilityResult={reliabilityResult ?? reliabilityFromEditResult(result)}
           testProgress={reliabilityTestProgress}
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
@@ -1309,7 +1314,7 @@ function MemitForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -1569,7 +1574,7 @@ function TrainingForm({
           totalPromptCount={batchDataset.count}
           onTest={testReliability}
           onCancel={() => void reliabilityTestCancellation.cancel().catch((error) => setError(error instanceof Error ? error.message : String(error)))}
-          reliabilityResult={reliabilityResult}
+          reliabilityResult={reliabilityResult ?? reliabilityFromEditResult(result)}
           testProgress={reliabilityTestProgress}
           testing={testingReliability}
           testCancelable={Boolean(reliabilityTestCancellation.jobId)}
@@ -1587,7 +1592,7 @@ function TrainingForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
@@ -2171,15 +2176,80 @@ function TextInput({ label, value, onChange }: { label: string; value: string; o
 
 function ResultPanel({
   result,
+  setResult,
   job,
   onPatchesChanged
 }: {
   result: Record<string, unknown> | null;
+  setResult: (value: Record<string, unknown> | null) => void;
   job: EditJob | null;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
   const logsRef = useRef<HTMLPreElement | null>(null);
-  const generations = useMemo(() => parseGenerations(result), [result]);
+  const evaluationJobId = typeof result?.post_edit_evaluation_job_id === "string" ? result.post_edit_evaluation_job_id : null;
+  const [evaluationJob, setEvaluationJob] = useState<EditJob | null>(null);
+  const [evaluationError, setEvaluationError] = useState("");
+  const [cancelingEvaluation, setCancelingEvaluation] = useState(false);
+  const currentEvaluation = evaluationJob?.job_id === evaluationJobId ? evaluationJob : null;
+  const displayResult = useMemo(() => currentEvaluation?.result ? { ...result, ...currentEvaluation.result } : result, [currentEvaluation?.result, result]);
+  const generations = useMemo(() => parseGenerations(displayResult), [displayResult]);
+
+  useEffect(() => {
+    setEvaluationJob(null);
+    setEvaluationError("");
+    setCancelingEvaluation(false);
+    if (!evaluationJobId) return;
+    const controller = new AbortController();
+    async function watchEvaluation() {
+      let finished = false;
+      try {
+        const initial = await api.editJob(evaluationJobId!);
+        if (controller.signal.aborted) return;
+        setEvaluationJob(initial);
+        if (initial.status !== "running") {
+          finished = true;
+          if (initial.status === "completed" && initial.result) setResult({ ...result, ...initial.result });
+          if (initial.status === "failed") setEvaluationError(initial.logs.at(-1) ?? "Post-edit evaluation failed.");
+          return;
+        }
+        if (job?.job_id) persistActiveEditJob(job.job_id);
+        const completed = await watchEditJob(initial, setEvaluationJob, { persistActive: false, signal: controller.signal });
+        if (!controller.signal.aborted) {
+          setEvaluationJob(completed);
+          finished = true;
+          if (completed.status === "completed" && completed.result) setResult({ ...result, ...completed.result });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) setEvaluationError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (finished && !controller.signal.aborted && readActiveEditJobId() === job?.job_id) clearActiveEditJob();
+      }
+    }
+    void watchEvaluation();
+    return () => controller.abort();
+  }, [evaluationJobId, job?.job_id, setResult]);
+
+  useEffect(() => listenForEditJobCanceling((id) => {
+    if (id === evaluationJobId) setCancelingEvaluation(true);
+  }), [evaluationJobId]);
+
+  useEffect(() => {
+    if (currentEvaluation?.status !== "running") setCancelingEvaluation(false);
+  }, [currentEvaluation?.status]);
+
+  async function cancelPostEditEvaluation() {
+    if (!evaluationJobId || currentEvaluation?.status !== "running" || cancelingEvaluation) return;
+    setCancelingEvaluation(true);
+    announceEditJobCanceling(evaluationJobId);
+    try {
+      const canceled = await api.cancelEvaluationJob(evaluationJobId);
+      setEvaluationJob(canceled);
+      if (canceled.status === "canceled") announceExperimentCanceled({ experimentId: canceled.experiment_id, jobId: canceled.job_id });
+    } catch (error) {
+      setEvaluationError(error instanceof Error ? error.message : String(error));
+      setCancelingEvaluation(false);
+    }
+  }
   const reliabilityTestJobId = typeof result?.reliability_test_job_id === "string"
     ? result.reliability_test_job_id
     : null;
@@ -2189,7 +2259,7 @@ function ResultPanel({
   const reliabilityTestPageSize = typeof result?.reliability_test_page_size === "number"
     ? result.reliability_test_page_size
     : null;
-  const reliabilitySummary = result?.reliability;
+  const reliabilitySummary = displayResult?.reliability;
   const completedFactCount = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).completed_fact_count
     : undefined;
@@ -2262,6 +2332,20 @@ function ResultPanel({
           {job?.logs.length ? job.logs.join("\n") : "No edit job is running."}
         </pre>
       </div>
+      {evaluationJobId ? <div className="mb-4" aria-label="Post-edit evaluation">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="label">Post-edit Evaluation</span>
+          <div className="flex items-center gap-2">
+            {currentEvaluation?.status === "running" ? <button className="ghost-button min-h-8 px-2 py-1 text-xs text-rust" disabled={cancelingEvaluation} onClick={() => void cancelPostEditEvaluation()} title="Cancel evaluation; keep the completed patch loaded" type="button">
+              {cancelingEvaluation ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
+              {cancelingEvaluation ? "Canceling" : "Cancel evaluation"}
+            </button> : null}
+            <span className="font-mono text-xs text-ink/50">{currentEvaluation?.status ?? "preparing"}</span>
+          </div>
+        </div>
+        {currentEvaluation?.status === "running" ? <EvaluationProgressIndicator preparing={currentEvaluation.progress_phase !== "post_edit_evaluation"} current={currentEvaluation.progress_current ?? undefined} total={currentEvaluation.progress_total ?? undefined} multiFactLabel="Post-edit evaluation and generation" singleFactLabel="Evaluating and generating for the final model…" /> : null}
+        {evaluationError ? <p className="mt-2 text-xs text-rust" role="alert">{evaluationError}</p> : null}
+      </div> : null}
       <div className="mb-2 flex items-center gap-2">
         <Save size={16} />
         <span className="label">Generations</span>

@@ -269,6 +269,9 @@ def test_easyedit_quality_evaluation_uses_active_runtime_without_editing(monkeyp
 
 
 def test_post_edit_reliability_reuses_active_model_generation_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.model_runtime_service as runtime_module
+
+    monkeypatch.setattr(runtime_module, "model_runtime_service", SimpleNamespace(uses_hard_worker=False))
     monkeypatch.setattr(
         easyedit_runtime,
         "evaluate_easyedit_quality",

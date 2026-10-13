@@ -156,6 +156,14 @@ def _dispatch(
                 lambda current, total: progress_callback({"current": current, "total": total})
             ) if progress_callback is not None else None,
         )
+    if action == "post_edit_evaluation":
+        from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability
+
+        return evaluate_post_edit_reliability(
+            **payload,
+            progress_callback=(lambda current, total: progress_callback({"current": current, "total": total}))
+            if progress_callback is not None else None,
+        )
     if action == "rome_edit":
         from app.ml.editing.rome_wrapper import run_rome_edit
 

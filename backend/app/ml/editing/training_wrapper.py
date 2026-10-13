@@ -24,6 +24,7 @@ def run_training_edit(
     sequential_edit: bool = False,
     batch_size: int = 1,
     hparams: dict | None = None,
+    generate_evaluation: bool = True,
 ) -> dict:
     if method not in {"ft", "lora"}:
         raise ValueError("Training method must be ft or lora.")
@@ -40,6 +41,7 @@ def run_training_edit(
             "evaluation_prompts": evaluation_prompts, "locality_inputs": locality_inputs,
             "portability_inputs": portability_inputs, "sequential_edit": sequential_edit,
             "batch_size": batch_size, "hparams": overrides,
+            "generate_evaluation": generate_evaluation,
         }, timeout=7200.0)
 
     spec = runtime.METHODS[method]
@@ -138,7 +140,8 @@ def run_training_edit(
         "runtime": "easyedit", "delta_count": len(delta_paths),
         "used_loaded_runtime": True, "edited_facts": len(edits),
     }
-    result.update(runtime.evaluate_post_edit_reliability(model_id, method, edits))
+    if generate_evaluation:
+        result.update(runtime.evaluate_post_edit_reliability(model_id, method, edits))
     return result
 
 

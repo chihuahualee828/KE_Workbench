@@ -179,7 +179,7 @@ function useWorkbenchDataStore() {
         const job = JSON.parse(data) as EditJob;
         updatePatchesFromEditJob(job);
         setExperiments((current) => current.map((item) => item.id === job.experiment_id ? {
-          ...item, status: job.status as Experiment["status"], job: item.job ? { ...item.job, status: job.status as Experiment["status"], progress: job.progress, progress_current: job.progress_current, progress_total: job.progress_total } : item.job
+          ...item, status: job.status as Experiment["status"], job: item.job ? { ...item.job, status: job.status as Experiment["status"], progress: job.progress, progress_current: job.progress_current, progress_total: job.progress_total, progress_phase: job.progress_phase } : item.job
         } : item));
         if (job.status !== "running") {
           invalidateApiReads();
