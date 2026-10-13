@@ -5,6 +5,7 @@ import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
+import { updatePatchesFromEditJob } from "@/lib/workbenchResources";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
 import { TrainingHyperparameterFields } from "./TrainingHyperparameterFields";
 import { formatLayerRanges } from "@/lib/layerRanges";
@@ -201,7 +202,6 @@ function KnForm({
         evaluation_prompts: evaluationPrompts,
         sequential_edit: sequentialEdit
       });
-      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       const completedResult = completed.result ?? null;
       setResult(completedResult);
@@ -298,6 +298,7 @@ async function watchEditJob(
 ) {
   if (options.announceStart !== false) announceExperimentStarted(initial.experiment_id);
   persistActiveEditJob(initial.job_id);
+  updatePatchesFromEditJob(initial);
   onUpdate(initial);
   return new Promise<EditJob>((resolve, reject) => {
     let current = initial;
@@ -330,6 +331,7 @@ async function watchEditJob(
         if (event === "job") {
           try {
             current = mergeEditJobLogs(current, JSON.parse(data) as EditJob);
+            updatePatchesFromEditJob(current);
             onUpdate(current);
             if (current.status === "running") return;
             clearActiveEditJob();
@@ -520,7 +522,6 @@ function RomeForm({
             sequential_edit: sequentialEdit,
             mom2_adjustment: mom2Adjustment
           });
-      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       const completedResult = completed.result ?? null;
       setResult(completedResult);
@@ -1157,7 +1158,6 @@ function MemitForm({
         sequential_edit: sequentialEdit,
         mom2_adjustment: mom2Adjustment
       });
-      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       const completedResult = completed.result ?? null;
       setResult(completedResult);
@@ -1444,7 +1444,6 @@ function TrainingForm({
         evaluation_prompts: buildFactEvaluationPrompts(parsedEdits),
         sequential_edit: sequentialEdit
       });
-      if (!sequentialEdit) await onPatchesChanged?.();
       const completed = await watchEditJob(response, setJob);
       const completedResult = completed.result ?? null;
       setResult(completedResult);

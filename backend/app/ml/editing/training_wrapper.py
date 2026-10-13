@@ -76,6 +76,8 @@ def run_training_edit(
         if not sequential_edit:
             patch_service.deactivate_runtime_patches_for_model(model_id)
             patch_service.sync_active_patches_to_model(model, model_id)
+            if transaction is not None:
+                transaction.notify_patch_state_changed()
         parents = patch_service.active_patches_for_model(model_id)
         state = model.state_dict()
         baseline = {name: state[name].detach().cpu().clone() for name in names}

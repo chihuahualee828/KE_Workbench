@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.api import routes_editing
 from app.db.schemas import RomeEditRequest
+from app.services.patch_service import patch_service
+from app.storage.local_store import local_store
 
 
 def test_rome_edit_returns_the_new_job_after_starting_the_background_thread(monkeypatch) -> None:
@@ -65,3 +67,22 @@ def test_easyedit_start_marker_advances_job_past_preparation(monkeypatch) -> Non
     stream._emit("Starting EasyEdit algorithm.")
 
     assert emitted == [("job_demo", "Starting EasyEdit algorithm.", 0.1)]
+
+
+def test_patch_state_snapshot_is_in_the_job_event_before_edit_completion(monkeypatch, tmp_path):
+    monkeypatch.setattr(local_store, "root", tmp_path)
+    service = routes_editing.experiment_service
+    experiment = service.create("rome_edit", "demo", {})
+    job = service.create_job(experiment["id"])
+    service.notify_job_patch_state(job["id"], "demo")
+    first = next(service.job_events(job["id"]))
+    assert routes_editing._job_response(first, include_result=False).patch_state == {
+        "version": 1, "model_id": "demo", "active_patch_ids": [],
+    }
+    assert first["status"] == "running"
+    patch_service.create_patch("demo", "rome", [], [0], patch_id="patch_checkpoint")
+    patch_service.activate_patch("patch_checkpoint")
+    service.notify_job_patch_state(job["id"], "demo")
+    assert routes_editing.get_edit_job(job["id"]).patch_state == {
+        "version": 2, "model_id": "demo", "active_patch_ids": ["patch_checkpoint"],
+    }

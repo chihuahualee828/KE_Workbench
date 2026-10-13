@@ -254,6 +254,7 @@ export type ModelRuntimeJob = {
 };
 
 export type EditJob = {
+  patch_state?: { version: number; model_id: string; active_patch_ids: string[] } | null;
   job_id: string;
   experiment_id: string;
   status: "running" | "completed" | "failed" | "canceled";

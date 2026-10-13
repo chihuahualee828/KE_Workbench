@@ -216,6 +216,8 @@ def run_easyedit(
                     # on the preceding fact within this one job.
                     patch_service.deactivate_runtime_patches_for_model(model_id)
                     patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+                    if transaction is not None:
+                        transaction.notify_patch_state_changed()
                 series_context.runtime_stack_initialized = True
             active_patch_ids = patch_service.active_patches_for_model(model_id)
             if series_context.parent_patch_ids is None:
@@ -226,6 +228,8 @@ def run_easyedit(
             # UI claiming old patches are active while the model has been reset.
             patch_service.deactivate_runtime_patches_for_model(model_id)
             patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+            if transaction is not None:
+                transaction.notify_patch_state_changed()
             active_patch_ids = patch_service.active_patches_for_model(model_id)
         else:
             active_patch_ids = patch_service.active_patches_for_model(model_id)
@@ -760,7 +764,11 @@ def run_easyedit_kn(
 
         try:
             if not sequential_edit:
-                patch_service.sync_patch_stack_to_model(runtime_model, model_id, [])
+                patch_service.deactivate_runtime_patches_for_model(model_id)
+                patch_service.sync_active_patches_to_model(runtime_model, model_id)
+                active_patch_ids = []
+                if transaction is not None:
+                    transaction.notify_patch_state_changed()
             _configure_loaded_tokenizer(runtime_tokenizer, str(hparams.model_name), "kn")
             _override_easyedit_device(hparams, runtime_bundle.get("device"))
             KnowledgeNeurons, resolve_model_type = _load_kn_components()

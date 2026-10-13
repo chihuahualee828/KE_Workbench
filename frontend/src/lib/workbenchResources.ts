@@ -3,7 +3,8 @@
 import { useSyncExternalStore } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api, apiReadVersion, invalidateApiReads } from "./api";
-import type { Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus, Patch, SupportedModel } from "./types";
+import type { EditJob, Experiment, ModelCacheStatus, ModelDownloadJob, ModelRuntimeStatus, Patch, SupportedModel } from "./types";
+import { applyEditPatchState } from "./editPatchState";
 
 function resource<T>(initial: T) {
   let value = initial;
@@ -36,10 +37,12 @@ let patchOffset = 0;
 let experimentRevision = 0;
 let patchRevision = 0;
 const pending = new Map<string, Promise<void>>();
+const editPatchVersions = new Map<string, number>();
 
 export function resetWorkbenchResources() {
   generation += 1;
   pending.clear();
+  editPatchVersions.clear();
   experimentOffset = patchOffset = 0;
   [modelResource, cacheResource, runtimeResource, downloadResource, experimentResource, patchResource, historyResource].forEach((item) => item.reset());
 }
@@ -89,11 +92,12 @@ export function refreshExperimentHistory() {
 
 export function refreshPatchHistory() {
   return once("patches", async (version) => {
+    const epoch = apiReadVersion();
     patchRevision += 1;
     const [page, active] = await Promise.all([api.patchPage(0), api.activePatches()]);
     const retained = [...page.items];
     for (let offset = retained.length; offset < Math.min(patchOffset, page.total); offset += 50) retained.push(...(await api.patchPage(offset)).items);
-    if (version !== generation) return;
+    if (version !== generation || epoch !== apiReadVersion()) return;
     patchOffset = retained.length;
     const activeById = new Map(active.patches.map((patch) => [patch.patch_id, patch]));
     // The active-stack response is authoritative, including when it is empty.
@@ -104,6 +108,15 @@ export function refreshPatchHistory() {
     })), ...active.patches], (item) => item.patch_id));
     historyResource.set((current) => ({ ...current, patches: page.total }));
   });
+}
+
+export function updatePatchesFromEditJob(job: EditJob) {
+  const state = job.patch_state;
+  if (!state || state.version <= (editPatchVersions.get(job.job_id) ?? 0)) return;
+  editPatchVersions.set(job.job_id, state.version);
+  invalidateApiReads();
+  patchResource.set((current) => applyEditPatchState(current, state));
+  void refreshPatchHistory().catch(() => undefined);
 }
 
 export function reconcilePatchesAfterRuntimeUpdate(previous: ModelRuntimeStatus[], statuses: ModelRuntimeStatus[]) {

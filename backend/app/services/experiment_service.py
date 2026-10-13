@@ -225,6 +225,21 @@ class ExperimentService:
             local_store.write_json(f"experiments/{job_id}.json", job)
             self._condition.notify_all()
 
+    def notify_job_patch_state(self, job_id: str, model_id: str) -> None:
+        from app.services.patch_service import patch_service
+
+        with self._condition:
+            job = local_store.read_json(f"experiments/{job_id}.json")
+            previous = job.get("patch_state") or {}
+            job["patch_state"] = {
+                "version": int(previous.get("version", 0)) + 1,
+                "model_id": model_id,
+                "active_patch_ids": patch_service.active_patches_for_model(model_id),
+            }
+            job["updated_at"] = _now()
+            local_store.write_json(f"experiments/{job_id}.json", job)
+            self._condition.notify_all()
+
     def upsert_job_result_item(
         self,
         job_id: str,

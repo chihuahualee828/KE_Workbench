@@ -195,6 +195,7 @@ class JobResponse(ApiSchema):
     progress: float = 0.0
     progress_current: int | None = None
     progress_total: int | None = None
+    patch_state: dict[str, Any] | None = None
     logs: list[str] = Field(default_factory=list)
     log_count: int = 0
     log_start_count: int = 0

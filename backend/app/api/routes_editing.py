@@ -367,7 +367,12 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
             experiment_service.append_job_log(job_id, f"Starting {method_label} edit")
             experiment_service.set_job_progress(job_id, 0.05)
             with _capture_job_output(job_id):
-                result = run_cancellable_edit(job_id, runner, **payload)
+                result = run_cancellable_edit(
+                    job_id, runner,
+                    on_patch_state_changed=(lambda: experiment_service.notify_job_patch_state(job_id, payload["model_id"]))
+                    if payload.get("model_id") else None,
+                    **payload,
+                )
             if result.get("_edit_canceled"):
                 experiment_service.cancel_job(job_id, message=None)
             else:
@@ -450,6 +455,7 @@ def _job_response(job: dict, after_log_count: int | None = None, include_result:
         progress=job.get("progress", 0.0),
         progress_current=job.get("progress_current"),
         progress_total=job.get("progress_total"),
+        patch_state=job.get("patch_state"),
         logs=logs,
         log_count=total_log_count,
         log_start_count=log_start_count,
