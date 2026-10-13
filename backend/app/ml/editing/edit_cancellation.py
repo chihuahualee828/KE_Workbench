@@ -87,8 +87,9 @@ def memit_cancellation_hook(model: Any, *, enabled: bool):
 
 
 class EditTransaction:
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, on_patch_state_changed=None):
         self.job_id = job_id
+        self.on_patch_state_changed = on_patch_state_changed
         self.model: Any = None
         self.model_id = ""
         self.weights: dict[str, Any] = {}
@@ -99,6 +100,10 @@ class EditTransaction:
     def check(self) -> None:
         if (local_store.root / "experiments" / self.job_id / "edit.cancel").exists():
             raise EditCanceled("Edit canceled.")
+
+    def notify_patch_state_changed(self) -> None:
+        if self.on_patch_state_changed is not None:
+            self.on_patch_state_changed()
 
     def capture(self, model: Any, model_id: str, names=()) -> None:
         """Capture only affected parameters, before resetting the old patch stack."""
@@ -137,6 +142,7 @@ class EditTransaction:
         self.patch_ids = list(patch_service.active_patches_for_model(self.model_id))
         self.created_patch_ids.clear()
         self.discard_backup()
+        self.notify_patch_state_changed()
 
     def protect_patch(self, patch_id: str) -> None:
         """Preserve the last series artifact if a later save fails partway."""
@@ -179,13 +185,13 @@ class EditTransaction:
                 shutil.rmtree(path)
 
 
-def run_cancellable_edit(job_id: str, runner, **payload):
+def run_cancellable_edit(job_id: str, runner, *, on_patch_state_changed=None, **payload):
     """Execute in either the in-process runtime or the model-owning worker."""
     from app.services.model_runtime_service import model_runtime_service
 
     # The parent delegates to a worker; only that worker owns model snapshots.
     if getattr(model_runtime_service, "uses_hard_worker", False):
-        transaction = EditTransaction(job_id)
+        transaction = EditTransaction(job_id, on_patch_state_changed)
         token = current_edit.set(transaction)
         try:
             transaction.check()
@@ -195,11 +201,11 @@ def run_cancellable_edit(job_id: str, runner, **payload):
         finally:
             current_edit.reset(token)
     with model_runtime_service.exclusive_runtime_access():
-        return _run_local_edit(job_id, runner, payload)
+        return _run_local_edit(job_id, runner, payload, on_patch_state_changed)
 
 
-def _run_local_edit(job_id: str, runner, payload):
-    transaction = EditTransaction(job_id)
+def _run_local_edit(job_id: str, runner, payload, on_patch_state_changed=None):
+    transaction = EditTransaction(job_id, on_patch_state_changed)
     token = current_edit.set(transaction)
     try:
         transaction.check()

@@ -168,6 +168,42 @@ def test_finished_edit_cannot_be_canceled(editing):
     assert current_edit.get() is None
 
 
+def test_reset_notification_precedes_algorithm_and_finished_edit_survives_evaluation_cancel(editing):
+    add_old_patch(editing)
+    notified = []
+    editing.callback = lambda: notified.append(("algorithm", patch_service.active_patches_for_model("demo")))
+    result = _run_local_edit(
+        "job_edit", run_fact, {"sequential_edit": False},
+        lambda: notified.append(("reset", patch_service.active_patches_for_model("demo"))),
+    )
+    assert notified == [("reset", []), ("algorithm", [])]
+    saved_weights = {name: value.clone() for name, value in editing.model.state_dict().items()}
+    assert not request_cancel("job_edit")
+    service = ExperimentService()
+    experiment = service.create("evaluation", "demo", {"source": "post_edit"})
+    evaluation = service.create_job(experiment["id"])
+    service.cancel_job(evaluation["id"])
+    with pytest.raises(runtime.EasyEditRuntimeError, match="Evaluation canceled"):
+        runtime._ensure_evaluation_job_running(evaluation["id"])
+    assert patch_service.active_patches_for_model("demo") == [result["patch_id"]]
+    for name, value in editing.model.state_dict().items():
+        assert torch.equal(value, saved_weights[name])
+
+
+def test_worker_reports_patch_reset_as_structured_event(editing, monkeypatch):
+    import app.services.model_runtime_service as runtime_service
+    from app.services.model_worker import _dispatch
+    from app.ml.editing import memit_wrapper
+
+    worker = SimpleNamespace(exclusive_runtime_access=nullcontext)
+    monkeypatch.setattr(runtime_service, "model_runtime_service", worker)
+    monkeypatch.setattr(memit_wrapper, "run_memit_edit", lambda **_: run_fact(sequential_edit=False))
+    events = []
+    result = _dispatch(worker, "memit_edit", {"model_id": "demo", "_edit_job_id": "job_worker"}, events.append)
+    assert result["patch_id"]
+    assert events == [{"patch_state_changed": True}]
+
+
 def test_cancel_request_stays_running_until_cleanup_acknowledged(monkeypatch, tmp_path):
     monkeypatch.setattr(local_store, "root", tmp_path)
     service = ExperimentService()

@@ -833,6 +833,13 @@ class HardUnloadModelRuntimeService:
                 continue
             if message.get("type") == "progress":
                 progress = message.get("progress")
+                if isinstance(progress, dict) and progress.get("patch_state_changed"):
+                    from app.ml.editing.edit_cancellation import current_edit
+
+                    transaction = current_edit.get()
+                    if transaction is not None:
+                        transaction.notify_patch_state_changed()
+                    continue
                 if isinstance(progress, dict) and progress_callback is not None:
                     progress_callback(progress)
                 continue

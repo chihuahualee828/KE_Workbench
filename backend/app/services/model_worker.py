@@ -94,7 +94,7 @@ def _dispatch(
     runtime: Any,
     action: str,
     payload: dict[str, Any],
-    progress_callback: Callable[[dict[str, int]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     if "_edit_job_id" in payload:
         from app.ml.editing.edit_cancellation import run_cancellable_edit
@@ -102,7 +102,10 @@ def _dispatch(
         payload = dict(payload)
         job_id = payload.pop("_edit_job_id")
         return run_cancellable_edit(
-            job_id, lambda **values: _dispatch(runtime, action, values, progress_callback), **payload
+            job_id, lambda **values: _dispatch(runtime, action, values, progress_callback),
+            on_patch_state_changed=(lambda: progress_callback({"patch_state_changed": True}))
+            if progress_callback is not None else None,
+            **payload,
         )
     if action == "load":
         job = runtime.start_load(payload["model_id"])
@@ -152,6 +155,14 @@ def _dispatch(
             progress_callback=(
                 lambda current, total: progress_callback({"current": current, "total": total})
             ) if progress_callback is not None else None,
+        )
+    if action == "post_edit_evaluation":
+        from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability
+
+        return evaluate_post_edit_reliability(
+            **payload,
+            progress_callback=(lambda current, total: progress_callback({"current": current, "total": total}))
+            if progress_callback is not None else None,
         )
     if action == "rome_edit":
         from app.ml.editing.rome_wrapper import run_rome_edit

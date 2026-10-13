@@ -87,6 +87,7 @@ def run_rome_sequential_edits(
     evaluation_prompts: list[str],
     mom2_adjustment: bool,
     sequential_edit: bool = True,
+    generate_evaluation: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -100,6 +101,7 @@ def run_rome_sequential_edits(
                 "evaluation_prompts": evaluation_prompts,
                 "mom2_adjustment": mom2_adjustment,
                 "sequential_edit": sequential_edit,
+                "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
         )
@@ -149,5 +151,6 @@ def run_rome_sequential_edits(
         "completed_fact_count": len(patch_results),
         "sequential_edit": True,
     }
-    result.update(evaluate_post_edit_reliability(model_id, "rome", edits))
+    if generate_evaluation:
+        result.update(evaluate_post_edit_reliability(model_id, "rome", edits))
     return result

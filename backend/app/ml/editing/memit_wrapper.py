@@ -13,6 +13,7 @@ def run_memit_edit(
     sequential_edit: bool,
     mom2_adjustment: bool,
     batch_size: int = 1,
+    generate_evaluation: bool = True,
 ) -> dict:
     from app.services.model_runtime_service import model_runtime_service
 
@@ -29,6 +30,7 @@ def run_memit_edit(
                 "sequential_edit": sequential_edit,
                 "mom2_adjustment": mom2_adjustment,
                 "batch_size": batch_size,
+                "generate_evaluation": generate_evaluation,
             },
             timeout=7200.0,
         )
@@ -50,7 +52,8 @@ def run_memit_edit(
         batch_size=batch_size,
     )
     result["edited_facts"] = len(normalized_edits)
-    result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits))
+    if generate_evaluation:
+        result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits))
     return result
 
 

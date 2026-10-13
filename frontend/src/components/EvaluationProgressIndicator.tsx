@@ -11,6 +11,7 @@ export function EvaluationProgressIndicator({
   onCancel,
   canceling = false,
   cancelDisabled = false,
+  preparing: preparingOverride,
   className = ""
 }: {
   current?: number;
@@ -21,9 +22,10 @@ export function EvaluationProgressIndicator({
   onCancel?: () => void;
   canceling?: boolean;
   cancelDisabled?: boolean;
+  preparing?: boolean;
   className?: string;
 }) {
-  const preparing = current <= 0;
+  const preparing = preparingOverride ?? current <= 0;
   const determinate = total > 1;
   const percent = determinate ? Math.max(0, Math.min(100, Math.round((current / total) * 100))) : 0;
   const label = preparing ? preparingLabel : determinate ? multiFactLabel : singleFactLabel;

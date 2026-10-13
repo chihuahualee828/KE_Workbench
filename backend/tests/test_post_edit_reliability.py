@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.ml.editing import kn_wrapper, memit_wrapper, r_rome_wrapper, rome_wrapper
+from app.ml.editing import easyedit_runtime, kn_wrapper, memit_wrapper, r_rome_wrapper, rome_wrapper
 import app.services.model_runtime_service as runtime_module
 
 
@@ -10,6 +10,29 @@ RELIABILITY_RESULT = {
     "reliability": {"mean_reliability": 1.0},
     "generations": [{"prompt": "Fact is", "text": "updated", "target_new": "updated"}],
 }
+
+
+def test_post_edit_evaluation_worker_receives_its_own_job_and_progress(monkeypatch) -> None:
+    calls = []
+    progress = []
+
+    def execute(action, payload, **kwargs):
+        calls.append((action, payload))
+        kwargs["progress_callback"]({"current": 1, "total": 2})
+        return RELIABILITY_RESULT
+
+    monkeypatch.setattr(runtime_module, "model_runtime_service", SimpleNamespace(uses_hard_worker=True, execute=execute))
+    edits = [{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated"}]
+    result = easyedit_runtime.evaluate_post_edit_reliability(
+        "demo", "rome", edits, cancel_job_id="job_evaluation",
+        progress_callback=lambda current, total: progress.append((current, total)),
+    )
+
+    assert result == RELIABILITY_RESULT
+    assert calls == [("post_edit_evaluation", {
+        "model_id": "demo", "method": "rome", "edits": edits, "cancel_job_id": "job_evaluation",
+    })]
+    assert progress == [(1, 2)]
 
 
 def test_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:

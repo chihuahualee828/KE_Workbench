@@ -225,6 +225,21 @@ class ExperimentService:
             local_store.write_json(f"experiments/{job_id}.json", job)
             self._condition.notify_all()
 
+    def notify_job_patch_state(self, job_id: str, model_id: str) -> None:
+        from app.services.patch_service import patch_service
+
+        with self._condition:
+            job = local_store.read_json(f"experiments/{job_id}.json")
+            previous = job.get("patch_state") or {}
+            job["patch_state"] = {
+                "version": int(previous.get("version", 0)) + 1,
+                "model_id": model_id,
+                "active_patch_ids": patch_service.active_patches_for_model(model_id),
+            }
+            job["updated_at"] = _now()
+            local_store.write_json(f"experiments/{job_id}.json", job)
+            self._condition.notify_all()
+
     def upsert_job_result_item(
         self,
         job_id: str,
@@ -448,6 +463,7 @@ class ExperimentService:
         progress: float | None = None,
         progress_current: int | None = None,
         progress_total: int | None = None,
+        progress_phase: str | None = None,
     ) -> None:
         lines = [line.strip() for line in message.splitlines() if line.strip()]
         if not lines:
@@ -458,6 +474,8 @@ class ExperimentService:
             except FileNotFoundError:
                 return
             _append_job_logs(job, lines)
+            if progress_phase is not None:
+                job["progress_phase"] = progress_phase
             if progress is not None and job.get("status") == "running":
                 job["progress"] = max(float(job.get("progress") or 0.0), min(float(progress), 0.99))
             if progress_current is not None and progress_total is not None and progress_total > 0:
@@ -514,7 +532,7 @@ def _append_job_logs(job: dict[str, Any], lines: list[str]) -> None:
 
 
 def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
-    return {key: job.get(key) for key in ("id", "experiment_id", "status", "cancel_requested", "progress", "progress_current", "progress_total", "created_at", "updated_at")}
+    return {key: job.get(key) for key in ("id", "experiment_id", "status", "cancel_requested", "progress", "progress_current", "progress_total", "progress_phase", "created_at", "updated_at")}
 
 
 def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:

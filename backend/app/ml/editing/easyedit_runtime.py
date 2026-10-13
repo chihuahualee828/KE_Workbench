@@ -216,6 +216,8 @@ def run_easyedit(
                     # on the preceding fact within this one job.
                     patch_service.deactivate_runtime_patches_for_model(model_id)
                     patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+                    if transaction is not None:
+                        transaction.notify_patch_state_changed()
                 series_context.runtime_stack_initialized = True
             active_patch_ids = patch_service.active_patches_for_model(model_id)
             if series_context.parent_patch_ids is None:
@@ -226,6 +228,8 @@ def run_easyedit(
             # UI claiming old patches are active while the model has been reset.
             patch_service.deactivate_runtime_patches_for_model(model_id)
             patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
+            if transaction is not None:
+                transaction.notify_patch_state_changed()
             active_patch_ids = patch_service.active_patches_for_model(model_id)
         else:
             active_patch_ids = patch_service.active_patches_for_model(model_id)
@@ -643,13 +647,36 @@ def evaluate_post_edit_reliability(
     model_id: str,
     method: str,
     edits: list[dict[str, Any]],
+    *,
+    cancel_job_id: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Run one post-edit reliability pass and expose its active-model samples."""
+    from app.services.model_runtime_service import model_runtime_service
+
+    if getattr(model_runtime_service, "uses_hard_worker", False):
+        return model_runtime_service.execute(
+            "post_edit_evaluation",
+            {"model_id": model_id, "method": method, "edits": edits, "cancel_job_id": cancel_job_id},
+            timeout=7200.0,
+            progress_callback=(lambda update: progress_callback(int(update["current"]), int(update["total"])))
+            if progress_callback is not None else None,
+        )
+
+    def report(current: int, total: int) -> None:
+        if progress_callback is not None:
+            progress_callback(current, total)
+        else:
+            print(f"Post-edit evaluation {current}/{total}.", flush=True)
+
+    report(0, len(edits))
     reliability = evaluate_easyedit_quality(
         model_id=model_id,
         method=method,
         edits=edits,
         include_generations=True,
+        progress_callback=report,
+        cancel_job_id=cancel_job_id,
     )
     targets = []
     for raw_edit in edits:
@@ -760,7 +787,11 @@ def run_easyedit_kn(
 
         try:
             if not sequential_edit:
-                patch_service.sync_patch_stack_to_model(runtime_model, model_id, [])
+                patch_service.deactivate_runtime_patches_for_model(model_id)
+                patch_service.sync_active_patches_to_model(runtime_model, model_id)
+                active_patch_ids = []
+                if transaction is not None:
+                    transaction.notify_patch_state_changed()
             _configure_loaded_tokenizer(runtime_tokenizer, str(hparams.model_name), "kn")
             _override_easyedit_device(hparams, runtime_bundle.get("device"))
             KnowledgeNeurons, resolve_model_type = _load_kn_components()

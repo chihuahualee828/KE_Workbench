@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+import threading
+from types import SimpleNamespace
+
+import pytest
+
 from app.api import routes_editing
 from app.db.schemas import RomeEditRequest
+from app.ml.editing.edit_cancellation import current_edit
+from app.services.patch_service import patch_service
+from app.storage.local_store import local_store
 
 
 def test_rome_edit_returns_the_new_job_after_starting_the_background_thread(monkeypatch) -> None:
@@ -65,3 +74,97 @@ def test_easyedit_start_marker_advances_job_past_preparation(monkeypatch) -> Non
     stream._emit("Starting EasyEdit algorithm.")
 
     assert emitted == [("job_demo", "Starting EasyEdit algorithm.", 0.1)]
+
+
+@pytest.mark.parametrize("label", list(routes_editing._EDIT_METHODS))
+def test_background_edits_disable_inline_evaluation(monkeypatch, label):
+    started = []
+    monkeypatch.setattr(routes_editing.operation_guard, "start_thread", lambda **kwargs: started.append(kwargs))
+    payload = {"model_id": "demo"}
+    routes_editing._start_edit_thread(label, "job_demo", object(), payload)
+    assert started[0]["args"][3]["generate_evaluation"] is False
+    assert payload == {"model_id": "demo"}
+
+
+@pytest.mark.parametrize("outcome", ["completed", "canceled", "failed"])
+def test_post_edit_evaluation_has_its_own_job_and_cannot_discard_patch(monkeypatch, tmp_path, outcome):
+    from app.api import routes_evaluation
+
+    monkeypatch.setattr(local_store, "root", tmp_path)
+    monkeypatch.setattr(routes_editing, "model_runtime_service", SimpleNamespace(exclusive_runtime_access=nullcontext))
+    monkeypatch.setattr(routes_editing, "run_cancellable_edit", lambda _id, runner, **kwargs: runner(**{
+        key: value for key, value in kwargs.items() if key != "on_patch_state_changed"
+    }))
+    service = routes_editing.experiment_service
+    experiment = service.create("rome_edit", "demo", {})
+    edit_job = service.create_job(experiment["id"])
+    entered, release = threading.Event(), threading.Event()
+    evaluation_id = []
+
+    def edit(**payload):
+        assert payload["generate_evaluation"] is False
+        patch = patch_service.create_patch(
+            "demo", "rome", [{"subject": "A", "relation_prompt": "{} is", "new_object": "B"}],
+            [0], patch_id="patch_new",
+        )
+        patch_service.activate_patch(patch["patch_id"])
+        return {"patch_id": patch["patch_id"], "metrics": [{"post": {"rewrite_acc": [1.0]}}]}
+
+    def evaluate(**kwargs):
+        assert current_edit.get() is None
+        assert service.get_job(edit_job["id"])["status"] == "completed"
+        assert patch_service.active_patches_for_model("demo") == ["patch_new"]
+        evaluation_id.append(kwargs["cancel_job_id"])
+        kwargs["progress_callback"](0, 1)
+        entered.set()
+        assert release.wait(5)
+        if outcome == "failed":
+            raise RuntimeError("Evaluation failed, not editing")
+        if outcome == "canceled":
+            raise RuntimeError("Evaluation canceled")
+        return {"reliability": {"mean_reliability": 1.0}, "generations": []}
+
+    monkeypatch.setattr(routes_editing, "evaluate_post_edit_reliability", evaluate)
+    thread = threading.Thread(target=routes_editing._run_edit_job, args=(
+        "ROME", edit_job["id"], edit, {"model_id": "demo", "generate_evaluation": False},
+    ))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        response = routes_editing.get_edit_job(edit_job["id"])
+        assert response.status == "completed"
+        assert response.result["post_edit_evaluation_job_id"] == evaluation_id[0]
+        assert evaluation_id[0] != edit_job["id"]
+        evaluation = routes_editing.get_edit_job(evaluation_id[0])
+        assert evaluation.status == "running"
+        assert evaluation.progress_phase == "post_edit_evaluation"
+        assert routes_editing.cancel_edit_job(edit_job["id"]).status == "completed"
+        if outcome == "canceled":
+            assert routes_evaluation.cancel_evaluation_job(evaluation_id[0]).status == "canceled"
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert service.get_job(edit_job["id"])["status"] == "completed"
+    assert service.get_job(evaluation_id[0])["status"] == outcome
+    assert patch_service.active_patches_for_model("demo") == ["patch_new"]
+    assert patch_service.get_patch("patch_new")["edits"][0]["new_object"] == "B"
+
+
+def test_patch_state_snapshot_is_in_the_job_event_before_edit_completion(monkeypatch, tmp_path):
+    monkeypatch.setattr(local_store, "root", tmp_path)
+    service = routes_editing.experiment_service
+    experiment = service.create("rome_edit", "demo", {})
+    job = service.create_job(experiment["id"])
+    service.notify_job_patch_state(job["id"], "demo")
+    first = next(service.job_events(job["id"]))
+    assert routes_editing._job_response(first, include_result=False).patch_state == {
+        "version": 1, "model_id": "demo", "active_patch_ids": [],
+    }
+    assert first["status"] == "running"
+    patch_service.create_patch("demo", "rome", [], [0], patch_id="patch_checkpoint")
+    patch_service.activate_patch("patch_checkpoint")
+    service.notify_job_patch_state(job["id"], "demo")
+    assert routes_editing.get_edit_job(job["id"]).patch_state == {
+        "version": 2, "model_id": "demo", "active_patch_ids": ["patch_checkpoint"],
+    }

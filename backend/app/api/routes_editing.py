@@ -18,6 +18,7 @@ from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2Stati
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
+    evaluate_post_edit_reliability,
     get_easyedit_default_layers,
     import_mom2_statistics,
     list_mom2_statistics,
@@ -41,6 +42,9 @@ from app.services.patch_service import patch_service
 
 router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
+_EDIT_METHODS = {"ROME": "rome", "R-ROME": "r_rome", "ROME sequential series": "rome",
+                 "R-ROME sequential series": "r_rome", "KN": "kn", "MEMIT": "memit",
+                 "FT": "ft", "LORA": "lora"}
 
 
 class PatchExportRequest(ApiSchema):
@@ -352,6 +356,8 @@ def _require_mom2_statistics(model_id: str, method: str, layers: list[int] | Non
 
 
 def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) -> None:
+    if method_label in _EDIT_METHODS:
+        payload = {**payload, "generate_evaluation": False}
     operation_guard.start_thread(
         target=_run_edit_job,
         args=(method_label, job_id, runner, payload),
@@ -360,24 +366,69 @@ def _start_edit_thread(method_label: str, job_id: str, runner, payload: dict) ->
 
 def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None:
     try:
-        with _edit_job_lock:
+        with _edit_job_lock, model_runtime_service.exclusive_runtime_access():
             current_job = experiment_service.get_job(job_id)
             if current_job is None or current_job.get("status") != "running":
                 return
             experiment_service.append_job_log(job_id, f"Starting {method_label} edit")
             experiment_service.set_job_progress(job_id, 0.05)
             with _capture_job_output(job_id):
-                result = run_cancellable_edit(job_id, runner, **payload)
+                result = run_cancellable_edit(
+                    job_id, runner,
+                    on_patch_state_changed=(lambda: experiment_service.notify_job_patch_state(job_id, payload["model_id"]))
+                    if payload.get("model_id") else None,
+                    **payload,
+                )
             if result.get("_edit_canceled"):
                 experiment_service.cancel_job(job_id, message=None)
             else:
+                evaluation_job = None
+                patch = None
+                if result.get("patch_id") and payload.get("model_id") and method_label in _EDIT_METHODS:
+                    patch = patch_service.get_patch(result["patch_id"])
+                    experiment = experiment_service.create("evaluation", payload["model_id"], {
+                        "source": "post_edit", "method": _EDIT_METHODS[method_label],
+                        "edit_job_id": job_id, "patch_id": result["patch_id"],
+                        "edit_count": len(patch["edits"]),
+                        "active_patch_ids": patch_service.active_patches_for_model(payload["model_id"]),
+                    })
+                    evaluation_job = experiment_service.create_job(experiment["id"])
+                    result = {**result, "post_edit_evaluation_job_id": evaluation_job["id"],
+                              "post_edit_evaluation_experiment_id": experiment["id"]}
                 experiment_service.complete_job(job_id, result)
+                if evaluation_job is not None:
+                    _run_post_edit_evaluation(evaluation_job["id"], patch, payload)
     except EasyEditUnsupportedError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except EasyEditRuntimeError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except Exception as exc:
         experiment_service.fail_job(job_id, str(exc))
+
+
+def _run_post_edit_evaluation(job_id: str, patch: dict, payload: dict) -> None:
+    # The edit transaction has already committed. Evaluation never owns rollback.
+    try:
+        def report(current: int, total: int) -> None:
+            experiment_service.append_job_log(
+                job_id, f"Post-edit evaluation {current}/{total}.",
+                progress=current / total if total else 0.0,
+                progress_current=current, progress_total=total, progress_phase="post_edit_evaluation",
+            )
+
+        if experiment_service.get_job(job_id)["status"] != "running":
+            return
+        report(0, len(patch["edits"]))
+        with _capture_job_output(job_id):
+            result = evaluate_post_edit_reliability(
+                model_id=payload["model_id"], method=patch["method"], edits=patch["edits"],
+                cancel_job_id=job_id, progress_callback=report,
+            )
+        experiment_service.complete_job(job_id, {**result, "patch_id": patch["patch_id"]})
+    except Exception as exc:
+        experiment_service.fail_job(job_id, str(exc))
+
+
 @contextlib.contextmanager
 def _capture_job_output(job_id: str):
     stdout = _JobLogStream(job_id, sys.stdout)
@@ -422,6 +473,9 @@ class _JobLogStream:
         clean = line.strip()
         if clean:
             series_progress = _sequential_edit_progress(clean)
+            evaluation = re.fullmatch(r"Post-edit evaluation (\d+)/(\d+)\.", clean)
+            if evaluation:
+                series_progress = tuple(int(value) for value in evaluation.groups())
             completed, total = series_progress if series_progress is not None else (None, None)
             edit_started = _easyedit_edit_started(clean)
             experiment_service.append_job_log(
@@ -430,6 +484,7 @@ class _JobLogStream:
                 progress=(completed / total if completed is not None and total else 0.1 if edit_started else None),
                 progress_current=completed,
                 progress_total=total,
+                progress_phase="post_edit_evaluation" if evaluation else "editing" if edit_started else None,
             )
 
 
@@ -450,6 +505,8 @@ def _job_response(job: dict, after_log_count: int | None = None, include_result:
         progress=job.get("progress", 0.0),
         progress_current=job.get("progress_current"),
         progress_total=job.get("progress_total"),
+        progress_phase=job.get("progress_phase"),
+        patch_state=job.get("patch_state"),
         logs=logs,
         log_count=total_log_count,
         log_start_count=log_start_count,
