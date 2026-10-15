@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,28 @@ from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
 
 FACT = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy", "ground_truth": "France"}
+
+
+def test_real_easyedit_post_edit_fluency(tiny_training, monkeypatch):
+    """Exercise the installed fluency generator, not just the mocked scorer."""
+    import nltk
+    word_tokenize = nltk.word_tokenize
+    # Exercise generation/entropy offline without downloading test-only assets.
+    monkeypatch.setattr(nltk, "word_tokenize", lambda text: word_tokenize(text, preserve_line=True))
+    from contextlib import nullcontext
+    from transformers import GPT2LMHeadModel
+    config = deepcopy(tiny_training.model.config)
+    config.n_positions = 128  # EasyEdit's fluency test generates up to length 100.
+    model = GPT2LMHeadModel(config).eval()
+    model.name_or_path = "tiny-gpt2"
+    monkeypatch.setattr(runtime, "_easyedit_runtime_access", lambda _: nullcontext({
+        "model": model, "tokenizer": tiny_training.tokenizer, "device": "cpu",
+    }))
+    monkeypatch.setattr(runtime.patch_service, "sync_active_patches_to_model", lambda *_: None)
+    result = runtime.evaluate_easyedit_quality("tiny", "ft", [FACT], fluency_modes=["reliability"])
+    assert result["cases"][0]["reliability_score"] is not None
+    fluency = result["cases"][0]["fluency"]["reliability"]
+    assert isinstance(fluency["ngram_entropy"], float)
 
 
 @pytest.mark.parametrize("batch_size", [0, -1, 1.5, True, "2"])
@@ -64,7 +87,7 @@ def tiny_training(monkeypatch, tmp_path):
         paths[f"{method}_hparams"] = tmp_path / f"{method}.yaml"
         paths[f"{method}_hparams"].write_text(yaml.safe_dump(config))
     monkeypatch.setattr(runtime, "_resolve_hparams_path", lambda _, key: paths[key])
-    monkeypatch.setattr(runtime, "evaluate_post_edit_reliability", lambda *args: {})
+    monkeypatch.setattr(runtime, "evaluate_post_edit_reliability", lambda *args, **kwargs: {})
     monkeypatch.setattr(runtime, "_collect_runtime_memory", lambda: None)
     monkeypatch.chdir(tmp_path)
 

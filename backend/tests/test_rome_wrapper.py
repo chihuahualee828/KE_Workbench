@@ -28,7 +28,7 @@ def test_rome_sequential_series_updates_one_cumulative_patch(
     monkeypatch.setattr(
         rome_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: evaluated.append((model_id, method, edits)) or {"reliability": {"mean_reliability": 1.0}, "generations": []},
+        lambda model_id, method, edits, **kwargs: evaluated.append((model_id, method, edits)) or {"reliability": {"mean_reliability": 1.0}, "generations": []},
     )
 
     result = rome_wrapper.run_rome_sequential_edits(
@@ -70,7 +70,7 @@ def test_rome_sequential_series_can_start_from_a_clean_patch_stack(monkeypatch) 
         "run_rome_edit",
         lambda **kwargs: calls.append(kwargs) or {"patch_id": "patch_series"},
     )
-    monkeypatch.setattr(rome_wrapper, "evaluate_post_edit_reliability", lambda *_: {"reliability": {}, "generations": []})
+    monkeypatch.setattr(rome_wrapper, "evaluate_post_edit_reliability", lambda *_, **kwargs: {"reliability": {}, "generations": []})
 
     rome_wrapper.run_rome_sequential_edits(
         model_id="gpt2-xl",

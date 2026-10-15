@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -9,16 +8,19 @@ import sys
 import tempfile
 import threading
 import zipfile
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from collections.abc import Callable
 from typing import Any, Literal
 
 import yaml
 
 from app.config import settings
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
+from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
+from app.ml.editing.fluency_resources import FluencyResourceError, ensure_fluency_tokenizer_data
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -418,8 +420,10 @@ def evaluate_easyedit_quality(
     include_generations: bool = False,
     progress_callback: Callable[[int, int], None] | None = None,
     cancel_job_id: str | None = None,
+    fluency_modes: list[str] | None = None,
+    reusable_post_metrics: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate EasyEdit rewrite, rephrase, and locality quality on active weights.
+    """Evaluate EasyEdit rewrite, rephrase, locality, and optional fluency quality.
 
     This deliberately bypasses ``BaseEditor.edit``: it reads the currently loaded
     model (including its active workbench patches) and performs no weight update.
@@ -525,43 +529,104 @@ def evaluate_easyedit_quality(
             finally:
                 patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
 
+        fluency_modes = fluency_modes or []
+        fluency_cache: dict[str, dict] = {}
+        fluency_resources_checked = False
+        fluency_preparation_error: str | None = None
+
+        def prepare_fluency() -> str | None:
+            nonlocal fluency_resources_checked, fluency_preparation_error
+            if not fluency_resources_checked:
+                _ensure_evaluation_job_running(cancel_job_id)
+                try:
+                    ensure_fluency_tokenizer_data()
+                except FluencyResourceError as exc:
+                    fluency_preparation_error = str(exc)
+                    print(f"Fluency unavailable: {fluency_preparation_error}", flush=True)
+                fluency_resources_checked = True
+                _ensure_evaluation_job_running(cancel_job_id)
+            return fluency_preparation_error
+
+        def evaluate_fluency(prompt: str) -> dict:
+            _ensure_evaluation_job_running(cancel_job_id)
+            if prompt not in fluency_cache:
+                preparation_error = prepare_fluency()
+                if preparation_error:
+                    fluency_cache[prompt] = {"error": preparation_error}
+                    return fluency_cache[prompt]
+                from easyeditor.evaluate.evaluate_utils import test_generation_quality
+                try:
+                    fluency_cache[prompt] = _jsonable(test_generation_quality(
+                        model=runtime_bundle["model"], tok=runtime_bundle["tokenizer"],
+                        prefixes=[prompt], max_out_len=100,
+                        vanilla_generation=getattr(hparams, "alg_name", "") == "GRACE",
+                    ))
+                except LookupError:
+                    fluency_cache[prompt] = {"error": "NLTK tokenizer data became unavailable after automatic setup. Retry evaluation to prepare it again."}
+            return fluency_cache[prompt]
+
         cases = []
-        sample_generations: list[dict[str, str]] = []
-        sample_rephrase_generations: list[dict[str, str]] = []
+        sample_generations: list[dict[str, str] | None] = []
+        sample_rephrase_generations: list[dict[str, str] | None] = []
         sample_locality_generations: list[dict[str, str] | None] = []
+        generation_cache: dict[tuple[str, bool], str] = {}
         if include_generations:
             from app.ml.inference.generate import generate_text
 
-            def generate_sample(prompt: str) -> dict[str, str]:
-                return {
-                    "prompt": prompt,
-                    "clean_model": generate_text(
-                        model_id,
-                        prompt,
-                        max_new_tokens=32,
-                        patch_id=None,
-                        use_active_patches=False,
-                    )["text"],
-                    "active_model": generate_text(
-                        model_id,
-                        prompt,
-                        max_new_tokens=32,
-                        patch_id=None,
-                        use_active_patches=True,
-                    )["text"],
-                }
+            def generate_sample(prompt: str, returned_text: str | None = None, original_text: str | None = None) -> dict[str, str]:
+                sample = {"prompt": prompt}
+                for active, key in ((False, "clean_model"), (True, "active_model")):
+                    _ensure_evaluation_job_running(cancel_job_id)
+                    cache_key = (prompt, active)
+                    text = returned_text if active else original_text
+                    if text is not None:
+                        sample[key] = text
+                        continue
+                    if cache_key not in generation_cache:
+                        generation_cache[cache_key] = generate_text(
+                            model_id, prompt, max_new_tokens=32, patch_id=None,
+                            use_active_patches=active,
+                        )["text"]
+                    sample[key] = generation_cache[cache_key]
+                return sample
 
         total_edits = len(prepared_edits)
         for index, (record, rephrase_prompt) in enumerate(prepared_edits, start=1):
             _ensure_evaluation_job_running(cancel_job_id)
-            metrics = compute_edit_quality(
-                runtime_bundle["model"],
-                model_name,
-                hparams,
-                runtime_bundle["tokenizer"],
-                record,
-                hparams.device,
-            )
+            metrics = matching_post(reusable_post_metrics or [], index - 1, record, hparams, model_name)
+            reused = metrics is not None
+            if metrics is None:
+                args = (runtime_bundle["model"], model_name, hparams, runtime_bundle["tokenizer"], record, hparams.device)
+                test_fluency = "reliability" in fluency_modes and record["prompt"] not in fluency_cache
+                if test_fluency:
+                    preparation_error = prepare_fluency()
+                    if preparation_error:
+                        fluency_cache[record["prompt"]] = {"error": preparation_error}
+                        test_fluency = False
+                try:
+                    metrics = compute_edit_quality(*args, **({"test_generation": True} if test_fluency else {}))
+                except LookupError:
+                    if not test_fluency:
+                        raise
+                    # A late resource failure must not discard a successful edit.
+                    fluency_cache[record["prompt"]] = {"error": "NLTK tokenizer data became unavailable after automatic setup. Retry evaluation to prepare it again."}
+                    metrics = compute_edit_quality(*args)
+            if "reliability" in fluency_modes:
+                if isinstance(metrics.get("fluency"), dict):
+                    fluency_cache[record["prompt"]] = _jsonable(metrics["fluency"])
+                else:
+                    metrics["fluency"] = evaluate_fluency(record["prompt"])
+            raw_edit = edits[index - 1]
+            raw_edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else raw_edit
+            metadata = raw_edit.get("source_metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            portability_prompt = str(raw_edit.get("portability_prompt") or metadata.get("portability_prompt") or "").strip()
+            locality_prompt = record.get("locality", {}).get("neighborhood", {}).get("prompt") or raw_edit.get("locality_prompt") or metadata.get("locality_prompt")
+            fluency = {}
+            for mode, prompt in (("reliability", record["prompt"]), ("generalization", rephrase_prompt), ("locality", locality_prompt), ("portability", portability_prompt)):
+                if mode in fluency_modes and prompt:
+                    fluency[mode] = evaluate_fluency(prompt)
             locality_baseline = locality_baselines[index - 1]
             if locality_baseline is not None:
                 # Keep EasyEdit's metric name, scoring semantics, and metric
@@ -587,19 +652,14 @@ def evaluate_easyedit_quality(
                         if "locality" in record else None
                     ),
                     "metrics": metrics,
+                    "score_source": "internal_post" if reused else "final_evaluation",
+                    "fluency": fluency,
                 }
             )
             if include_generations:
-                sample_generations.append(generate_sample(record["prompt"]))
-                if rephrase_prompt:
-                    sample_rephrase_generations.append(generate_sample(rephrase_prompt))
-                locality = record.get("locality")
-                locality_prompt = (
-                    str(locality["neighborhood"]["prompt"])
-                    if isinstance(locality, dict)
-                    and isinstance(locality.get("neighborhood"), dict)
-                    and locality["neighborhood"].get("prompt")
-                    else None
+                sample_generations.append(generate_sample(record["prompt"], generated_text(metrics, "rewrite_gen_content")))
+                sample_rephrase_generations.append(
+                    generate_sample(rephrase_prompt, generated_text(metrics, "rephrase_gen_content")) if rephrase_prompt else None
                 )
                 sample_locality_generations.append(
                     generate_sample(locality_prompt) if locality_prompt else None
@@ -616,10 +676,16 @@ def evaluate_easyedit_quality(
         "mean_generalization": _mean_case_score(cases, "generalization_score"),
         "mean_locality": _mean_case_score(cases, "locality_score"),
         "cases": cases,
+        "fluency_modes": fluency_modes,
+        "mean_fluency": {
+            mode: _mean_case_score([
+                {"value": case["fluency"].get(mode, {}).get("ngram_entropy")} for case in cases
+            ], "value") for mode in fluency_modes
+        },
     }
     if include_generations:
         result["sample_generations"] = sample_generations
-        if len(sample_rephrase_generations) == len(cases):
+        if any(sample is not None for sample in sample_rephrase_generations):
             result["sample_rephrase_generations"] = sample_rephrase_generations
         if any(sample is not None for sample in sample_locality_generations):
             # Keep positions aligned with ``cases``: facts without a locality
@@ -648,6 +714,8 @@ def evaluate_post_edit_reliability(
     method: str,
     edits: list[dict[str, Any]],
     *,
+    edit_result: dict | None = None,
+    single_batch: bool = False,
     cancel_job_id: str | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
@@ -657,18 +725,18 @@ def evaluate_post_edit_reliability(
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(
             "post_edit_evaluation",
-            {"model_id": model_id, "method": method, "edits": edits, "cancel_job_id": cancel_job_id},
+            {"model_id": model_id, "method": method, "edits": edits,
+             "edit_result": edit_result, "single_batch": single_batch, "cancel_job_id": cancel_job_id},
             timeout=7200.0,
             progress_callback=(lambda update: progress_callback(int(update["current"]), int(update["total"])))
             if progress_callback is not None else None,
         )
-
+    internal = flatten_metrics((edit_result or {}).get("metrics"))
     def report(current: int, total: int) -> None:
         if progress_callback is not None:
             progress_callback(current, total)
         else:
             print(f"Post-edit evaluation {current}/{total}.", flush=True)
-
     report(0, len(edits))
     reliability = evaluate_easyedit_quality(
         model_id=model_id,
@@ -676,8 +744,14 @@ def evaluate_post_edit_reliability(
         edits=edits,
         include_generations=True,
         progress_callback=report,
+        fluency_modes=["reliability"],
+        reusable_post_metrics=internal if single_batch or len(edits) == 1 else None,
         cancel_job_id=cancel_job_id,
     )
+    for index, case in enumerate(reliability.get("cases", [])):
+        entry = internal[index] if index < len(internal) else {}
+        case["internal_post_metrics"] = entry.get("post")
+        case["internal_reliability_score"] = _rewrite_accuracy_score(entry.get("post", {}))
     targets = []
     for raw_edit in edits:
         edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
@@ -698,6 +772,9 @@ def evaluate_post_edit_reliability(
                     "prompt": prompt,
                     "text": active_model,
                     "target_new": targets[index] if index < len(targets) else "",
+                    "clean_model": sample.get("clean_model"),
+                    "ground_truth": edits[index].get("ground_truth") if index < len(edits) else None,
+                    "evaluation": reliability.get("cases", [])[index] if index < len(reliability.get("cases", [])) else {},
                 }
             )
     return {"reliability": reliability, "generations": generations}

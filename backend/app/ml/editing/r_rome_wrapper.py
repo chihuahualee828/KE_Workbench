@@ -74,7 +74,7 @@ def run_r_rome_edit(
         series_context=series_context,
     )
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "r_rome", [edit]))
+        result.update(evaluate_post_edit_reliability(model_id, "r_rome", [edit], edit_result=result))
     return result
 
 
@@ -149,7 +149,8 @@ def run_r_rome_sequential_edits(
         "patch_count": 1,
         "completed_fact_count": len(patch_results),
         "sequential_edit": True,
+        "metrics": [entry.get("metrics", []) for entry in patch_results],
     }
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "r_rome", edits))
+        result.update(evaluate_post_edit_reliability(model_id, "r_rome", edits, edit_result=result))
     return result

@@ -397,7 +397,7 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
                               "post_edit_evaluation_experiment_id": experiment["id"]}
                 experiment_service.complete_job(job_id, result)
                 if evaluation_job is not None:
-                    _run_post_edit_evaluation(evaluation_job["id"], patch, payload)
+                    _run_post_edit_evaluation(evaluation_job["id"], patch, result, payload)
     except EasyEditUnsupportedError as exc:
         experiment_service.fail_job(job_id, str(exc))
     except EasyEditRuntimeError as exc:
@@ -406,7 +406,7 @@ def _run_edit_job(method_label: str, job_id: str, runner, payload: dict) -> None
         experiment_service.fail_job(job_id, str(exc))
 
 
-def _run_post_edit_evaluation(job_id: str, patch: dict, payload: dict) -> None:
+def _run_post_edit_evaluation(job_id: str, patch: dict, edit_result: dict, payload: dict) -> None:
     # The edit transaction has already committed. Evaluation never owns rollback.
     try:
         def report(current: int, total: int) -> None:
@@ -422,6 +422,8 @@ def _run_post_edit_evaluation(job_id: str, patch: dict, payload: dict) -> None:
         with _capture_job_output(job_id):
             result = evaluate_post_edit_reliability(
                 model_id=payload["model_id"], method=patch["method"], edits=patch["edits"],
+                edit_result=edit_result,
+                single_batch=len(patch["edits"]) <= payload.get("batch_size", 1),
                 cancel_job_id=job_id, progress_callback=report,
             )
         experiment_service.complete_job(job_id, {**result, "patch_id": patch["patch_id"]})

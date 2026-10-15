@@ -291,5 +291,5 @@ def test_post_edit_reliability_reuses_active_model_generation_samples(monkeypatc
 
     assert result["reliability"]["mean_reliability"] == 1.0
     assert result["generations"] == [
-        {"prompt": "The Space Needle is in", "text": "Paris", "target_new": "Paris"},
+        {"prompt": "The Space Needle is in", "text": "Paris", "target_new": "Paris", "clean_model": "Seattle", "ground_truth": None, "evaluation": {}},
     ]

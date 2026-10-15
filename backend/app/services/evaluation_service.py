@@ -15,6 +15,7 @@ class EvaluationService:
         include_generations: bool = False,
         on_progress: Callable[[int, int], None] | None = None,
         cancel_job_id: str | None = None,
+        fluency_modes: list[str] | None = None,
     ) -> dict:
         from app.ml.editing.easyedit_runtime import evaluate_easyedit_quality
         from app.services.model_runtime_service import model_runtime_service
@@ -28,6 +29,7 @@ class EvaluationService:
                     "edits": edits,
                     "include_generations": include_generations,
                     "cancel_job_id": cancel_job_id,
+                    "fluency_modes": fluency_modes or [],
                 },
                 timeout=7200.0,
                 progress_callback=(
@@ -42,6 +44,7 @@ class EvaluationService:
             include_generations=include_generations,
             progress_callback=on_progress,
             cancel_job_id=cancel_job_id,
+            fluency_modes=fluency_modes,
         )
 
     def evaluate_easyedit_reliability(

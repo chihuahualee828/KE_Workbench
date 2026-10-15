@@ -162,6 +162,9 @@ class EvaluationRequest(ApiSchema):
     prompts: list[str] = Field(default_factory=list)
 
 
+EvaluationMetric = Literal["reliability", "generalization", "locality", "portability"]
+
+
 class ReliabilityEvaluationRequest(ApiSchema):
     """Evaluate edit quality on the current active model without editing it."""
 
@@ -169,7 +172,7 @@ class ReliabilityEvaluationRequest(ApiSchema):
     method: Literal["rome", "r_rome", "memit", "kn", "ft", "lora"]
     edits: list[EditSpec] = Field(min_length=1)
     include_generations: bool = False
-    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
 
 
 class ActiveModelEvaluationRequest(ApiSchema):
@@ -182,9 +185,10 @@ class ActiveModelEvaluationRequest(ApiSchema):
     """
 
     model_id: str = "gpt2-xl"
-    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
     rephrase_overrides: dict[str, str] = Field(default_factory=dict)
     include_generations: bool = True
+    fluency_modes: list[EvaluationMetric] = Field(default_factory=list)
 
 
 class JobResponse(ApiSchema):

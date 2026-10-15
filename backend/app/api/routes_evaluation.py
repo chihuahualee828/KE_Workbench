@@ -323,10 +323,13 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         raise HTTPException(status_code=400, detail="The active patch method does not support this evaluation.")
 
     modes = list(dict.fromkeys(request.evaluation_modes))
+    fluency_modes = list(dict.fromkeys(request.fluency_modes))
+    if any(mode not in modes for mode in fluency_modes):
+        raise HTTPException(status_code=400, detail="Select the metric before enabling its fluency test.")
     if not modes:
         raise HTTPException(status_code=400, detail="Select at least one evaluation metric.")
     facts = patch_service.active_evaluation_facts(request.model_id)
-    needs_edit_quality = any(mode in {"reliability", "generalization", "locality"} for mode in modes)
+    needs_edit_quality = bool(modes)
     if needs_edit_quality and not facts:
         raise HTTPException(status_code=400, detail="The active patches do not contain any evaluable edit facts.")
 
@@ -350,6 +353,9 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
             if "locality" in modes and locality_prompt and locality_ground_truth:
                 edit["locality_prompt"] = locality_prompt
                 edit["locality_ground_truth"] = locality_ground_truth
+            if "portability" in modes:
+                edit["portability_prompt"] = str(fact.get("portability_prompt") or "").strip()
+                edit["portability_ground_truth"] = str(fact.get("portability_ground_truth") or "").strip()
             edits.append(edit)
 
     experiment = experiment_service.create(
@@ -360,6 +366,7 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
             "model_id": request.model_id,
             "method": method,
             "evaluation_modes": modes,
+            "fluency_modes": fluency_modes,
             "active_patch_ids": active_patch_ids,
             "rephrase_override_count": len(request.rephrase_overrides),
         },
@@ -375,6 +382,7 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         modes=modes,
         include_generations=request.include_generations,
         needs_edit_quality=needs_edit_quality,
+        fluency_modes=fluency_modes,
     )
     return JobResponse(
         job_id=job["id"],
@@ -396,6 +404,7 @@ def _start_active_model_evaluation(
     modes: list[str],
     include_generations: bool,
     needs_edit_quality: bool,
+    fluency_modes: list[str] | None = None,
 ) -> None:
     operation_guard.start_thread(
         target=_run_active_model_evaluation,
@@ -409,6 +418,7 @@ def _start_active_model_evaluation(
             "modes": modes,
             "include_generations": include_generations,
             "needs_edit_quality": needs_edit_quality,
+            "fluency_modes": fluency_modes or [],
         },
     )
 
@@ -424,6 +434,7 @@ def _run_active_model_evaluation(
     modes: list[str],
     include_generations: bool,
     needs_edit_quality: bool,
+    fluency_modes: list[str] | None = None,
 ) -> None:
     try:
         with _active_model_evaluation_lock:
@@ -452,6 +463,7 @@ def _run_active_model_evaluation(
                     include_generations=include_generations,
                     on_progress=update_progress,
                     cancel_job_id=job_id,
+                    **({"fluency_modes": fluency_modes} if fluency_modes else {}),
                 )
                 if needs_edit_quality
                 else {
@@ -512,6 +524,10 @@ def _build_paged_evaluation_result(
         metrics["locality_preservation_acc"] = raw_result.get("mean_locality")
     if "portability" in modes:
         metrics["portability_score"] = 0
+    for mode in modes:
+        if mode in raw_result.get("fluency_modes", []):
+            metrics[f"{mode}_fluency_ngram_entropy"] = raw_result.get("mean_fluency", {}).get(mode)
+    metrics = {key: value for mode in ("reliability", "generalization", "locality", "portability") for key, value in metrics.items() if key.startswith(mode + "_")}
 
     items = []
     for index, fact in enumerate(facts):
@@ -526,6 +542,7 @@ def _build_paged_evaluation_result(
                 "reliability_generation": reliability_generation,
                 "generalization_generation": generalization_generation,
                 "locality_generation": locality_generation,
+                "fluency": case.get("fluency", {}),
                 "reliability_score": case.get("reliability_score"),
                 "generalization_score": case.get("generalization_score"),
                 "locality_score": case.get("locality_score"),
@@ -538,6 +555,7 @@ def _build_paged_evaluation_result(
         "active_patch_ids": raw_result.get("active_patch_ids", []),
         "metrics": metrics,
         "evaluation_modes": modes,
+        "fluency_modes": raw_result.get("fluency_modes", []),
         "total": len(items),
         "available_generation_metrics": [
             metric for metric, generations in (

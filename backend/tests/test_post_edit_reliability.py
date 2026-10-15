@@ -24,13 +24,14 @@ def test_post_edit_evaluation_worker_receives_its_own_job_and_progress(monkeypat
     monkeypatch.setattr(runtime_module, "model_runtime_service", SimpleNamespace(uses_hard_worker=True, execute=execute))
     edits = [{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated"}]
     result = easyedit_runtime.evaluate_post_edit_reliability(
-        "demo", "rome", edits, cancel_job_id="job_evaluation",
-        progress_callback=lambda current, total: progress.append((current, total)),
+        "demo", "rome", edits, edit_result={"metrics": []}, single_batch=True,
+        cancel_job_id="job_evaluation", progress_callback=lambda current, total: progress.append((current, total)),
     )
 
     assert result == RELIABILITY_RESULT
     assert calls == [("post_edit_evaluation", {
-        "model_id": "demo", "method": "rome", "edits": edits, "cancel_job_id": "job_evaluation",
+        "model_id": "demo", "method": "rome", "edits": edits,
+        "edit_result": {"metrics": []}, "single_batch": True, "cancel_job_id": "job_evaluation",
     })]
     assert progress == [(1, 2)]
 
@@ -43,7 +44,7 @@ def test_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
     monkeypatch.setattr(
         rome_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
+        lambda model_id, method, edits, **kwargs: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
     )
 
     result = rome_wrapper.run_rome_edit(
@@ -73,7 +74,7 @@ def test_r_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
     monkeypatch.setattr(
         r_rome_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
+        lambda model_id, method, edits, **kwargs: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
     )
 
     result = r_rome_wrapper.run_r_rome_edit(
@@ -102,7 +103,7 @@ def test_memit_edit_runs_post_edit_reliability(monkeypatch) -> None:
     monkeypatch.setattr(
         memit_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
+        lambda model_id, method, edits, **kwargs: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
     )
 
     result = memit_wrapper.run_memit_edit(
@@ -127,7 +128,7 @@ def test_kn_edit_runs_post_edit_reliability(monkeypatch) -> None:
     monkeypatch.setattr(
         kn_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
+        lambda model_id, method, edits, **kwargs: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
     )
 
     result = kn_wrapper.run_kn_edit(
