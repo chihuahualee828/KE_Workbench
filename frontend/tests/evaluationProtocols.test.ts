@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { api, invalidateApiReads } from "../src/lib/api";
+import { detectEvaluationFactMapping, normalizeEvaluationFactImport } from "../src/lib/evaluationFactImport";
 import { allowedEvaluationProtocols, enabledEvaluationProtocols, EVALUATION_METRICS, evaluationMetricEntries, evaluationProtocol, evaluationScoreDisplay } from "../src/lib/evaluationProtocols";
 import type { EvaluationResultOverview } from "../src/lib/types";
 
@@ -101,5 +102,36 @@ test("active-model evaluation preserves locality text mode, normalizes stale set
       evaluation_protocols: { reliability: "LLM-judge", locality: "generate-text", portability: "traditional" },
       fluency_modes: ["portability"], rephrase_overrides: {}, include_generations: true,
     });
+  } finally { globalThis.fetch = original; invalidateApiReads(); }
+});
+
+test("uploaded evaluation facts use the same job endpoint with a distinct source ID", async () => {
+  const records = [{
+    prompt: "The mother tongue of Danielle Darrieux is", subject: "Danielle Darrieux",
+    target_new: "English", ground_truth: "French",
+    rephrase_prompt: "Where Danielle Darrieux is from, people speak the language of",
+    locality_prompt: "Michel Rocard is a native speaker of", locality_ground_truth: "French",
+  }];
+  const facts = normalizeEvaluationFactImport(records, detectEvaluationFactMapping(records));
+  const original = globalThis.fetch;
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify({ job_id: "job", experiment_id: "experiment", status: "running" }));
+  };
+  try {
+    await api.evaluateActiveModel({
+      model_id: "demo", facts, fact_source_id: "upload-1",
+      evaluation_modes: ["reliability", "generalization", "locality"],
+      rephrase_overrides: {}, include_generations: true,
+    });
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].url.endsWith("/api/evaluate/active-model"));
+    assert.deepEqual(requests[0].body.facts, facts);
+    assert.equal(requests[0].body.fact_source_id, "upload-1");
+    assert.equal(facts[0].new_object, "English");
+    assert.equal(facts[0].rephrase_prompt, records[0].rephrase_prompt);
+    assert.equal(facts[0].locality_ground_truth, "French");
+    assert.ok(!("active_patch_ids" in requests[0].body));
   } finally { globalThis.fetch = original; invalidateApiReads(); }
 });

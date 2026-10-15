@@ -1,6 +1,6 @@
 import type { LoraModuleCatalog } from "./loraModules";
 import type { TrainingHyperparameters } from "./trainingHyperparameters";
-import type { ActiveEvaluationFacts, EvaluationMetric, EvaluationProtocols, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
+import type { ActiveEvaluationFacts, EvaluationFact, EvaluationMetric, EvaluationProtocols, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
 
 import { setModelCacheSnapshot, setModelRuntimeSnapshot } from "./modelStatusCache";
@@ -615,6 +615,8 @@ export const api = {
     request<ActiveEvaluationFacts>(`/api/evaluate/active-facts/page?model_id=${encodeURIComponent(modelId)}&offset=${offset}&limit=${limit}&query=${encodeURIComponent(query)}`),
   evaluateActiveModel: (body: {
     model_id: string;
+    facts?: EvaluationFact[];
+    fact_source_id?: string;
     evaluation_modes: EvaluationMetric[];
     evaluation_protocols?: EvaluationProtocols;
     fluency_modes?: EvaluationMetric[];

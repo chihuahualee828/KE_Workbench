@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, FlaskConical, Info, Loader2, SlidersHorizontal, X } from "lucide-react";
+import { BarChart3, FlaskConical, Info, Loader2, RotateCcw, SlidersHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api } from "@/lib/api";
@@ -11,10 +11,12 @@ import { readFactOverrides, writeFactOverride } from "@/lib/factDataset";
 import type { EditJob, EvaluationFact, EvaluationMetric, EvaluationProtocol, EvaluationProtocols, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { useUploadedEvaluationFacts } from "@/lib/useUploadedEvaluationFacts";
 import { ModelCacheManager } from "./ModelCacheManager";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
 import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
+import { EvaluationFactsImport } from "./EvaluationFactsImport";
 import { HighlightedEvaluationText } from "./EditEvaluationCard";
 import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
@@ -55,10 +57,13 @@ function defaultRephrasePrompt(fact: StoredEvaluationFact) {
   return fact.rephrase_prompt?.trim() || fact.prompt;
 }
 
-function isCurrentEvaluationExperiment(experiment: ExperimentDetails, modelId: string, activePatchSignature: string) {
+function isCurrentEvaluationExperiment(experiment: ExperimentDetails, modelId: string, activePatchSignature: string, uploadedSourceId: string | null) {
   const activePatchIds = experiment.input_json?.active_patch_ids;
   return experiment.type === "evaluation"
     && experiment.input_json?.source === "evaluation_page"
+    && (uploadedSourceId
+      ? experiment.input_json?.fact_source === "uploaded" && experiment.input_json?.fact_source_id === uploadedSourceId
+      : experiment.input_json?.fact_source !== "uploaded")
     && experiment.model_id === modelId
     && Array.isArray(activePatchIds)
     && activePatchIds.every((patchId): patchId is string => typeof patchId === "string")
@@ -78,8 +83,11 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   const [fluencyEnabled, setFluencyEnabled] = useState(false);
   const [editingRephrase, setEditingRephrase] = useState<{ index: number; key: string; value: string } | null>(null);
   const { evaluationExperimentId, setEvaluationExperimentId } = useWorkbenchSession();
+  const evaluationExperimentRef = useRef(evaluationExperimentId);
+  evaluationExperimentRef.current = evaluationExperimentId;
   const [overview, setOverview] = useState<EvaluationResultOverview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [changingFactSource, setChangingFactSource] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [evaluationJobId, setEvaluationJobId] = useState<string | null>(null);
   const [evaluationProgress, setEvaluationProgress] = useState<{ current: number; total: number; phase?: string | null } | null>(null);
@@ -103,7 +111,15 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     .filter((patch) => patch.active && patch.base_model === modelId)
     .sort((left, right) => (left.active_index ?? Number.MAX_SAFE_INTEGER) - (right.active_index ?? Number.MAX_SAFE_INTEGER))
     .at(-1)?.method ?? "", [modelId, patches]);
-  const facts = useActiveFactDataset(modelId, modelLoaded, activePatchSignature, activePatchMethod);
+  const factScopeKey = JSON.stringify([modelId, getBackendConnection().baseUrl]);
+  const factScopeRef = useRef(factScopeKey);
+  factScopeRef.current = factScopeKey;
+  const uploadedFacts = useUploadedEvaluationFacts({
+    modelId, backendUrl: getBackendConnection().baseUrl, sessionId: getEvaluationFactSessionId(), method: activePatchMethod,
+  });
+  const uploadedSourceId = uploadedFacts.uploaded?.id ?? null;
+  const activeFacts = useActiveFactDataset(modelId, modelLoaded && uploadedFacts.ready && !uploadedSourceId, activePatchSignature, activePatchMethod);
+  const facts = uploadedSourceId ? uploadedFacts : activeFacts;
   const resultPages = useEvaluationResultPages(evaluationExperimentId, overview?.total ?? 0);
   const selectedMetricOrder = EVALUATION_METRICS.filter((metric) => selectedMetrics.includes(metric));
   const selectedProtocols = enabledEvaluationProtocols(selectedMetricOrder, evaluationProtocols);
@@ -138,10 +154,12 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     setFactSearchPosition(-1);
     setRawData(null);
     setRawDataOpen(false);
+    setRawDataLoading(false);
     setEvaluationProgress(null);
     setEvaluationJobId(null);
     setCanceling(false);
-  }, [activePatchSignature, modelId]);
+    setEditingRephrase(null);
+  }, [activePatchSignature, modelId, uploadedFacts.sourceKey]);
 
   useEffect(() => {
     setFactSearchPosition(-1);
@@ -154,6 +172,12 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       setFocusedFactIndex(null);
       return;
     }
+    if (uploadedSourceId) {
+      const matches = uploadedFacts.findMatches(query);
+      setFactSearchTotal(matches.length);
+      setFocusedFactIndex(matches[Math.max(0, factSearchPosition)] ?? null);
+      return;
+    }
     let active = true;
     const timer = setTimeout(() => {
       void api.activeEvaluationFacts(modelId, Math.max(0, factSearchPosition), 1, query).then((page) => {
@@ -163,7 +187,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       }).catch((error) => { if (active) setError(String(error)); });
     }, 200);
     return () => { active = false; clearTimeout(timer); };
-  }, [factSearch, factSearchPosition, facts.ready, facts.sourceKey, modelId]);
+  }, [factSearch, factSearchPosition, facts.ready, facts.sourceKey, modelId, uploadedSourceId, uploadedFacts.findMatches]);
 
   useEffect(() => {
     if (!evaluationExperimentId) {
@@ -176,7 +200,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     // Wait for the shared patch/runtime state before comparing an evaluation's
     // saved active stack.  Otherwise a browser refresh briefly looks like a
     // clean model and would discard the tab-scoped experiment id.
-    if (apiStatus !== "ready") return;
+    if (apiStatus !== "ready" || !uploadedFacts.ready) return;
     let cancelled = false;
     let stopSubscription: () => void = () => undefined;
     let finishing = false;
@@ -184,7 +208,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       try {
         const experiment = await api.experimentStatus(evaluationExperimentId);
         if (cancelled) return;
-        if (!isCurrentEvaluationExperiment(experiment, modelId, activePatchSignature)) {
+        if (!isCurrentEvaluationExperiment(experiment, modelId, activePatchSignature, uploadedSourceId)) {
           setEvaluationExperimentId(null);
           setOverview(null);
           setBusy(false);
@@ -252,10 +276,44 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       cancelled = true;
       stopSubscription();
     };
-  }, [activePatchSignature, apiStatus, evaluationExperimentId, modelId, setEvaluationExperimentId]);
+  }, [activePatchSignature, apiStatus, evaluationExperimentId, modelId, setEvaluationExperimentId, uploadedFacts.ready, uploadedSourceId]);
+
+  function resetFactSourceResults() {
+    evaluationExperimentRef.current = null;
+    setEvaluationExperimentId(null);
+    setOverview(null);
+    setRawData(null);
+    setRawDataOpen(false);
+    setRawDataLoading(false);
+    setFactSearch("");
+    setEditingRephrase(null);
+    setError("");
+  }
+
+  async function importFacts(imported: EvaluationFact[], fileName: string) {
+    setChangingFactSource(true);
+    try {
+      await uploadedFacts.importFacts(imported, fileName);
+      if (factScopeRef.current === factScopeKey) resetFactSourceResults();
+    } finally {
+      setChangingFactSource(false);
+    }
+  }
+
+  async function useActivePatchFacts() {
+    setChangingFactSource(true);
+    try {
+      await uploadedFacts.clear();
+      if (factScopeRef.current === factScopeKey) resetFactSourceResults();
+    } catch (reason) {
+      if (factScopeRef.current === factScopeKey) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setChangingFactSource(false);
+    }
+  }
 
   async function run() {
-    if (!modelLoaded || busy || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)) return;
+    if (!modelLoaded || busy || changingFactSource || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)) return;
     setError("");
     setCanceling(false);
     setBusy(true);
@@ -264,6 +322,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       const rephraseOverrides = facts.overrides;
       const response = await api.evaluateActiveModel({
         model_id: modelId,
+        ...(uploadedSourceId ? { facts: uploadedFacts.inputFacts, fact_source_id: uploadedSourceId } : {}),
         evaluation_modes: selectedMetricOrder,
         evaluation_protocols: selectedProtocols,
         fluency_modes: fluencyModes,
@@ -322,16 +381,20 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
 
   async function openRawData() {
     if (!evaluationExperimentId) return;
+    const experimentId = evaluationExperimentId;
     setRawDataOpen(true);
     if (rawData) return;
     setRawDataLoading(true);
     try {
-      setRawData(await api.evaluationResultRaw(evaluationExperimentId));
+      const data = await api.evaluationResultRaw(experimentId);
+      if (evaluationExperimentRef.current === experimentId) setRawData(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load raw evaluation data.");
-      setRawDataOpen(false);
+      if (evaluationExperimentRef.current === experimentId) {
+        setError(err instanceof Error ? err.message : "Unable to load raw evaluation data.");
+        setRawDataOpen(false);
+      }
     } finally {
-      setRawDataLoading(false);
+      if (evaluationExperimentRef.current === experimentId) setRawDataLoading(false);
     }
   }
 
@@ -339,8 +402,15 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
     <div className="grid items-start gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
       <section className="panel">
         <div className="panel-heading"><h2 className="flex items-center gap-2 text-sm font-semibold"><SlidersHorizontal size={16} className="text-cyan" />Evaluation setup</h2></div>
-        <fieldset disabled={busy} className="grid min-w-0 gap-4">
+        <fieldset disabled={busy || changingFactSource} className="grid min-w-0 gap-4">
           <ModelSelector models={models} value={modelId} onChange={setModelId} />
+          <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border border-line px-3 py-2">
+            <div className="min-w-0"><div className="label">Evaluation facts</div><div className="mt-1 truncate text-xs text-ink/60" title={uploadedFacts.uploaded?.fileName}>{uploadedFacts.uploaded ? `${uploadedFacts.uploaded.fileName} · ${facts.total} facts` : "Active patches"}</div></div>
+            <div className="flex shrink-0 items-center gap-1">
+              {uploadedSourceId || uploadedFacts.error ? <button type="button" className="ghost-button grid size-8 place-items-center p-0" onClick={() => void useActivePatchFacts()} title="Use active patch facts" aria-label="Use active patch facts">{changingFactSource ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}</button> : null}
+              <EvaluationFactsImport disabled={busy || changingFactSource} onImport={importFacts} onError={setError} />
+            </div>
+          </div>
           <div className="grid gap-3">
             <div className="inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-line bg-white p-1" role="group" aria-label="Evaluation metrics">
               {EVALUATION_METRICS.map((tab) => <button key={tab} type="button" aria-pressed={selectedMetrics.includes(tab)} className={`rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition ${selectedMetrics.includes(tab) ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`} onClick={() => setSelectedMetrics((current) => current.includes(tab) ? current.filter((metric) => metric !== tab) : EVALUATION_METRICS.filter((metric) => [...current, tab].includes(metric)))}>{tab}</button>)}
@@ -353,10 +423,10 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
             }} placeholder="Search subject, original value, and edited target" type="search" />{factSearch.trim() ? <span className="text-[11px] text-ink/55">{factSearchTotal ? `${Math.max(0, factSearchPosition) + 1} of ${factSearchTotal} matches · Enter for next` : "No matching edit facts"}</span> : null}</label> : null}
             {selectedMetricOrder.map((metric) => <div key={metric} className="grid gap-2">
               <EvaluationProtocolSelect metric={metric} value={selectedProtocols[metric] ?? "traditional"} onChange={(protocol) => setEvaluationProtocols((current) => ({ ...current, [metric]: protocol }))} />
-              {metric === "reliability" ? <EvaluationFactList facts={facts} focusedIndex={focusedFactIndex} title="Original edit prompts" emptyMessage="No active patches are loaded for this model. Load a patch in Patch History to evaluate its edit facts." onFactClick={(resultIncludesReliability || resultIncludesGeneralization) && overview?.total ? (index) => focusResult(index, resultIncludesReliability ? "reliability" : "generalization") : undefined} /> : null}
+              {metric === "reliability" ? <EvaluationFactList facts={facts} focusedIndex={focusedFactIndex} title="Original edit prompts" emptyMessage="Load a patch in Patch History or upload evaluation facts JSON." onFactClick={(resultIncludesReliability || resultIncludesGeneralization) && overview?.total ? (index) => focusResult(index, resultIncludesReliability ? "reliability" : "generalization") : undefined} /> : null}
               {metric === "generalization" ? <ManualRephraseList facts={facts} editing={editingRephrase} focusedIndex={focusedFactIndex} resultAvailable={resultIncludesGeneralization && Boolean(overview?.total)} onClick={(index) => focusResult(index, "generalization")} onEdit={setEditingRephrase} onChange={setEditingRephrase} onSave={saveRephrase} /> : null}
-              {metric === "locality" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="locality_prompt" groundTruthField="locality_ground_truth" promptCount={facts.localityPromptCount} title="Unrelated fact prompts" emptyMessage="No locality prompts are included in the active patches." onFactClick={resultIncludesLocality && Boolean(overview?.total) ? (index) => focusResult(index, "locality") : undefined} /> : null}
-              {metric === "portability" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="portability_prompt" groundTruthField="portability_ground_truth" promptCount={facts.portabilityPromptCount} title="Derived-fact prompts" emptyMessage="No portability prompts are included in the active patches." onFactClick={resultIncludesPortability && Boolean(overview?.total) ? (index) => focusResult(index, "portability") : undefined} /> : null}
+              {metric === "locality" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="locality_prompt" groundTruthField="locality_ground_truth" promptCount={facts.localityPromptCount} title="Unrelated fact prompts" emptyMessage="No locality prompts are included in these facts." onFactClick={resultIncludesLocality && Boolean(overview?.total) ? (index) => focusResult(index, "locality") : undefined} /> : null}
+              {metric === "portability" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="portability_prompt" groundTruthField="portability_ground_truth" promptCount={facts.portabilityPromptCount} title="Derived-fact prompts" emptyMessage="No portability prompts are included in these facts." onFactClick={resultIncludesPortability && Boolean(overview?.total) ? (index) => focusResult(index, "portability") : undefined} /> : null}
             </div>)}
             {selectedMetricOrder.some((metric) => selectedProtocols[metric] === "LLM-judge") ? <p className="text-xs leading-5 text-ink/55">LLM judge sends prompts, targets, and model outputs to DeepSeek. Uses the backend <code>DEEPSEEK_API_KEY</code>.</p> : null}
           </div>
@@ -364,10 +434,10 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
             <label className="flex min-w-0 items-center gap-2 text-xs"><input type="checkbox" className="accent-cyan" checked={fluencyEnabled} onChange={(event) => setFluencyEnabled(event.target.checked)} /><span>Fluency for selected metrics</span></label>
             <EvaluationHelp label="About fluency evaluation"><p>Applies to every selected metric. Measures EasyEdit n-gram entropy on edited-model continuations, not answer accuracy or correctness.</p><p>Adds generation work. Prompts missing from a fact are skipped.</p></EvaluationHelp>
           </div>
-          {!patches.length ? <p className="text-xs leading-5 text-ink/55">Create a knowledge edit first, then select its patch here.</p> : !modelLoaded ? <p className="text-xs leading-5 text-ink/55">Load the selected model to enable evaluation.</p> : null}
+          {!modelLoaded ? <p className="text-xs leading-5 text-ink/55">Load the selected model to enable evaluation.</p> : null}
           <button className="tool-button" onClick={run} disabled={busy || !modelLoaded || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)} title={modelLoaded ? "Run all highlighted metrics" : "Load the selected model before evaluating"}>{busy ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}{busy ? "Evaluating…" : "Run evaluation"}</button>
         </fieldset>
-        {error || facts.error ? <div role="alert" className="inline-error mt-4">{error || facts.error}</div> : null}
+        {error || uploadedFacts.error || facts.error ? <div role="alert" className="inline-error mt-4">{error || uploadedFacts.error || facts.error}</div> : null}
       </section>
       <section className="panel grid gap-4" aria-busy={busy}>
         <h2 className="flex items-center gap-2 text-sm font-semibold"><FlaskConical size={17} className="text-cyan" />Evaluation results</h2>

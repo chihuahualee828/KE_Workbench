@@ -261,7 +261,7 @@ async function pruneDatasetGroup(
   }
 }
 
-async function replaceDatasetValues<T>(datasetId: string, values: T[]): Promise<DatasetMeta> {
+export async function replaceDatasetValues<T>(datasetId: string, values: T[]): Promise<DatasetMeta> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction([DATASET_STORE, FACT_STORE], "readwrite");
@@ -349,7 +349,7 @@ async function readDatasetRange<T>(datasetId: string, start: number, end: number
   }
 }
 
-async function readAllDatasetValues<T>(datasetId: string): Promise<T[]> {
+export async function readAllDatasetValues<T>(datasetId: string): Promise<T[]> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(FACT_STORE, "readonly");

@@ -191,20 +191,34 @@ class ReliabilityEvaluationRequest(EvaluationProtocolsRequest):
     evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
 
 
-class ActiveModelEvaluationRequest(EvaluationProtocolsRequest):
-    """Evaluate the edit facts currently active for a model.
+class UploadedEvaluationFact(ApiSchema):
+    """A normalized uploaded fact to evaluate against the currently loaded model."""
 
-    Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive
-    the full edit list from the browser.  The server resolves that list from the
-    active patch stack so a large evaluation does not require the page to have
-    loaded every fact first.
-    """
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    key: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    relation_prompt: str
+    new_object: str = Field(min_length=1)
+    ground_truth: str = ""
+    rephrase_prompt: str | None = None
+    locality_prompt: str | None = None
+    locality_ground_truth: str | None = None
+    portability_prompt: str | None = None
+    portability_ground_truth: str | None = None
+
+
+class ActiveModelEvaluationRequest(EvaluationProtocolsRequest):
+    """Evaluate uploaded facts or resolve facts from the active patch stack."""
 
     model_id: str = "gpt2-xl"
     evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
     rephrase_overrides: dict[str, str] = Field(default_factory=dict)
     include_generations: bool = True
     fluency_modes: list[EvaluationMetric] = Field(default_factory=list)
+    facts: list[UploadedEvaluationFact] | None = Field(default=None, min_length=1)
+    fact_source_id: str | None = None
 
 
 class JobResponse(ApiSchema):

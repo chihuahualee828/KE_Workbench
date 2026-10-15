@@ -372,9 +372,13 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     active_patch_ids = patch_service.active_patches_for_model(request.model_id)
-    if not active_patch_ids:
+    uploaded_facts = request.facts is not None
+    if not active_patch_ids and not uploaded_facts:
         raise HTTPException(status_code=400, detail="Load at least one patch before evaluating its edit facts.")
-    method = str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
+    method = (
+        str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
+        if active_patch_ids else "rome"
+    )
     if method not in {"rome", "r_rome", "memit", "kn", "ft", "lora"}:
         raise HTTPException(status_code=400, detail="The active patch method does not support this evaluation.")
 
@@ -385,7 +389,31 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
     if not modes:
         raise HTTPException(status_code=400, detail="Select at least one evaluation metric.")
     protocols = _resolve_evaluation_protocols(modes, request.evaluation_protocols)
-    facts = patch_service.active_evaluation_facts(request.model_id)
+    if uploaded_facts:
+        facts = []
+        by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+        for supplied_fact in request.facts:
+            fact = supplied_fact.model_dump(exclude_none=True)
+            identity = (fact["prompt"], fact["new_object"])
+            existing = by_identity.get(identity)
+            if existing is not None:
+                for field in (
+                    "ground_truth", "locality_prompt", "locality_ground_truth",
+                    "portability_prompt", "portability_ground_truth",
+                ):
+                    if not existing.get(field) and fact.get(field):
+                        existing[field] = fact[field]
+                if (
+                    not existing.get("rephrase_prompt")
+                    or existing["rephrase_prompt"] == existing["prompt"]
+                ) and fact.get("rephrase_prompt"):
+                    existing["rephrase_prompt"] = fact["rephrase_prompt"]
+                continue
+            fact["relation_prompt"] = fact["relation_prompt"] or fact["prompt"]
+            by_identity[identity] = fact
+            facts.append(fact)
+    else:
+        facts = patch_service.active_evaluation_facts(request.model_id)
     needs_edit_quality = bool(modes)
     if needs_edit_quality and not facts:
         raise HTTPException(status_code=400, detail="The active patches do not contain any evaluable edit facts.")
@@ -405,6 +433,10 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
                 "ground_truth": fact["ground_truth"] or None,
                 "rephrase_prompts": [rephrase] if "generalization" in modes else [],
             }
+            if uploaded_facts:
+                # Imported prompts may be complete questions or contain literal
+                # braces. Preserve them verbatim instead of rebuilding a template.
+                edit["prompt"] = fact["prompt"]
             locality_prompt = str(fact.get("locality_prompt") or "").strip()
             locality_ground_truth = str(fact.get("locality_ground_truth") or "").strip()
             if "locality" in modes and locality_prompt:
@@ -420,6 +452,9 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         request.model_id,
         {
             "source": "evaluation_page",
+            "fact_source": "uploaded" if uploaded_facts else "active_patches",
+            **({"fact_source_id": request.fact_source_id} if uploaded_facts else {}),
+            "edit_count": len(facts),
             "model_id": request.model_id,
             "method": method,
             "evaluation_modes": modes,
@@ -442,6 +477,8 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         needs_edit_quality=needs_edit_quality,
         fluency_modes=fluency_modes,
         evaluation_protocols=protocols,
+        fact_source="uploaded" if uploaded_facts else "active_patches",
+        fact_source_id=request.fact_source_id if uploaded_facts else None,
     )
     return JobResponse(
         job_id=job["id"],
@@ -465,6 +502,8 @@ def _start_active_model_evaluation(
     needs_edit_quality: bool,
     fluency_modes: list[str] | None = None,
     evaluation_protocols: dict[str, str] | None = None,
+    fact_source: str = "active_patches",
+    fact_source_id: str | None = None,
 ) -> None:
     operation_guard.start_thread(
         target=_run_active_model_evaluation,
@@ -480,6 +519,8 @@ def _start_active_model_evaluation(
             "needs_edit_quality": needs_edit_quality,
             "fluency_modes": fluency_modes or [],
             "evaluation_protocols": evaluation_protocols or {},
+            "fact_source": fact_source,
+            "fact_source_id": fact_source_id,
         },
     )
 
@@ -497,6 +538,8 @@ def _run_active_model_evaluation(
     needs_edit_quality: bool,
     fluency_modes: list[str] | None = None,
     evaluation_protocols: dict[str, str] | None = None,
+    fact_source: str = "active_patches",
+    fact_source_id: str | None = None,
 ) -> None:
     try:
         with _active_model_evaluation_lock:
@@ -549,6 +592,11 @@ def _run_active_model_evaluation(
                     "cases": [],
                 }
             )
+            raw_result = {
+                **raw_result,
+                "fact_source": fact_source,
+                **({"fact_source_id": fact_source_id} if fact_source == "uploaded" else {}),
+            }
             result, overview, pages = _build_paged_evaluation_result(
                 raw_result, facts, modes, evaluation_protocols
             )
@@ -636,6 +684,8 @@ def _build_paged_evaluation_result(
 
     overview = {
         "model_id": raw_result.get("model_id"),
+        "fact_source": raw_result.get("fact_source", "active_patches"),
+        **({"fact_source_id": raw_result.get("fact_source_id")} if raw_result.get("fact_source") == "uploaded" else {}),
         "method": raw_result.get("method"),
         "active_patch_ids": raw_result.get("active_patch_ids", []),
         "metrics": metrics,

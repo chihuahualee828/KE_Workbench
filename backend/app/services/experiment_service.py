@@ -550,7 +550,7 @@ def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_input, dict):
         compact_input = {
             key: raw_input[key]
-            for key in ("source", "model_id", "method", "active_patch_ids", "evaluation_modes", "fluency_modes", "edit_count")
+            for key in ("source", "fact_source", "fact_source_id", "model_id", "method", "active_patch_ids", "evaluation_modes", "fluency_modes", "edit_count")
             if key in raw_input
         }
         if compact_input:

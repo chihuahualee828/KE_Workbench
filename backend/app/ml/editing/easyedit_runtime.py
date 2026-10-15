@@ -493,7 +493,7 @@ def evaluate_easyedit_quality(
             target_new = str(edit.get("new_object") or "").strip()
             if not subject or not relation_prompt or not target_new:
                 raise ValueError("Each reliability test fact needs a subject, relation prompt, and new object.")
-            prompt = build_prompt(subject, relation_prompt)
+            prompt = str(edit.get("prompt") or "").strip() or build_prompt(subject, relation_prompt)
             record: dict[str, Any] = {
                 "prompt": prompt,
                 "target_new": target_new,
