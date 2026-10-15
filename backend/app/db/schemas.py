@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ml.editing.training_hparams import TrainingHyperparameters
 
@@ -163,9 +163,25 @@ class EvaluationRequest(ApiSchema):
 
 
 EvaluationMetric = Literal["reliability", "generalization", "locality", "portability"]
+EvaluationProtocol = Literal["traditional", "LLM-judge", "generate-text"]
 
 
-class ReliabilityEvaluationRequest(ApiSchema):
+class EvaluationProtocolsRequest(ApiSchema):
+    evaluation_protocols: dict[EvaluationMetric, EvaluationProtocol] = Field(default_factory=dict)
+
+    @field_validator("evaluation_protocols")
+    @classmethod
+    def validate_evaluation_protocols(
+        cls, protocols: dict[EvaluationMetric, EvaluationProtocol]
+    ) -> dict[EvaluationMetric, EvaluationProtocol]:
+        if protocols.get("locality") == "LLM-judge":
+            raise ValueError("Locality does not support the LLM-judge evaluation protocol.")
+        if any(metric != "locality" and protocol == "generate-text" for metric, protocol in protocols.items()):
+            raise ValueError("Only locality supports the generate-text preservation protocol.")
+        return protocols
+
+
+class ReliabilityEvaluationRequest(EvaluationProtocolsRequest):
     """Evaluate edit quality on the current active model without editing it."""
 
     model_id: str = "gpt2-xl"
@@ -175,7 +191,7 @@ class ReliabilityEvaluationRequest(ApiSchema):
     evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
 
 
-class ActiveModelEvaluationRequest(ApiSchema):
+class ActiveModelEvaluationRequest(EvaluationProtocolsRequest):
     """Evaluate the edit facts currently active for a model.
 
     Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive

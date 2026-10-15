@@ -16,9 +16,17 @@ class EvaluationService:
         on_progress: Callable[[int, int], None] | None = None,
         cancel_job_id: str | None = None,
         fluency_modes: list[str] | None = None,
+        evaluation_modes: list[str] | None = None,
+        evaluation_protocols: dict[str, str] | None = None,
+        on_baseline_progress: Callable[[int, int], None] | None = None,
     ) -> dict:
         from app.ml.editing.easyedit_runtime import evaluate_easyedit_quality
         from app.services.model_runtime_service import model_runtime_service
+
+        def worker_progress(update: dict) -> None:
+            callback = on_baseline_progress if update.get("phase") == "baseline" else on_progress
+            if callback is not None:
+                callback(int(update["current"]), int(update["total"]))
 
         if getattr(model_runtime_service, "uses_hard_worker", False):
             return model_runtime_service.execute(
@@ -30,12 +38,11 @@ class EvaluationService:
                     "include_generations": include_generations,
                     "cancel_job_id": cancel_job_id,
                     "fluency_modes": fluency_modes or [],
+                    **({"evaluation_modes": evaluation_modes} if evaluation_modes else {}),
+                    **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
                 },
                 timeout=7200.0,
-                progress_callback=(
-                    (lambda update: on_progress(int(update["current"]), int(update["total"])))
-                    if on_progress is not None else None
-                ),
+                progress_callback=worker_progress if on_progress is not None or on_baseline_progress is not None else None,
             )
         return evaluate_easyedit_quality(
             model_id=model_id,
@@ -45,6 +52,9 @@ class EvaluationService:
             progress_callback=on_progress,
             cancel_job_id=cancel_job_id,
             fluency_modes=fluency_modes,
+            **({"evaluation_modes": evaluation_modes} if evaluation_modes else {}),
+            **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
+            **({"baseline_progress_callback": on_baseline_progress} if on_baseline_progress is not None else {}),
         )
 
     def evaluate_easyedit_reliability(
@@ -54,19 +64,16 @@ class EvaluationService:
         edits: list[dict],
         include_generations: bool = False,
         evaluation_modes: list[str] | None = None,
+        evaluation_protocols: dict[str, str] | None = None,
     ) -> dict:
-        """Compatibility entry point for existing reliability-only callers.
-
-        ``evaluation_modes`` was previously accepted by the public endpoint but
-        did not affect the evaluator.  The quality evaluator derives enabled
-        sub-metrics from each edit record instead.
-        """
-        del evaluation_modes
+        """Compatibility entry point with optional per-metric protocols."""
         return self.evaluate_easyedit_quality(
             model_id=model_id,
             method=method,
             edits=edits,
             include_generations=include_generations,
+            **({"evaluation_modes": evaluation_modes} if evaluation_modes else {}),
+            **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
         )
 
     def evaluate_edit_reliability_test_pair(
@@ -77,6 +84,8 @@ class EvaluationService:
         include_generation: bool = True,
         on_generation: Callable[[dict], None] | None = None,
         cancel_job_id: str | None = None,
+        evaluation_modes: list[str] | None = None,
+        evaluation_protocols: dict[str, str] | None = None,
     ) -> dict:
         """Generate and score one fact, preserving the edit-page test order."""
         from app.ml.editing.easyedit_runtime import build_prompt
@@ -88,8 +97,13 @@ class EvaluationService:
             raise ValueError("Each reliability test fact needs a subject, relation prompt, and new object.")
 
         prompt = build_prompt(subject, relation_prompt)
+        custom_generation_protocol = any(
+            protocol != "traditional"
+            for metric, protocol in (evaluation_protocols or {}).items()
+            if not evaluation_modes or metric in evaluation_modes
+        )
         generation = None
-        if include_generation:
+        if include_generation and not custom_generation_protocol:
             generation = {
                 "prompt": prompt,
                 "active_model": generate_text(
@@ -106,12 +120,20 @@ class EvaluationService:
             model_id=model_id,
             method=method,
             edits=[edit],
-            include_generations=False,
+            include_generations=include_generation if custom_generation_protocol else False,
             cancel_job_id=cancel_job_id,
+            **({"evaluation_modes": evaluation_modes} if evaluation_modes else {}),
+            **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
         )
         cases = result.get("cases")
         if not isinstance(cases, list) or not cases or not isinstance(cases[0], dict):
             raise RuntimeError("EasyEdit reliability evaluation returned no fact result.")
+        if custom_generation_protocol and include_generation:
+            samples = result.get("sample_generations")
+            if isinstance(samples, list) and samples and isinstance(samples[0], dict):
+                generation = samples[0]
+                if on_generation is not None:
+                    on_generation(generation)
         return {
             "case": cases[0],
             "generation": generation,

@@ -491,6 +491,7 @@ class ExperimentService:
         progress: float,
         progress_current: int | None = None,
         progress_total: int | None = None,
+        progress_phase: str | None = None,
     ) -> None:
         """Persist monotonic in-flight progress without adding a synthetic log line."""
         with self._condition:
@@ -507,12 +508,16 @@ class ExperimentService:
             if progress_current is not None and progress_total is not None and progress_total > 0:
                 next_current = max(0, min(progress_current, progress_total))
                 next_total = progress_total
-            if bounded <= current and next_current == job.get("progress_current") and next_total == job.get("progress_total"):
+            if (bounded <= current and next_current == job.get("progress_current")
+                    and next_total == job.get("progress_total")
+                    and (progress_phase is None or progress_phase == job.get("progress_phase"))):
                 return
             job["progress"] = max(current, bounded)
             if next_current is not None and next_total is not None:
                 job["progress_current"] = next_current
                 job["progress_total"] = next_total
+            if progress_phase is not None:
+                job["progress_phase"] = progress_phase
             job["updated_at"] = _now()
             local_store.write_json(f"experiments/{job_id}.json", job)
             self._condition.notify_all()
@@ -545,7 +550,7 @@ def _experiment_list_summary(experiment: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_input, dict):
         compact_input = {
             key: raw_input[key]
-            for key in ("source", "model_id", "method", "active_patch_ids", "evaluation_modes", "edit_count")
+            for key in ("source", "model_id", "method", "active_patch_ids", "evaluation_modes", "fluency_modes", "edit_count")
             if key in raw_input
         }
         if compact_input:

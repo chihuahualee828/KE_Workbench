@@ -1,28 +1,30 @@
 "use client";
 
-import { BarChart3, FlaskConical, Loader2, SlidersHorizontal, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, FlaskConical, Info, Loader2, SlidersHorizontal, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api } from "@/lib/api";
 import { getBackendConnection } from "@/lib/backendConnection";
 import { announceExperimentCanceled, announceExperimentStarted, listenForExperimentCanceled } from "@/lib/experimentEvents";
+import { allowedEvaluationProtocols, enabledEvaluationProtocols, EVALUATION_METRICS, evaluationMetricEntries, evaluationMetricFromKey, evaluationScoreDisplay } from "@/lib/evaluationProtocols";
 import { readFactOverrides, writeFactOverride } from "@/lib/factDataset";
-import type { EditJob, EvaluationFact, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
+import type { EditJob, EvaluationFact, EvaluationMetric, EvaluationProtocol, EvaluationProtocols, EvaluationResultItem, EvaluationResultPage, EvaluationResultOverview, ExperimentDetails, ModelRuntimeStatus, Patch, SupportedModel } from "@/lib/types";
 import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelCacheManager } from "./ModelCacheManager";
 import { ModelSelector } from "./ModelSelector";
 import { PatchHistory } from "./PatchHistory";
 import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
+import { HighlightedEvaluationText } from "./EditEvaluationCard";
 import { VirtualizedList } from "./VirtualizedList";
 import { useWorkbenchSession } from "./WorkbenchSession";
 
-type EvaluationMode = "reliability" | "generalization" | "locality" | "portability";
-type EvaluationGenerationMetric = Exclude<EvaluationMode, "portability">;
+type EvaluationMode = EvaluationMetric;
+type EvaluationGenerationMetric = EvaluationMode;
 
-const EVALUATION_METRICS: EvaluationMode[] = ["reliability", "generalization", "locality", "portability"];
 const PAGE_SIZE = 50;
 const DEFAULT_SELECTED_METRICS: EvaluationMode[] = ["reliability"];
+const DEFAULT_EVALUATION_PROTOCOLS: EvaluationProtocols = {};
 
 type StoredEvaluationFact = EvaluationFact & { rephrase_override?: string };
 
@@ -72,13 +74,15 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
 }) {
   const [modelId, setModelId] = usePersistentState("kew:evaluate:modelId", "gpt2-xl");
   const [selectedMetrics, setSelectedMetrics] = usePersistentState<EvaluationMode[]>("kew:evaluate:selectedMetrics", DEFAULT_SELECTED_METRICS);
+  const [evaluationProtocols, setEvaluationProtocols] = usePersistentState<EvaluationProtocols>("kew:evaluate:evaluationProtocols", DEFAULT_EVALUATION_PROTOCOLS);
+  const [fluencyEnabled, setFluencyEnabled] = useState(false);
   const [editingRephrase, setEditingRephrase] = useState<{ index: number; key: string; value: string } | null>(null);
   const { evaluationExperimentId, setEvaluationExperimentId } = useWorkbenchSession();
   const [overview, setOverview] = useState<EvaluationResultOverview | null>(null);
   const [busy, setBusy] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [evaluationJobId, setEvaluationJobId] = useState<string | null>(null);
-  const [evaluationProgress, setEvaluationProgress] = useState<{ current: number; total: number } | null>(null);
+  const [evaluationProgress, setEvaluationProgress] = useState<{ current: number; total: number; phase?: string | null } | null>(null);
   const [error, setError] = useState("");
   const [rawDataOpen, setRawDataOpen] = useState(false);
   const [rawData, setRawData] = useState<Record<string, unknown> | null>(null);
@@ -102,12 +106,15 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   const facts = useActiveFactDataset(modelId, modelLoaded, activePatchSignature, activePatchMethod);
   const resultPages = useEvaluationResultPages(evaluationExperimentId, overview?.total ?? 0);
   const selectedMetricOrder = EVALUATION_METRICS.filter((metric) => selectedMetrics.includes(metric));
-  const needsEditQuality = selectedMetrics.includes("reliability") || selectedMetrics.includes("generalization");
+  const selectedProtocols = enabledEvaluationProtocols(selectedMetricOrder, evaluationProtocols);
+  const fluencyModes = fluencyEnabled ? selectedMetricOrder : [];
+  const needsEditQuality = selectedMetricOrder.length > 0;
   const hasRunnableMetric = selectedMetrics.some((metric) => metric === "locality" || metric === "portability" || facts.total > 0);
   const selectedMetricsHaveInputs = selectedMetrics.every((metric) => metric === "locality" || metric === "portability" || facts.total > 0);
   const resultIncludesReliability = overview?.evaluation_modes.includes("reliability") ?? false;
   const resultIncludesGeneralization = overview?.evaluation_modes.includes("generalization") ?? false;
   const resultIncludesLocality = overview?.evaluation_modes.includes("locality") ?? false;
+  const resultIncludesPortability = overview?.evaluation_modes.includes("portability") ?? false;
   const availableGenerationMetrics = overview?.available_generation_metrics ?? [];
   const activeGenerationMetric = availableGenerationMetrics.includes(generationMetric) ? generationMetric : availableGenerationMetrics[0] ?? "reliability";
 
@@ -192,6 +199,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
           setEvaluationProgress({
             current: experiment.job?.progress_current ?? 0,
             total: experiment.job?.progress_total ?? 0,
+            phase: experiment.job?.progress_phase,
           });
           const jobId = experiment.job?.id;
           if (!jobId) throw new Error("Running evaluation has no job ID.");
@@ -199,7 +207,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
             onEvent: (event, data) => {
               if (cancelled || finishing || event !== "job") return;
               const job = JSON.parse(data) as EditJob;
-              setEvaluationProgress({ current: job.progress_current ?? 0, total: job.progress_total ?? 0 });
+              setEvaluationProgress({ current: job.progress_current ?? 0, total: job.progress_total ?? 0, phase: job.progress_phase });
               if (job.status !== "running") {
                 finishing = true;
                 stopSubscription();
@@ -257,6 +265,8 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
       const response = await api.evaluateActiveModel({
         model_id: modelId,
         evaluation_modes: selectedMetricOrder,
+        evaluation_protocols: selectedProtocols,
+        fluency_modes: fluencyModes,
         rephrase_overrides: rephraseOverrides,
         include_generations: true,
       });
@@ -341,28 +351,36 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
               const next = (Math.max(0, factSearchPosition) + 1) % factSearchTotal;
               setFactSearchPosition(next);
             }} placeholder="Search subject, original value, and edited target" type="search" />{factSearch.trim() ? <span className="text-[11px] text-ink/55">{factSearchTotal ? `${Math.max(0, factSearchPosition) + 1} of ${factSearchTotal} matches · Enter for next` : "No matching edit facts"}</span> : null}</label> : null}
-            {selectedMetrics.includes("reliability") ? <EvaluationFactList facts={facts} focusedIndex={focusedFactIndex} title="Original edit prompts" emptyMessage="No active patches are loaded for this model. Load a patch in Patch History to evaluate its edit facts." onFactClick={(resultIncludesReliability || resultIncludesGeneralization) && overview?.total ? (index) => focusResult(index) : undefined} /> : null}
-            {selectedMetrics.includes("generalization") ? <ManualRephraseList facts={facts} editing={editingRephrase} focusedIndex={focusedFactIndex} resultAvailable={resultIncludesGeneralization && Boolean(overview?.total)} onClick={(index) => focusResult(index, "generalization")} onEdit={setEditingRephrase} onChange={setEditingRephrase} onSave={saveRephrase} /> : null}
-            {selectedMetrics.includes("locality") ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="locality_prompt" groundTruthField="locality_ground_truth" promptCount={facts.localityPromptCount} title="Unrelated fact prompts" emptyMessage="No locality prompts are included in the active patches." onFactClick={resultIncludesLocality && Boolean(overview?.total) ? (index) => focusResult(index, "locality") : undefined} /> : null}
-            {selectedMetrics.includes("portability") ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="portability_prompt" groundTruthField="portability_ground_truth" promptCount={facts.portabilityPromptCount} title="Derived-fact prompts" emptyMessage="No portability prompts are included in the active patches." /> : null}
+            {selectedMetricOrder.map((metric) => <div key={metric} className="grid gap-2">
+              <EvaluationProtocolSelect metric={metric} value={selectedProtocols[metric] ?? "traditional"} onChange={(protocol) => setEvaluationProtocols((current) => ({ ...current, [metric]: protocol }))} />
+              {metric === "reliability" ? <EvaluationFactList facts={facts} focusedIndex={focusedFactIndex} title="Original edit prompts" emptyMessage="No active patches are loaded for this model. Load a patch in Patch History to evaluate its edit facts." onFactClick={(resultIncludesReliability || resultIncludesGeneralization) && overview?.total ? (index) => focusResult(index, resultIncludesReliability ? "reliability" : "generalization") : undefined} /> : null}
+              {metric === "generalization" ? <ManualRephraseList facts={facts} editing={editingRephrase} focusedIndex={focusedFactIndex} resultAvailable={resultIncludesGeneralization && Boolean(overview?.total)} onClick={(index) => focusResult(index, "generalization")} onEdit={setEditingRephrase} onChange={setEditingRephrase} onSave={saveRephrase} /> : null}
+              {metric === "locality" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="locality_prompt" groundTruthField="locality_ground_truth" promptCount={facts.localityPromptCount} title="Unrelated fact prompts" emptyMessage="No locality prompts are included in the active patches." onFactClick={resultIncludesLocality && Boolean(overview?.total) ? (index) => focusResult(index, "locality") : undefined} /> : null}
+              {metric === "portability" ? <EvaluationMetricPromptList facts={facts} focusedIndex={focusedFactIndex} promptField="portability_prompt" groundTruthField="portability_ground_truth" promptCount={facts.portabilityPromptCount} title="Derived-fact prompts" emptyMessage="No portability prompts are included in the active patches." onFactClick={resultIncludesPortability && Boolean(overview?.total) ? (index) => focusResult(index, "portability") : undefined} /> : null}
+            </div>)}
+            {selectedMetricOrder.some((metric) => selectedProtocols[metric] === "LLM-judge") ? <p className="text-xs leading-5 text-ink/55">LLM judge sends prompts, targets, and model outputs to DeepSeek. Uses the backend <code>DEEPSEEK_API_KEY</code>.</p> : null}
+          </div>
+          <div className="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-2">
+            <label className="flex min-w-0 items-center gap-2 text-xs"><input type="checkbox" className="accent-cyan" checked={fluencyEnabled} onChange={(event) => setFluencyEnabled(event.target.checked)} /><span>Fluency for selected metrics</span></label>
+            <EvaluationHelp label="About fluency evaluation"><p>Applies to every selected metric. Measures EasyEdit n-gram entropy on edited-model continuations, not answer accuracy or correctness.</p><p>Adds generation work. Prompts missing from a fact are skipped.</p></EvaluationHelp>
           </div>
           {!patches.length ? <p className="text-xs leading-5 text-ink/55">Create a knowledge edit first, then select its patch here.</p> : !modelLoaded ? <p className="text-xs leading-5 text-ink/55">Load the selected model to enable evaluation.</p> : null}
-          <button className="tool-button" onClick={run} disabled={busy || !modelLoaded || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)} title={modelLoaded ? "Run all highlighted metrics" : "Load the selected model before evaluating"}>{busy ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}{busy ? "Evaluating patch…" : "Run evaluation"}</button>
+          <button className="tool-button" onClick={run} disabled={busy || !modelLoaded || !facts.ready || !selectedMetrics.length || !hasRunnableMetric || !selectedMetricsHaveInputs || (needsEditQuality && !facts.method) || (!needsEditQuality && !activePatchIds.length)} title={modelLoaded ? "Run all highlighted metrics" : "Load the selected model before evaluating"}>{busy ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}{busy ? "Evaluating…" : "Run evaluation"}</button>
         </fieldset>
         {error || facts.error ? <div role="alert" className="inline-error mt-4">{error || facts.error}</div> : null}
       </section>
       <section className="panel grid gap-4" aria-busy={busy}>
         <h2 className="flex items-center gap-2 text-sm font-semibold"><FlaskConical size={17} className="text-cyan" />Evaluation results</h2>
-        {busy ? <EvaluationProgressIndicator cancelDisabled={!evaluationJobId} canceling={canceling} current={evaluationProgress?.current} multiFactLabel="Running highlighted metrics…" onCancel={() => void cancel()} preparingLabel={needsEditQuality ? "Preparing EasyEdit…" : "Preparing evaluation…"} singleFactLabel="Evaluating fact…" total={evaluationProgress?.total} /> : null}
+        {busy ? <EvaluationProgressIndicator phase={evaluationProgress?.phase} cancelDisabled={!evaluationJobId} canceling={canceling} current={evaluationProgress?.current} multiFactLabel="Running highlighted metrics…" onCancel={() => void cancel()} preparingLabel={needsEditQuality ? "Preparing EasyEdit…" : "Preparing evaluation…"} singleFactLabel="Evaluating fact…" total={evaluationProgress?.total} /> : null}
         {overview ? <>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{Object.entries(overview.metrics).map(([key, value]) => {
-            const scoreGenerationMetric: EvaluationGenerationMetric | null = key === "reliability_rewrite_acc" ? "reliability" : key === "generalization_rephrase_acc" ? "generalization" : key === "locality_preservation_acc" ? "locality" : null;
-            const canSelectGeneration = scoreGenerationMetric !== null && availableGenerationMetrics.includes(scoreGenerationMetric);
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{evaluationMetricEntries(overview).filter(([key]) => !key.includes("_fluency_")).map(([key, value]) => {
+            const scoreGenerationMetric = evaluationMetricFromKey(key);
+            const scoreDisplay = scoreGenerationMetric && !key.includes("_fluency_") ? evaluationScoreDisplay(scoreGenerationMetric, value, overview.evaluation_protocols) : null;
+            const canSelectGeneration = Boolean(scoreGenerationMetric && availableGenerationMetrics.includes(scoreGenerationMetric));
             const selected = canSelectGeneration && activeGenerationMetric === scoreGenerationMetric;
-            return <button key={key} type="button" disabled={!canSelectGeneration} aria-pressed={canSelectGeneration ? selected : undefined} title={canSelectGeneration ? `Show ${scoreGenerationMetric} prompt generations below` : undefined} onClick={() => scoreGenerationMetric && setGenerationMetric(scoreGenerationMetric)} className={`rounded-md border p-3 text-left transition ${canSelectGeneration ? "cursor-pointer hover:border-cyan/60 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"} ${selected ? "border-cyan bg-cyan/5" : "border-line bg-panel"}`}><div className="label">{key.replace(/_/g, " ")}</div><div className="mt-2 text-2xl font-semibold tabular-nums">{typeof value === "number" ? value.toFixed(3) : value == null ? "—" : String(value)}</div></button>;
+            return <button key={key} type="button" disabled={!canSelectGeneration} aria-pressed={canSelectGeneration ? selected : undefined} title={canSelectGeneration ? `Show ${scoreGenerationMetric} prompt generations below` : undefined} onClick={() => scoreGenerationMetric && setGenerationMetric(scoreGenerationMetric)} className={`rounded-md border p-3 text-left transition ${canSelectGeneration ? "cursor-pointer hover:border-cyan/60 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"} ${selected ? "border-cyan bg-cyan/5" : "border-line bg-panel"}`}><div className="label">{scoreDisplay?.label ?? key.replace(/_/g, " ")}</div><div className="mt-2 text-2xl font-semibold tabular-nums">{scoreDisplay?.value ?? (typeof value === "number" ? value.toFixed(3) : value == null ? "N/A" : String(value))}</div>{scoreDisplay ? <p className="mt-1 text-[11px] leading-5 text-ink/55">{scoreDisplay.caption}</p> : null}</button>;
           })}</div>
-          {Object.keys(overview.metrics).some((key) => key.startsWith("portability_")) ? <p className="text-xs leading-5 text-ink/55">Portability scores are temporary placeholders and are not formal metrics yet.</p> : null}
-          {overview.total ? <VirtualizedList itemCount={overview.total} estimatedItemHeight={310} scrollToIndex={focusedResultIndex} className="h-[520px] overflow-y-auto overscroll-contain p-1" getItem={resultPages.getItem} onVisibleRangeChange={resultPages.ensureRange} renderItem={(item, _index, focused) => <EvaluationResultCard item={item} generationMetric={activeGenerationMetric} showReliability={resultIncludesReliability} showGeneralization={resultIncludesGeneralization} showLocality={resultIncludesLocality} focused={focused} />} /> : null}
+          {overview.total ? <VirtualizedList itemCount={overview.total} estimatedItemHeight={310} scrollToIndex={focusedResultIndex} className="h-[520px] overflow-y-auto overscroll-contain p-1" getItem={resultPages.getItem} onVisibleRangeChange={resultPages.ensureRange} renderItem={(item, _index, focused) => <EvaluationResultCard item={item} generationMetric={activeGenerationMetric} metrics={overview.evaluation_modes} protocols={overview.evaluation_protocols} focused={focused} />} /> : null}
           <button className="ghost-button justify-self-start text-xs" onClick={() => void openRawData()} type="button">View raw evaluation data</button>
         </> : busy ? <div className="empty-state min-h-[360px] rounded-lg border border-dashed border-line bg-panel/50"><span className="icon-tile bg-white shadow-sm"><Loader2 size={22} className="animate-spin text-cyan" /></span><h3 className="text-sm font-medium">Evaluation is running</h3><p className="max-w-sm text-xs leading-6 text-ink/55">Results will appear here automatically when the evaluation finishes.</p></div> : <div className="empty-state min-h-[360px] rounded-lg border border-dashed border-line bg-panel/50"><span className="icon-tile bg-white shadow-sm"><BarChart3 size={22} strokeWidth={1.5} /></span><h3 className="text-sm font-medium">Put your edit to the test</h3><p className="max-w-sm text-xs leading-6 text-ink/55">Load an edited patch, then run prompts to compare the clean model with the active edited model.</p></div>}
       </section>
@@ -487,12 +505,40 @@ function useEvaluationResultPages(experimentId: string | null, total: number) {
   return { getItem, ensureRange };
 }
 
+function EvaluationProtocolSelect({ metric, value, onChange }: { metric: EvaluationMetric; value: EvaluationProtocol; onChange: (protocol: EvaluationProtocol) => void }) {
+  return <div className="flex min-w-0 items-center justify-between gap-2">
+    <span className="label min-w-0 leading-4">{{ reliability: "Original prompts", generalization: "Manual rephrases", locality: "Locality prompts", portability: "Portability prompts" }[metric]}</span>
+    <div className="flex shrink-0 items-center gap-1">
+      <select className="w-28 rounded-md border border-line bg-white px-1.5 py-1 text-[11px] text-ink outline-none transition hover:border-ink/25 focus:border-cyan focus:ring-2 focus:ring-cyan/20 disabled:cursor-not-allowed disabled:bg-panel disabled:text-ink/50" value={value} aria-label={`${metric} evaluation protocol`} onChange={(event) => onChange(event.target.value as EvaluationProtocol)}>
+        {allowedEvaluationProtocols(metric).map((protocol) => <option key={protocol} value={protocol}>{protocol === "traditional" ? "Traditional" : protocol === "generate-text" ? "Generate text" : "LLM judge"}</option>)}
+      </select>
+      <EvaluationHelp label={`About ${metric} evaluation modes`}>
+        <p><span className="font-medium text-ink">Traditional:</span> {metric === "locality" ? "Compares original and edited model token predictions to measure preservation." : "Measures EasyEdit token accuracy against the expected answer."}</p>
+        <p>Traditional mode displays text generated separately by the workbench.</p>
+        {metric !== "locality" ? <p><span className="font-medium text-ink">LLM judge:</span> DeepSeek judges EasyEdit's generated answer, which is reused for display. Requires a backend API key.</p> : null}
+        {metric === "locality" ? <p><span className="font-medium text-ink">Generate text:</span> Measures preservation by exact agreement between original and edited generated text.</p> : null}
+      </EvaluationHelp>
+    </div>
+  </div>;
+}
+
+function EvaluationHelp({ label, children }: { label: string; children: ReactNode }) {
+  return <details className="relative shrink-0" onKeyDown={(event) => {
+    if (event.key !== "Escape") return;
+    event.currentTarget.open = false;
+    event.currentTarget.querySelector("summary")?.focus();
+  }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
+    <summary aria-label={label} className="grid size-6 cursor-pointer list-none place-items-center rounded text-ink/45 transition hover:bg-panel hover:text-cyan focus:outline-none focus:ring-2 focus:ring-cyan/40 [&::-webkit-details-marker]:hidden"><Info size={14} aria-hidden="true" /></summary>
+    <div tabIndex={-1} className="absolute right-0 top-full z-20 mt-1 grid w-60 max-w-[calc(100vw-3rem)] gap-2 rounded-lg border border-line bg-white p-3 text-xs leading-5 text-ink/65 shadow-lg">{children}</div>
+  </details>;
+}
+
 function EvaluationFactList({ facts, emptyMessage, focusedIndex, title, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; emptyMessage: string; focusedIndex: number | null; title: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(title, start, end)} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
+  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(title, start, end)} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
 }
 
 function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onClick, onEdit, onChange, onSave }: { facts: ReturnType<typeof useActiveFactDataset>; editing: { index: number; key: string; value: string } | null; focusedIndex: number | null; resultAvailable: boolean; onClick: (index: number) => void; onEdit: (value: { index: number; key: string; value: string }) => void; onChange: (value: { index: number; key: string; value: string } | null) => void; onSave: (index: number, fact: StoredEvaluationFact) => Promise<void> }) {
-  return <div className="grid gap-2"><span className="label">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange("rephrases", start, end)} renderItem={(fact, index, focused) => <div className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
+  return <div className="grid gap-2"><span className="sr-only">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange("rephrases", start, end)} renderItem={(fact, index, focused) => <div className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
     event.preventDefault();
     event.stopPropagation();
     if (!editing) onEdit({ index, key: fact.key, value: fact.rephrase_override?.trim() || defaultRephrasePrompt(fact) });
@@ -500,33 +546,38 @@ function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onC
 }
 
 function EvaluationMetricPromptList({ facts, focusedIndex, promptField, groundTruthField, promptCount, title, emptyMessage, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; focusedIndex: number | null; promptField: "locality_prompt" | "portability_prompt"; groundTruthField: "locality_ground_truth" | "portability_ground_truth"; promptCount: number; title: string; emptyMessage: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="label">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(promptField, start, end)} renderItem={(fact, index, focused) => {
+  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(promptField, start, end)} renderItem={(fact, index, focused) => {
     const prompt = fact[promptField]?.trim() || "";
     const groundTruth = fact[groundTruthField]?.trim() || "";
     const canFocus = Boolean(prompt && onFactClick);
-    return <button type="button" disabled={!canFocus} onClick={() => onFactClick?.(index)} title={canFocus ? "Show this fact's locality evaluation result" : undefined} className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${canFocus ? "cursor-pointer transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`}><div className={`min-h-4 break-words font-mono text-xs ${prompt ? "text-ink" : "text-transparent"}`}>{prompt || " "}</div>{groundTruth ? <div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{groundTruth}</span></div> : null}</button>;
+    return <button type="button" disabled={!canFocus} onClick={() => onFactClick?.(index)} title={canFocus ? `Show this fact's ${promptField === "portability_prompt" ? "portability" : "locality"} evaluation result` : undefined} className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${canFocus ? "cursor-pointer transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`}><div className={`min-h-4 break-words font-mono text-xs ${prompt ? "text-ink" : "text-transparent"}`}>{prompt || " "}</div>{groundTruth ? <div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{groundTruth}</span></div> : null}</button>;
   }} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
 }
 
-function EvaluationResultCard({ item, generationMetric, showReliability, showGeneralization, showLocality, focused }: { item: EvaluationResultItem; generationMetric: EvaluationGenerationMetric; showReliability: boolean; showGeneralization: boolean; showLocality: boolean; focused: boolean }) {
-  const generation = generationMetric === "generalization" ? item.generalization_generation : generationMetric === "locality" ? item.locality_generation : item.reliability_generation;
-  const generationLabel = generationMetric === "generalization" ? "Generalization prompt" : generationMetric === "locality" ? "Locality prompt" : "Reliability prompt";
-  const hasGenerationToggle = Number(showReliability) + Number(showGeneralization) + Number(showLocality) > 1;
+function EvaluationResultCard({ item, generationMetric, metrics, protocols, focused }: { item: EvaluationResultItem; generationMetric: EvaluationGenerationMetric; metrics: EvaluationMetric[]; protocols?: EvaluationProtocols; focused: boolean }) {
+  const generation = generationMetric === "portability" ? item.portability_generation : generationMetric === "generalization" ? item.generalization_generation : generationMetric === "locality" ? item.locality_generation : item.reliability_generation;
+  const generationLabel = generationMetric === "portability" ? "Portability prompt" : generationMetric === "generalization" ? "Generalization prompt" : generationMetric === "locality" ? "Locality prompt" : "Reliability prompt";
+  const savedProtocols = { ...protocols, ...item.evaluation_protocols };
+  const activeProtocol = evaluationScoreDisplay(generationMetric, item[`${generationMetric}_score`], savedProtocols).protocol;
   const fact = item.fact;
-  const displayedGroundTruth = generationMetric === "locality" ? fact.locality_ground_truth : fact.ground_truth;
-  const highlightedEditedTarget = generationMetric === "locality" ? "" : fact.new_object;
-  return <div className={`h-max overflow-hidden rounded-lg border outline-none ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"}`}><p className="border-b border-line bg-panel px-4 py-3 text-xs font-medium leading-5">{generation?.prompt ?? fact.prompt}</p><div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-line bg-panel/60 px-4 py-2 text-xs leading-5 text-ink/60">{displayedGroundTruth ? <span>Ground truth: <span className="font-medium text-rust">{displayedGroundTruth}</span></span> : null}{generationMetric !== "locality" ? <span>Edited target: <span className="font-medium text-cyan">{fact.new_object}</span></span> : null}{showReliability && typeof item.reliability_score === "number" ? <span>Rewrite accuracy: <span className="font-medium text-cyan">{item.reliability_score.toFixed(3)}</span></span> : null}{showGeneralization && typeof item.generalization_score === "number" ? <span>Rephrase accuracy: <span className="font-medium text-cyan">{item.generalization_score.toFixed(3)}</span></span> : null}{showLocality && typeof item.locality_score === "number" ? <span>Locality preservation: <span className="font-medium text-cyan">{item.locality_score.toFixed(3)}</span></span> : null}</div><div className="grid divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0">{([ ["clean_model", "Original model"], ["active_model", "Edited model"] ] as const).map(([key, label]) => <div key={key} className="p-4"><div className="flex items-center justify-between gap-2"><div className="label">{label}</div>{key === "active_model" && hasGenerationToggle ? <span className="text-[10px] text-ink/50">{generationLabel}</span> : null}</div><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6"><HighlightedEvaluationText text={String(generation?.[key] ?? "—")} groundTruth={displayedGroundTruth} newObject={highlightedEditedTarget} /></p></div>)}</div></div>;
+  const prompt = generation?.prompt ?? (generationMetric === "portability" ? fact.portability_prompt : generationMetric === "locality" ? fact.locality_prompt : generationMetric === "generalization" ? fact.rephrase_prompt : fact.prompt);
+  const displayedGroundTruth = (generationMetric === "portability" ? fact.portability_ground_truth : generationMetric === "locality" ? fact.locality_ground_truth : fact.ground_truth) ?? "";
+  const highlightedEditedTarget = generationMetric === "locality" || generationMetric === "portability" ? "" : fact.new_object;
+  return <div className={`h-max overflow-hidden rounded-lg border outline-none ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"}`}>
+    <p className="border-b border-line bg-panel px-4 py-3 text-xs font-medium leading-5">{prompt || `No ${generationMetric} prompt for this fact.`}</p>
+    <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-line bg-panel/60 px-4 py-2 text-xs leading-5 text-ink/60">
+      {displayedGroundTruth ? <span>Ground truth: <span className="font-medium text-rust">{displayedGroundTruth}</span></span> : null}
+      {generationMetric !== "locality" && generationMetric !== "portability" ? <span>Edited target: <span className="font-medium text-cyan">{fact.new_object}</span></span> : null}
+      {metrics.map((metric) => {
+        const display = evaluationScoreDisplay(metric, item[`${metric}_score`], savedProtocols);
+        return <span key={metric} title={display.caption}>{display.label}: <span className="font-medium text-cyan">{display.value}</span></span>;
+      })}
+      {typeof item.fluency?.[generationMetric]?.ngram_entropy === "number" ? <span>Fluency (n-gram entropy): <span className="font-medium text-cyan">{item.fluency[generationMetric]?.ngram_entropy?.toFixed(3)}</span></span> : null}
+      {item.fluency?.[generationMetric]?.error ? <span className="text-rust">Fluency unavailable: {item.fluency[generationMetric]?.error}</span> : null}
+    </div>
+    <div className="grid divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0">{([ ["clean_model", "Original model"], ["active_model", "Edited model"] ] as const).map(([key, label]) => <div key={key} className="p-4"><div className="label">{label}</div><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6"><HighlightedEvaluationText text={String(generation?.[key] ?? "—")} prompt={prompt ?? ""} target={highlightedEditedTarget} groundTruth={displayedGroundTruth} completionOnly={generation?.[key] != null && activeProtocol !== "traditional"} /></p></div>)}</div>
+  </div>;
 }
-
-function HighlightedEvaluationText({ text, groundTruth, newObject }: { text: string; groundTruth: string; newObject: string }) {
-  const seen = new Set<string>();
-  const targets = [{ value: newObject.trim(), label: "Edited target", className: "bg-cyan/15 text-cyan" }, { value: groundTruth.trim(), label: "Ground truth", className: "bg-rust/15 text-rust" }].filter((target) => target.value && !seen.has(target.value.toLocaleLowerCase()) && Boolean(seen.add(target.value.toLocaleLowerCase()))).sort((left, right) => right.value.length - left.value.length);
-  if (!targets.length) return text;
-  const matcher = new RegExp(`(${targets.map((target) => escapeRegExp(target.value)).join("|")})`, "gi");
-  return <>{text.split(matcher).map((part, index) => { const target = targets.find((item) => item.value.toLocaleLowerCase() === part.toLocaleLowerCase()); return target ? <mark key={index} title={target.label} className={`rounded px-0.5 font-medium ${target.className}`}>{part}</mark> : part; })}</>;
-}
-
-function escapeRegExp(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 function RawEvaluationDataDialog({ result, loading, onClose }: { result: Record<string, unknown> | null; loading: boolean; onClose: () => void }) {
   return <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-4 sm:items-center" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} role="presentation"><section aria-labelledby="raw-evaluation-data-title" aria-modal="true" className="my-auto w-full max-w-3xl overflow-hidden rounded-lg border border-line bg-white shadow-xl" role="dialog"><div className="flex items-center justify-between gap-4 border-b border-line p-5"><h2 id="raw-evaluation-data-title" className="text-base font-semibold">Raw evaluation data</h2><button aria-label="Close raw evaluation data" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button></div>{loading ? <div className="flex min-h-40 items-center justify-center gap-2 p-5 text-sm text-ink/60"><Loader2 size={16} className="animate-spin" />Loading raw data…</div> : <pre className="max-h-[min(680px,calc(100vh-10rem))] overflow-auto bg-panel p-5 text-xs leading-5">{JSON.stringify(result, null, 2)}</pre>}</section></div>;

@@ -10,6 +10,7 @@ import threading
 import zipfile
 from collections.abc import Callable
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ import yaml
 
 from app.config import settings
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
+from app.ml.editing.evaluation_protocols import ProtocolEvaluator, normalize_protocols
 from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
 from app.ml.editing.fluency_resources import FluencyResourceError, ensure_fluency_tokenizer_data
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
@@ -422,19 +424,28 @@ def evaluate_easyedit_quality(
     cancel_job_id: str | None = None,
     fluency_modes: list[str] | None = None,
     reusable_post_metrics: list[dict] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
+    evaluation_modes: list[str] | None = None,
+    baseline_progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate EasyEdit rewrite, rephrase, locality, and optional fluency quality.
+    """Evaluate selected EasyEdit metrics/protocols on active weights.
 
     This deliberately bypasses ``BaseEditor.edit``: it reads the currently loaded
     model (including its active workbench patches) and performs no weight update.
-    A record can include both ``rephrase_prompt`` and a ``locality`` payload, so
-    EasyEdit computes rewrite/rephrase/locality outputs as one per-fact quality
-    evaluation.  Locality additionally needs an unpatched baseline output; we
+    The traditional composite path uses one ``compute_edit_quality`` per fact.
+    Mixed protocols use the corresponding EasyEdit per-metric evaluators with
+    copied hparams. LLM judging retains the text used in its score. Locality
+    needs an unpatched baseline; we
     collect that under the same runtime lock and let EasyEdit's locality
     finalizer calculate its normal pre/post preservation accuracy.  A job ID is
     checked between facts so canceling an evaluation does not terminate the
     model-owning worker or unload its model.
     """
+    protocols = normalize_protocols(evaluation_protocols, evaluation_modes)
+    separate_protocols = "reliability" not in protocols or any(protocol != "traditional" for protocol in protocols.values())
+    if "LLM-judge" in protocols.values():
+        from app.config import require_deepseek_api_key
+        require_deepseek_api_key()
     method_key = method.lower()
     spec = METHODS.get(method_key)
     if spec is None:
@@ -448,6 +459,9 @@ def evaluate_easyedit_quality(
 
     _, hparams_cls = _load_easyedit(spec["hparams_class"])
     hparams = hparams_cls.from_hparams(str(_resolve_hparams_path(model_info, spec["hparams_key"])))
+    if evaluation_protocols or evaluation_modes is not None:
+        hparams = copy(hparams)
+        hparams.evaluation_type = None
     _override_model_name(hparams, model_info)
     model_name = str(model_info.get("local_path") or model_info["hf_id"])
 
@@ -466,6 +480,11 @@ def evaluate_easyedit_quality(
                 "Installed EasyEdit does not expose its edit-quality evaluator."
             ) from exc
 
+        protocol_evaluator = ProtocolEvaluator(
+            runtime_bundle["model"], runtime_bundle["tokenizer"], hparams, model_name,
+            protocols, include_generations, lambda: _ensure_evaluation_job_running(cancel_job_id),
+        ) if separate_protocols else None
+
         prepared_edits: list[tuple[dict[str, Any], str | None]] = []
         for raw_edit in edits:
             edit = raw_edit.model_dump() if hasattr(raw_edit, "model_dump") else dict(raw_edit)
@@ -482,7 +501,7 @@ def evaluate_easyedit_quality(
             }
             rephrase_prompts = [str(value).strip() for value in edit.get("rephrase_prompts") or [] if str(value).strip()]
             rephrase_prompt = rephrase_prompts[0] if rephrase_prompts else None
-            if rephrase_prompt:
+            if rephrase_prompt and "generalization" in protocols:
                 # ``compute_edit_quality`` evaluates one edit record at a time.
                 # Its rephrase path likewise expects one prompt aligned to this
                 # record, rather than a list of prompts.
@@ -495,7 +514,7 @@ def evaluate_easyedit_quality(
             locality_ground_truth = str(
                 edit.get("locality_ground_truth") or source_metadata.get("locality_ground_truth") or ""
             ).strip()
-            if locality_prompt and locality_ground_truth:
+            if "locality" in protocols and locality_prompt and (locality_ground_truth or protocols["locality"] == "generate-text"):
                 # This is the same per-record shape BaseEditor._prepare_requests
                 # gives compute_edit_quality for EasyEdit locality evaluation.
                 record["locality"] = {
@@ -504,21 +523,29 @@ def evaluate_easyedit_quality(
                         "ground_truth": locality_ground_truth,
                     }
                 }
+            portability_prompt = str(edit.get("portability_prompt") or source_metadata.get("portability_prompt") or "").strip()
+            portability_ground_truth = str(edit.get("portability_ground_truth") or source_metadata.get("portability_ground_truth") or "").strip()
+            if "portability" in protocols and portability_prompt and portability_ground_truth:
+                record["portability"] = {"derived": {"prompt": portability_prompt, "ground_truth": portability_ground_truth}}
             prepared_edits.append((record, rephrase_prompt))
 
         locality_baselines: list[dict[str, Any] | None] = [None] * len(prepared_edits)
-        if any("locality" in record for record, _ in prepared_edits):
+        if any("locality" in record for record, _ in prepared_edits) or (separate_protocols and include_generations and "LLM-judge" in protocols.values()):
             # EasyEdit locality is not target accuracy.  It compares the active
             # model's output against the same model before the edit.  Temporarily
             # replaying an empty patch stack gives that clean baseline without
             # creating another model instance.
+            baseline_total = sum(protocol_evaluator is not None or "locality" in record for record, _ in prepared_edits)
+            baseline_current = 0
+            if baseline_progress_callback is not None:
+                baseline_progress_callback(0, baseline_total)
             patch_service.sync_patch_stack_to_model(runtime_bundle["model"], model_id, [])
             try:
                 for index, (record, _) in enumerate(prepared_edits):
-                    if "locality" not in record:
+                    if protocol_evaluator is None and "locality" not in record:
                         continue
                     _ensure_evaluation_job_running(cancel_job_id)
-                    locality_baselines[index] = compute_edit_quality(
+                    locality_baselines[index] = protocol_evaluator.baseline(record) if protocol_evaluator is not None else compute_edit_quality(
                         runtime_bundle["model"],
                         model_name,
                         hparams,
@@ -526,6 +553,9 @@ def evaluate_easyedit_quality(
                         record,
                         hparams.device,
                     )
+                    baseline_current += 1
+                    if baseline_progress_callback is not None:
+                        baseline_progress_callback(baseline_current, baseline_total)
             finally:
                 patch_service.sync_active_patches_to_model(runtime_bundle["model"], model_id)
 
@@ -569,6 +599,7 @@ def evaluate_easyedit_quality(
         sample_generations: list[dict[str, str] | None] = []
         sample_rephrase_generations: list[dict[str, str] | None] = []
         sample_locality_generations: list[dict[str, str] | None] = []
+        sample_portability_generations: list[dict[str, str] | None] = []
         generation_cache: dict[tuple[str, bool], str] = {}
         if include_generations:
             from app.ml.inference.generate import generate_text
@@ -591,11 +622,15 @@ def evaluate_easyedit_quality(
                 return sample
 
         total_edits = len(prepared_edits)
+        if baseline_progress_callback is not None and progress_callback is not None:
+            progress_callback(0, total_edits)
         for index, (record, rephrase_prompt) in enumerate(prepared_edits, start=1):
             _ensure_evaluation_job_running(cancel_job_id)
-            metrics = matching_post(reusable_post_metrics or [], index - 1, record, hparams, model_name)
+            metrics = None if protocol_evaluator is not None else matching_post(reusable_post_metrics or [], index - 1, record, hparams, model_name)
             reused = metrics is not None
-            if metrics is None:
+            if protocol_evaluator is not None:
+                metrics = protocol_evaluator.evaluate(record)
+            elif metrics is None:
                 args = (runtime_bundle["model"], model_name, hparams, runtime_bundle["tokenizer"], record, hparams.device)
                 test_fluency = "reliability" in fluency_modes and record["prompt"] not in fluency_cache
                 if test_fluency:
@@ -632,20 +667,25 @@ def evaluate_easyedit_quality(
                 # Keep EasyEdit's metric name, scoring semantics, and metric
                 # metadata instead of inventing a workbench-specific locality
                 # score from the raw token IDs.
-                finalize_locality_metrics(
-                    {"pre": locality_baseline, "post": metrics},
-                    record,
-                    hparams,
-                    model_name,
-                )
+                if protocol_evaluator is not None:
+                    protocol_evaluator.finalize(metrics, locality_baseline, record, finalize_locality_metrics)
+                else:
+                    finalize_locality_metrics(
+                        {"pre": locality_baseline, "post": metrics},
+                        record,
+                        hparams,
+                        model_name,
+                    )
             metrics = _jsonable(metrics)
             cases.append(
                 {
                     "prompt": record["prompt"],
                     "target_new": record["target_new"],
-                    "reliability_score": _rewrite_accuracy_score(metrics),
-                    "generalization_score": _rephrase_accuracy_score(metrics),
-                    "locality_score": _locality_accuracy_score(metrics),
+                    "reliability_score": _rewrite_accuracy_score(metrics) if "reliability" in protocols else None,
+                    "generalization_score": _rephrase_accuracy_score(metrics) if "generalization" in protocols else None,
+                    "locality_score": _locality_accuracy_score(metrics) if "locality" in protocols else None,
+                    "portability_score": _portability_accuracy_score(metrics) if "portability" in protocols else None,
+                    "evaluation_protocols": protocols,
                     "rephrase_prompt": rephrase_prompt,
                     "locality_prompt": (
                         str(record["locality"]["neighborhood"]["prompt"])
@@ -657,13 +697,26 @@ def evaluate_easyedit_quality(
                 }
             )
             if include_generations:
-                sample_generations.append(generate_sample(record["prompt"], generated_text(metrics, "rewrite_gen_content")))
-                sample_rephrase_generations.append(
-                    generate_sample(rephrase_prompt, generated_text(metrics, "rephrase_gen_content")) if rephrase_prompt else None
-                )
-                sample_locality_generations.append(
-                    generate_sample(locality_prompt) if locality_prompt else None
-                )
+                def metric_sample(metric: str, prompt: str | None, *, current_metrics: dict = metrics,
+                                  baseline: dict | None = locality_baseline) -> dict[str, str] | None:
+                    if not prompt or metric not in protocols:
+                        return None
+                    if protocol_evaluator is not None and protocols[metric] != "traditional":
+                        original = protocol_evaluator.text(baseline or {}, metric)
+                        edited = protocol_evaluator.text(current_metrics, metric)
+                        if original is None or edited is None:
+                            # Never silently generate a replacement text with a
+                            # different protocol from the evaluated output.
+                            return None
+                        return generate_sample(prompt, edited, original)
+                    returned = (generated_text(current_metrics, "rewrite_gen_content") if metric == "reliability"
+                                else generated_text(current_metrics, "rephrase_gen_content") if metric == "generalization" else None)
+                    return generate_sample(prompt, returned)
+
+                sample_generations.append(metric_sample("reliability", record["prompt"]))
+                sample_rephrase_generations.append(metric_sample("generalization", rephrase_prompt))
+                sample_locality_generations.append(metric_sample("locality", locality_prompt))
+                sample_portability_generations.append(metric_sample("portability", portability_prompt))
             if progress_callback is not None:
                 progress_callback(index, total_edits)
 
@@ -675,6 +728,8 @@ def evaluate_easyedit_quality(
         "mean_reliability": _mean_case_score(cases, "reliability_score"),
         "mean_generalization": _mean_case_score(cases, "generalization_score"),
         "mean_locality": _mean_case_score(cases, "locality_score"),
+        "mean_portability": _mean_case_score(cases, "portability_score"),
+        "evaluation_protocols": protocols,
         "cases": cases,
         "fluency_modes": fluency_modes,
         "mean_fluency": {
@@ -685,6 +740,8 @@ def evaluate_easyedit_quality(
     }
     if include_generations:
         result["sample_generations"] = sample_generations
+        if any(sample is not None for sample in sample_portability_generations):
+            result["sample_portability_generations"] = sample_portability_generations
         if any(sample is not None for sample in sample_rephrase_generations):
             result["sample_rephrase_generations"] = sample_rephrase_generations
         if any(sample is not None for sample in sample_locality_generations):
@@ -804,6 +861,14 @@ def _locality_accuracy_score(metrics: dict[str, Any]) -> float | None:
         if key.endswith("_acc")
         for number in _numeric_values(value)
     ]
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _portability_accuracy_score(metrics: dict[str, Any]) -> float | None:
+    portability = metrics.get("portability")
+    if not isinstance(portability, dict):
+        return None
+    values = [number for key, value in portability.items() if key.endswith("_acc") for number in _numeric_values(value)]
     return round(sum(values) / len(values), 4) if values else None
 
 

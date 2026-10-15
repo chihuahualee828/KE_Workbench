@@ -15,6 +15,7 @@ services:
       EASYEDIT_ROOT: /opt/EasyEdit
       EDITING_RUNTIME: easyedit
       HF_TOKEN: ${HF_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       HF_HUB_CACHE: /hf-cache
     ports:
       - "8000:8000"

@@ -124,15 +124,33 @@ def test_returned_generation_is_reused(evaluator):
     assert evaluator.resource_checks == 0
 
 
+def test_large_locality_baseline_reports_progress_before_edited_evaluation(evaluator):
+    updates = []
+    facts = [{**FACT, "locality_prompt": "nearby", "locality_ground_truth": "C"}] * 2000 + [FACT]
+    result = runtime.evaluate_easyedit_quality(
+        "demo", "memit", facts, evaluation_modes=["reliability", "locality"],
+        baseline_progress_callback=lambda current, total: updates.append(("baseline", current, total, evaluator.stacks[-1])),
+        progress_callback=lambda current, total: updates.append(("evaluation", current, total, evaluator.stacks[-1])),
+    )
+    assert updates[0][:3] == ("baseline", 0, 2000)
+    assert updates[1] == ("baseline", 1, 2000, "original")
+    assert updates[2000] == ("baseline", 2000, 2000, "original")
+    assert updates[2001] == ("evaluation", 0, 2001, "active")
+    assert updates[-1] == ("evaluation", 2001, 2001, "active")
+    assert result["mean_locality"] == 1.0
+    assert len(result["cases"]) == 2001
+
+
 def test_all_fluency_prompt_types_and_missing_prompts(evaluator):
     facts = [{**FACT, "rephrase_prompts": ["A is"], "locality_prompt": "nearby", "locality_ground_truth": "C", "portability_prompt": "derived"}, FACT]
     result = runtime.evaluate_easyedit_quality("demo", "memit", facts, include_generations=True,
         fluency_modes=["reliability", "generalization", "locality", "portability"])
     assert evaluator.fluency == ["A is", "nearby", "derived"]
     assert evaluator.resource_checks == 1
-    assert len(evaluator.generations) == len(set(evaluator.generations)) == 4
+    assert len(evaluator.generations) == len(set(evaluator.generations)) == 6
     assert set(result["cases"][0]["fluency"]) == {"reliability", "generalization", "locality", "portability"}
     assert set(result["cases"][1]["fluency"]) == {"reliability"}
+    assert result["sample_portability_generations"][1] is None
     assert result["mean_fluency"]["portability"] == 2.5
     assert result["cases"][0]["locality_score"] == 1.0
     assert "original" in evaluator.stacks
