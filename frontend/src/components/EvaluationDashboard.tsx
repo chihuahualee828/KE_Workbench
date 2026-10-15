@@ -97,6 +97,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   const [rawDataLoading, setRawDataLoading] = useState(false);
   const [generationMetric, setGenerationMetric] = useState<EvaluationGenerationMetric>("reliability");
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
+  const [resultScrollRequest, setResultScrollRequest] = useState<{ index: number; id: number } | null>(null);
   const [factSearch, setFactSearch] = useState("");
   const [factSearchTotal, setFactSearchTotal] = useState(0);
   const [factSearchPosition, setFactSearchPosition] = useState(-1);
@@ -149,6 +150,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
 
   useEffect(() => {
     setFocusedResultIndex(null);
+    setResultScrollRequest(null);
     setFocusedFactIndex(null);
     setFactSearchTotal(0);
     setFactSearchPosition(-1);
@@ -341,6 +343,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
         setGenerationMetric(nextOverview.available_generation_metrics[0] ?? "reliability");
       }
       setFocusedResultIndex(null);
+      setResultScrollRequest(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Evaluation failed. Please try again.");
       setBusy(false);
@@ -377,6 +380,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
   function focusResult(index: number, metric: EvaluationGenerationMetric = "reliability") {
     setGenerationMetric(metric);
     setFocusedResultIndex(index);
+    setResultScrollRequest((current) => ({ index, id: (current?.id ?? 0) + 1 }));
   }
 
   async function openRawData() {
@@ -450,7 +454,7 @@ export function EvaluationDashboard({ models, patches, runtime = [], apiStatus, 
             const selected = canSelectGeneration && activeGenerationMetric === scoreGenerationMetric;
             return <button key={key} type="button" disabled={!canSelectGeneration} aria-pressed={canSelectGeneration ? selected : undefined} title={canSelectGeneration ? `Show ${scoreGenerationMetric} prompt generations below` : undefined} onClick={() => scoreGenerationMetric && setGenerationMetric(scoreGenerationMetric)} className={`rounded-md border p-3 text-left transition ${canSelectGeneration ? "cursor-pointer hover:border-cyan/60 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"} ${selected ? "border-cyan bg-cyan/5" : "border-line bg-panel"}`}><div className="label">{scoreDisplay?.label ?? key.replace(/_/g, " ")}</div><div className="mt-2 text-2xl font-semibold tabular-nums">{scoreDisplay?.value ?? (typeof value === "number" ? value.toFixed(3) : value == null ? "N/A" : String(value))}</div>{scoreDisplay ? <p className="mt-1 text-[11px] leading-5 text-ink/55">{scoreDisplay.caption}</p> : null}</button>;
           })}</div>
-          {overview.total ? <VirtualizedList itemCount={overview.total} estimatedItemHeight={310} scrollToIndex={focusedResultIndex} className="h-[520px] overflow-y-auto overscroll-contain p-1" getItem={resultPages.getItem} onVisibleRangeChange={resultPages.ensureRange} renderItem={(item, _index, focused) => <EvaluationResultCard item={item} generationMetric={activeGenerationMetric} metrics={overview.evaluation_modes} protocols={overview.evaluation_protocols} focused={focused} />} /> : null}
+          {overview.total ? <VirtualizedList itemCount={overview.total} estimatedItemHeight={310} focusedIndex={focusedResultIndex} scrollToIndex={resultScrollRequest?.index ?? null} scrollRequestId={resultScrollRequest?.id ?? 0} className="h-[520px] overflow-y-auto overscroll-contain p-1" getItem={resultPages.getItem} onVisibleRangeChange={resultPages.ensureRange} renderItem={(item, index, focused) => <EvaluationResultCard item={item} generationMetric={activeGenerationMetric} metrics={overview.evaluation_modes} protocols={overview.evaluation_protocols} focused={focused} onFocus={() => setFocusedResultIndex(index)} />} /> : null}
           <button className="ghost-button justify-self-start text-xs" onClick={() => void openRawData()} type="button">View raw evaluation data</button>
         </> : busy ? <div className="empty-state min-h-[360px] rounded-lg border border-dashed border-line bg-panel/50"><span className="icon-tile bg-white shadow-sm"><Loader2 size={22} className="animate-spin text-cyan" /></span><h3 className="text-sm font-medium">Evaluation is running</h3><p className="max-w-sm text-xs leading-6 text-ink/55">Results will appear here automatically when the evaluation finishes.</p></div> : <div className="empty-state min-h-[360px] rounded-lg border border-dashed border-line bg-panel/50"><span className="icon-tile bg-white shadow-sm"><BarChart3 size={22} strokeWidth={1.5} /></span><h3 className="text-sm font-medium">Put your edit to the test</h3><p className="max-w-sm text-xs leading-6 text-ink/55">Load an edited patch, then run prompts to compare the clean model with the active edited model.</p></div>}
       </section>
@@ -604,11 +608,11 @@ function EvaluationHelp({ label, children }: { label: string; children: ReactNod
 }
 
 function EvaluationFactList({ facts, emptyMessage, focusedIndex, title, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; emptyMessage: string; focusedIndex: number | null; title: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(title, start, end)} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
+  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain p-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(title, start, end)} renderItem={(fact, index, focused) => <button type="button" className={`grid w-full rounded-md border bg-panel p-3 text-left ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${onFactClick ? "transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40" : "cursor-default"}`} onClick={() => onFactClick?.(index)} title={onFactClick ? "Show this fact's evaluation result" : undefined}><div className="break-words font-mono text-xs text-ink">{fact.prompt}</div><div className="mt-1 break-words text-xs text-ink/55">Target: <span className="font-medium text-cyan">{fact.new_object}</span></div></button>} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
 }
 
 function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onClick, onEdit, onChange, onSave }: { facts: ReturnType<typeof useActiveFactDataset>; editing: { index: number; key: string; value: string } | null; focusedIndex: number | null; resultAvailable: boolean; onClick: (index: number) => void; onEdit: (value: { index: number; key: string; value: string }) => void; onChange: (value: { index: number; key: string; value: string } | null) => void; onSave: (index: number, fact: StoredEvaluationFact) => Promise<void> }) {
-  return <div className="grid gap-2"><span className="sr-only">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange("rephrases", start, end)} renderItem={(fact, index, focused) => <div className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
+  return <div className="grid gap-2"><span className="sr-only">Manual rephrases</span>{facts.total ? <VirtualizedList key={facts.sourceKey} itemCount={facts.total} estimatedItemHeight={104} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain p-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange("rephrases", start, end)} renderItem={(fact, index, focused) => <div tabIndex={0} className={`rounded-md border bg-panel p-3 transition hover:border-cyan/50 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/40 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"} ${resultAvailable ? "cursor-pointer" : ""}`} onClick={() => resultAvailable && onClick(index)} onDoubleClick={(event) => {
     event.preventDefault();
     event.stopPropagation();
     if (!editing) onEdit({ index, key: fact.key, value: fact.rephrase_override?.trim() || defaultRephrasePrompt(fact) });
@@ -616,7 +620,7 @@ function ManualRephraseList({ facts, editing, focusedIndex, resultAvailable, onC
 }
 
 function EvaluationMetricPromptList({ facts, focusedIndex, promptField, groundTruthField, promptCount, title, emptyMessage, onFactClick }: { facts: ReturnType<typeof useActiveFactDataset>; focusedIndex: number | null; promptField: "locality_prompt" | "portability_prompt"; groundTruthField: "locality_ground_truth" | "portability_ground_truth"; promptCount: number; title: string; emptyMessage: string; onFactClick?: (index: number) => void }) {
-  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain pr-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(promptField, start, end)} renderItem={(fact, index, focused) => {
+  return <div className="grid gap-2"><span className="sr-only">{title}</span>{facts.total && promptCount ? <VirtualizedList key={`${facts.sourceKey}:${promptField}`} itemCount={facts.total} estimatedItemHeight={84} scrollToIndex={focusedIndex} className="max-h-56 overflow-y-auto overscroll-contain p-1" getItem={facts.getItem} onVisibleRangeChange={(start, end) => facts.ensureRange(promptField, start, end)} renderItem={(fact, index, focused) => {
     const prompt = fact[promptField]?.trim() || "";
     const groundTruth = fact[groundTruthField]?.trim() || "";
     const canFocus = Boolean(prompt && onFactClick);
@@ -624,7 +628,7 @@ function EvaluationMetricPromptList({ facts, focusedIndex, promptField, groundTr
   }} /> : <div className="rounded-md border border-line bg-panel p-3 text-xs leading-5 text-ink/60">{emptyMessage}</div>}</div>;
 }
 
-function EvaluationResultCard({ item, generationMetric, metrics, protocols, focused }: { item: EvaluationResultItem; generationMetric: EvaluationGenerationMetric; metrics: EvaluationMetric[]; protocols?: EvaluationProtocols; focused: boolean }) {
+function EvaluationResultCard({ item, generationMetric, metrics, protocols, focused, onFocus }: { item: EvaluationResultItem; generationMetric: EvaluationGenerationMetric; metrics: EvaluationMetric[]; protocols?: EvaluationProtocols; focused: boolean; onFocus: () => void }) {
   const generation = generationMetric === "portability" ? item.portability_generation : generationMetric === "generalization" ? item.generalization_generation : generationMetric === "locality" ? item.locality_generation : item.reliability_generation;
   const generationLabel = generationMetric === "portability" ? "Portability prompt" : generationMetric === "generalization" ? "Generalization prompt" : generationMetric === "locality" ? "Locality prompt" : "Reliability prompt";
   const savedProtocols = { ...protocols, ...item.evaluation_protocols };
@@ -633,7 +637,7 @@ function EvaluationResultCard({ item, generationMetric, metrics, protocols, focu
   const prompt = generation?.prompt ?? (generationMetric === "portability" ? fact.portability_prompt : generationMetric === "locality" ? fact.locality_prompt : generationMetric === "generalization" ? fact.rephrase_prompt : fact.prompt);
   const displayedGroundTruth = (generationMetric === "portability" ? fact.portability_ground_truth : generationMetric === "locality" ? fact.locality_ground_truth : fact.ground_truth) ?? "";
   const highlightedEditedTarget = generationMetric === "locality" || generationMetric === "portability" ? "" : fact.new_object;
-  return <div className={`h-max overflow-hidden rounded-lg border outline-none ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"}`}>
+  return <article tabIndex={0} aria-label={`${generationLabel} result ${item.index + 1}`} onFocus={onFocus} onClick={onFocus} className={`h-max overflow-hidden rounded-lg border outline-none focus:ring-2 focus:ring-cyan/50 ${focused ? "border-cyan ring-2 ring-cyan/50" : "border-line"}`}>
     <p className="border-b border-line bg-panel px-4 py-3 text-xs font-medium leading-5">{prompt || `No ${generationMetric} prompt for this fact.`}</p>
     <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-line bg-panel/60 px-4 py-2 text-xs leading-5 text-ink/60">
       {displayedGroundTruth ? <span>Ground truth: <span className="font-medium text-rust">{displayedGroundTruth}</span></span> : null}
@@ -646,7 +650,7 @@ function EvaluationResultCard({ item, generationMetric, metrics, protocols, focu
       {item.fluency?.[generationMetric]?.error ? <span className="text-rust">Fluency unavailable: {item.fluency[generationMetric]?.error}</span> : null}
     </div>
     <div className="grid divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0">{([ ["clean_model", "Original model"], ["active_model", "Edited model"] ] as const).map(([key, label]) => <div key={key} className="p-4"><div className="label">{label}</div><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6"><HighlightedEvaluationText text={String(generation?.[key] ?? "—")} prompt={prompt ?? ""} target={highlightedEditedTarget} groundTruth={displayedGroundTruth} completionOnly={generation?.[key] != null && activeProtocol !== "traditional"} /></p></div>)}</div>
-  </div>;
+  </article>;
 }
 
 function RawEvaluationDataDialog({ result, loading, onClose }: { result: Record<string, unknown> | null; loading: boolean; onClose: () => void }) {
