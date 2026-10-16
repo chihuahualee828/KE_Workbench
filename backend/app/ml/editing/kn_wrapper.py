@@ -39,5 +39,5 @@ def run_kn_edit(
         sequential_edit=sequential_edit,
     )
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "kn", [edit]))
+        result.update(evaluate_post_edit_reliability(model_id, "kn", [edit], edit_result=result))
     return result

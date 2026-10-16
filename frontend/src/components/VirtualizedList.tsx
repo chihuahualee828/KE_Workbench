@@ -9,6 +9,8 @@ type VirtualizedListProps<T> = {
   className?: string;
   overscan?: number;
   scrollToIndex?: number | null;
+  scrollRequestId?: number;
+  focusedIndex?: number | null;
   getItem: (index: number) => T | undefined;
   onVisibleRangeChange?: (start: number, end: number) => void;
   renderItem: (item: T, index: number, focused: boolean) => ReactNode;
@@ -26,6 +28,8 @@ export function VirtualizedList<T>({
   className = "",
   overscan = 3,
   scrollToIndex = null,
+  scrollRequestId = 0,
+  focusedIndex = scrollToIndex,
   getItem,
   onVisibleRangeChange,
   renderItem,
@@ -35,6 +39,7 @@ export function VirtualizedList<T>({
   const itemNodes = useRef(new Map<number, HTMLElement>());
   const observer = useRef<ResizeObserver | null>(null);
   const heights = useRef(new Map<number, number>());
+  const lastScrollRequest = useRef<{ index: number; id: number } | null>(null);
   const [heightVersion, setHeightVersion] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -97,9 +102,17 @@ export function VirtualizedList<T>({
   }, []);
 
   useEffect(() => {
-    if (scrollToIndex === null || scrollToIndex < 0 || scrollToIndex >= itemCount) return;
+    if (scrollToIndex === null) {
+      lastScrollRequest.current = null;
+      return;
+    }
+    if (scrollToIndex < 0 || scrollToIndex >= itemCount || !scrollRef.current) return;
+    if (lastScrollRequest.current?.index === scrollToIndex && lastScrollRequest.current.id === scrollRequestId) return;
+    // A highlight is persistent, but navigation is one-shot. Measurements and
+    // newly loaded cards must not restart it after the user scrolls away.
+    lastScrollRequest.current = { index: scrollToIndex, id: scrollRequestId };
     scrollRef.current?.scrollTo({ top: Math.max(0, offsets[scrollToIndex] - 8), behavior: "smooth" });
-  }, [itemCount, offsets, scrollToIndex]);
+  }, [itemCount, offsets, scrollRequestId, scrollToIndex]);
 
   const setItemNode = useCallback((index: number, node: HTMLElement | null) => {
     const previous = itemNodes.current.get(index);
@@ -110,7 +123,7 @@ export function VirtualizedList<T>({
     }
     itemNodes.current.set(index, node);
     observer.current?.observe(node);
-  }, [scrollToIndex]);
+  }, []);
 
   return (
     <div
@@ -128,9 +141,9 @@ export function VirtualizedList<T>({
               ref={(node) => setItemNode(index, node)}
               className="absolute left-0 right-0 pb-3"
               style={{ top: offsets[index] }}
-              tabIndex={item && index === scrollToIndex ? -1 : undefined}
+              tabIndex={item && index === focusedIndex ? -1 : undefined}
             >
-              {item ? renderItem(item, index, index === scrollToIndex) : renderPlaceholder?.(index) ?? <div className="h-24 animate-pulse rounded-md border border-line bg-panel/60" />}
+              {item ? renderItem(item, index, index === focusedIndex) : renderPlaceholder?.(index) ?? <div className="h-24 animate-pulse rounded-md border border-line bg-panel/60" />}
             </div>
           );
         })}

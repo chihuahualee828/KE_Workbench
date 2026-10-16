@@ -18,6 +18,7 @@ import { useLoadedModelSelection } from "@/lib/useLoadedModelSelection";
 import { usePersistentState } from "@/lib/usePersistentState";
 import { ModelSelector } from "./ModelSelector";
 import { EvaluationProgressIndicator } from "./EvaluationProgressIndicator";
+import { EditEvaluationCard } from "./EditEvaluationCard";
 import { PatchHistory } from "./PatchHistory";
 import { SecondMomentCacheDialog } from "./SecondMomentCacheDialog";
 import { VirtualizedList } from "./VirtualizedList";
@@ -1901,6 +1902,7 @@ function DerivedEvaluationPrompts({
   const meanReliability = typeof reliabilityResult?.mean_reliability === "number"
     ? reliabilityResult.mean_reliability
     : null;
+  const meanFluency = (reliabilityResult?.mean_fluency as { reliability?: number | null } | undefined)?.reliability;
   const completedFacts = typeof reliabilityResult?.completed_fact_count === "number"
     ? reliabilityResult.completed_fact_count
     : 0;
@@ -1943,6 +1945,7 @@ function DerivedEvaluationPrompts({
             <span className="font-mono text-cyan">{meanReliability === null ? "Metric unavailable" : formatReliabilityScore(meanReliability)}</span>
           </div>
           {completedFacts > 0 ? <span className="text-xs text-ink/60">Completed {completedFacts}{totalFacts ? ` of ${totalFacts}` : ""} fact tests. Per-fact outputs and scores are shown in Generations.</span> : null}
+          {typeof meanFluency === "number" ? <div className="flex items-baseline justify-between gap-2 text-xs"><span>Fluency · n-gram entropy (not accuracy)</span><span className="font-mono text-cyan">{meanFluency.toFixed(3)}</span></div> : null}
         </div>
       ) : null}
     </div>
@@ -2250,6 +2253,8 @@ function ResultPanel({
       setCancelingEvaluation(false);
     }
   }
+  const getPostEditGeneration = useCallback((index: number) => generations[index], [generations]);
+  const generationListClassName = "h-[32rem] overflow-y-auto overscroll-contain p-3";
   const reliabilityTestJobId = typeof result?.reliability_test_job_id === "string"
     ? result.reliability_test_job_id
     : null;
@@ -2260,6 +2265,11 @@ function ResultPanel({
     ? result.reliability_test_page_size
     : null;
   const reliabilitySummary = displayResult?.reliability;
+  const evaluationMethod = reliabilitySummary && typeof reliabilitySummary === "object"
+    ? (reliabilitySummary as Record<string, unknown>).method
+    : undefined;
+  const usesBatchEditing = evaluationMethod === "memit" || evaluationMethod === "ft" || evaluationMethod === "lora";
+  const immediateReliabilityLabel = usesBatchEditing ? "Immediate post-batch reliability" : "Immediate post-edit reliability";
   const completedFactCount = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).completed_fact_count
     : undefined;
@@ -2350,11 +2360,12 @@ function ResultPanel({
         <Save size={16} />
         <span className="label">Generations</span>
       </div>
-      <div className={reliabilityTestJobId ? "rounded-md border border-line bg-panel p-1" : "min-h-96 rounded-md border border-line bg-panel p-4"}>
+      {generations.some((generation) => generation.fluency || typeof generation.evaluation.internal_reliability_score === "number") ? <p className="mb-3 text-xs text-ink/55">Final-model reliability includes all completed edits. Immediate post-{usesBatchEditing ? "batch" : "edit"} reliability was measured before any later edits.{generations.some((generation) => generation.fluency) ? " Fluency uses EasyEdit’s separate generation protocol, not the displayed answer’s decoding settings." : ""}</p> : null}
+      <div className={reliabilityTestJobId || generations.length ? "min-w-0 rounded-md border border-line bg-panel p-1" : "min-h-96 rounded-md border border-line bg-panel p-4"}>
         {reliabilityTestJobId ? (
           reliabilityTestItemCount > 0 ? (
             <VirtualizedList
-              className="h-[32rem] overflow-y-auto overscroll-contain p-3"
+              className={generationListClassName}
               estimatedItemHeight={150}
               getItem={reliabilityTestPages.getItem}
               itemCount={reliabilityTestItemCount}
@@ -2365,16 +2376,22 @@ function ResultPanel({
             <div className="min-h-40 p-3 text-sm text-ink/60">Waiting for the first generation…</div>
           )
         ) : generations.length ? (
-          <div className="grid gap-3">
-            {generations.map((generation, index) => (
-              <div key={`${generation.prompt}-${index}`} className="grid gap-2 border-b border-line pb-3 last:border-b-0 last:pb-0">
-                <div className="font-mono text-xs text-ink/50">{generation.prompt}</div>
-                <div className="whitespace-pre-wrap break-words text-sm leading-6 text-ink">
-                  <HighlightedGeneration text={generation.text} target={generation.targetNew} />
-                </div>
-              </div>
-            ))}
-          </div>
+          <VirtualizedList
+            key={`post-edit-${job?.job_id ?? result?.patch_id ?? "result"}`}
+            className={generationListClassName}
+            estimatedItemHeight={150}
+            getItem={getPostEditGeneration}
+            itemCount={generations.length}
+            renderItem={(generation) => (
+              <EditEvaluationCard prompt={generation.prompt} target={generation.targetNew} groundTruth={generation.groundTruth} original={generation.original} edited={generation.text}>
+                {typeof generation.evaluation.reliability_score === "number" ? <span>Final model reliability accuracy: <strong className="text-cyan">{generation.evaluation.reliability_score.toFixed(3)}</strong>{generation.evaluation.score_source === "internal_post" ? " (reused)" : ""}</span> : null}
+                {typeof generation.evaluation.internal_reliability_score === "number" ? <span title={`Measured immediately after this ${usesBatchEditing ? "batch" : "edit"}, before any later edits`}>{immediateReliabilityLabel}: <strong>{generation.evaluation.internal_reliability_score.toFixed(3)}</strong></span> : null}
+                {typeof generation.fluency?.ngram_entropy === "number" ? <span>Final model fluency (n-gram entropy): <strong className="text-cyan">{generation.fluency.ngram_entropy.toFixed(3)}</strong></span> : null}
+                {generation.fluency?.error ? <span className="text-rust">Fluency unavailable: {generation.fluency.error}</span> : null}
+                {generation.evaluation.internal_post_metrics ? <details className="w-full"><summary className="cursor-pointer">Per-step metrics (before any later edits)</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(generation.evaluation.internal_post_metrics, null, 2)}</pre></details> : null}
+              </EditEvaluationCard>
+            )}
+          />
         ) : (
           <div className="text-sm text-ink/60">Evaluation generations appear here after an edit finishes.</div>
         )}
@@ -2384,31 +2401,15 @@ function ResultPanel({
 }
 
 function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultItem }) {
-  const prompt = item.generation?.prompt ?? item.case?.prompt ?? "";
-  const generation = item.generation?.active_model ?? "";
-  const target = item.case?.target_new ?? "";
   const score = item.case?.reliability_score;
-
-  return (
-    <div className="grid gap-2 rounded-md border border-line bg-surface p-3">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="font-mono text-xs text-ink/50">Fact {item.index + 1}</span>
-        {typeof score === "number" ? <span className="shrink-0 font-mono text-xs text-cyan">rewrite_acc {formatReliabilityScore(score)}</span> : <span className="shrink-0 font-mono text-xs text-ink/45">Evaluating…</span>}
-      </div>
-      <div className="font-mono text-xs text-ink/50">{prompt}</div>
-      {generation ? (
-        <div className="whitespace-pre-wrap break-words text-sm leading-6 text-ink">
-          <HighlightedGeneration text={generation} target={target} />
-        </div>
-      ) : (
-        <div className="h-6 animate-pulse rounded bg-line/60" />
-      )}
-    </div>
-  );
+  return <EditEvaluationCard prompt={item.generation?.prompt ?? item.case?.prompt ?? ""} target={item.case?.target_new ?? ""} edited={item.generation?.active_model ?? ""}>
+    {typeof score === "number" ? <span>Rewrite accuracy: <strong className="text-cyan">{formatReliabilityScore(score)}</strong></span> : <span>Evaluating…</span>}
+  </EditEvaluationCard>;
 }
 
 function EditJobProgress({ job }: { job: EditJob | null }) {
   if (!job || job.status !== "running") return null;
+  if (job.progress_phase === "post_edit_evaluation") return <EvaluationProgressIndicator className="mb-2" preparing={false} current={job.progress_current ?? undefined} total={job.progress_total ?? undefined} multiFactLabel="Post-edit evaluation and generation" singleFactLabel="Evaluating and generating for the final model…" />;
   const completed = job.progress_current ?? 0;
   const total = job.progress_total ?? 0;
   const determinate = total > 0;
@@ -2446,13 +2447,18 @@ function parseGenerations(result: Record<string, unknown> | null) {
       if (!item || typeof item !== "object") return null;
       const record = item as Record<string, unknown>;
       const prompt = typeof record.prompt === "string" ? record.prompt : "";
+      const evaluation = (record.evaluation ?? {}) as { reliability_score?: number; generalization_score?: number; locality_score?: number; internal_reliability_score?: number; score_source?: string; internal_post_metrics?: Record<string, unknown>; fluency?: { reliability?: { ngram_entropy?: number; error?: string } } };
       return {
         prompt,
+        evaluation,
+        fluency: evaluation.fluency?.reliability,
+        original: typeof record.clean_model === "string" ? record.clean_model : null,
+        groundTruth: typeof record.ground_truth === "string" ? record.ground_truth : "",
         text: typeof record.text === "string" ? record.text : "",
         targetNew: typeof record.target_new === "string" ? record.target_new : targetByPrompt.get(prompt) ?? ""
       };
     })
-    .filter((item): item is { prompt: string; text: string; targetNew: string } => Boolean(item?.text));
+    .filter((item): item is NonNullable<typeof item> => Boolean(item?.text));
 }
 
 function reliabilityFromEditResult(result: Record<string, unknown> | null) {

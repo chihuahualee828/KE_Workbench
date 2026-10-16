@@ -12,6 +12,7 @@ export function EvaluationProgressIndicator({
   canceling = false,
   cancelDisabled = false,
   preparing: preparingOverride,
+  phase,
   className = ""
 }: {
   current?: number;
@@ -23,12 +24,13 @@ export function EvaluationProgressIndicator({
   canceling?: boolean;
   cancelDisabled?: boolean;
   preparing?: boolean;
+  phase?: string | null;
   className?: string;
 }) {
-  const preparing = preparingOverride ?? current <= 0;
+  const preparing = preparingOverride ?? (phase !== "baseline" && phase !== "evaluation" && current <= 0);
   const determinate = total > 1;
   const percent = determinate ? Math.max(0, Math.min(100, Math.round((current / total) * 100))) : 0;
-  const label = preparing ? preparingLabel : determinate ? multiFactLabel : singleFactLabel;
+  const label = preparing ? preparingLabel : phase === "baseline" ? "Evaluating original model…" : determinate ? multiFactLabel : singleFactLabel;
 
   return <div className={`grid gap-1.5 ${className}`.trim()} role="status" aria-label={preparing ? preparingLabel : determinate ? `${current} of ${total} facts evaluated` : "Evaluation in progress"}>
     <div className="flex items-center justify-between gap-3">

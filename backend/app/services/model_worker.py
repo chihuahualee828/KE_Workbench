@@ -152,6 +152,9 @@ def _dispatch(
 
         return evaluate_easyedit_quality(
             **payload,
+            baseline_progress_callback=(
+                lambda current, total: progress_callback({"current": current, "total": total, "phase": "baseline"})
+            ) if progress_callback is not None else None,
             progress_callback=(
                 lambda current, total: progress_callback({"current": current, "total": total})
             ) if progress_callback is not None else None,

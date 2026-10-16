@@ -293,6 +293,10 @@ export type ReliabilityTestResultPage = {
   items: ReliabilityTestResultItem[];
 };
 
+export type EvaluationMetric = "reliability" | "generalization" | "locality" | "portability";
+export type EvaluationProtocol = "traditional" | "LLM-judge" | "generate-text";
+export type EvaluationProtocols = Partial<Record<EvaluationMetric, EvaluationProtocol>>;
+
 export type EvaluationFact = {
   key: string;
   subject: string;
@@ -324,9 +328,10 @@ export type EvaluationResultOverview = {
   method: string;
   active_patch_ids: string[];
   metrics: Record<string, unknown>;
-  evaluation_modes: Array<"reliability" | "generalization" | "locality" | "portability">;
+  evaluation_modes: EvaluationMetric[];
+  evaluation_protocols?: EvaluationProtocols;
   total: number;
-  available_generation_metrics: Array<"reliability" | "generalization" | "locality">;
+  available_generation_metrics: EvaluationMetric[];
 };
 
 export type EvaluationGeneration = {
@@ -336,6 +341,10 @@ export type EvaluationGeneration = {
 };
 
 export type EvaluationResultItem = {
+  portability_generation?: EvaluationGeneration | null;
+  portability_score?: number | null;
+  evaluation_protocols?: EvaluationProtocols;
+  fluency?: Partial<Record<EvaluationMetric, { ngram_entropy?: number; error?: string }>>;
   index: number;
   fact: EvaluationFact;
   reliability_generation: EvaluationGeneration | null;

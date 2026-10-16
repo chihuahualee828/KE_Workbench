@@ -53,7 +53,7 @@ def run_memit_edit(
     )
     result["edited_facts"] = len(normalized_edits)
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits))
+        result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits, edit_result=result, single_batch=len(normalized_edits) <= batch_size))
     return result
 
 

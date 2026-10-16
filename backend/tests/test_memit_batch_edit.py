@@ -54,7 +54,7 @@ def test_memit_wrapper_preserves_batch_size_and_all_facts(monkeypatch, worker):
         recorded.update(kwargs)
         return {"patch_id": "patch_test"}
     monkeypatch.setattr(memit_wrapper, "run_easyedit", run)
-    monkeypatch.setattr(memit_wrapper, "evaluate_post_edit_reliability", lambda model, method, edits: {"evaluated": len(edits)})
+    monkeypatch.setattr(memit_wrapper, "evaluate_post_edit_reliability", lambda model, method, edits, **kwargs: {"evaluated": len(edits)})
     edits = [{**FACT, "subject": str(index), "rephrase_prompts": [f"Rephrase {index}"]} for index in range(105)]
     result = memit_wrapper.run_memit_edit(
         model_id="demo", edits=edits, layers=[0], evaluation_prompts=[],

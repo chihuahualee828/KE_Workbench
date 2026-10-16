@@ -141,7 +141,7 @@ def run_training_edit(
         "used_loaded_runtime": True, "edited_facts": len(edits),
     }
     if generate_evaluation:
-        result.update(runtime.evaluate_post_edit_reliability(model_id, method, edits))
+        result.update(runtime.evaluate_post_edit_reliability(model_id, method, edits, edit_result=result, single_batch=len(edits) <= batch_size))
     return result
 
 

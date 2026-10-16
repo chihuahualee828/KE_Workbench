@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import SecretStr
 
 
 def _load_env_file(path: Path) -> None:
@@ -93,9 +95,21 @@ class Settings:
     easyedit_root: Path = _resolve_existing_path(os.getenv("EASYEDIT_ROOT", "./EasyEdit"), marker="easyeditor")
     editing_runtime: str = os.getenv("EDITING_RUNTIME", "easyedit")
     edit_log_to_terminal: bool = _env_flag("EDIT_LOG_TO_TERMINAL")
+    deepseek_api_key: SecretStr | None = field(
+        default_factory=lambda: SecretStr(os.environ["DEEPSEEK_API_KEY"])
+        if os.getenv("DEEPSEEK_API_KEY", "").strip() else None,
+        repr=False,
+    )
 
 
 settings = Settings()
+
+
+def require_deepseek_api_key() -> str:
+    key = settings.deepseek_api_key
+    if key is None or not key.get_secret_value().strip():
+        raise ValueError("Set DEEPSEEK_API_KEY in the backend environment before using LLM-judge.")
+    return key.get_secret_value().strip()
 
 
 def ensure_data_dirs() -> None:

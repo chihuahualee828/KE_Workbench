@@ -290,7 +290,7 @@ function ExperimentHistoryCard({
         <span className="truncate">{formatExperimentType(experiment.type)}</span>
       </span>
       <span className="mt-1 block truncate font-mono text-xs text-ink/60">{experiment.model_id} · {formatTimestamp(experiment.created_at)}</span>
-      {running ? <EvaluationProgressIndicator className="mt-2" preparing={experiment.job?.progress_phase === "post_edit_evaluation" ? false : undefined} current={progressCurrent} multiFactLabel={experiment.job?.progress_phase === "post_edit_evaluation" ? "Post-edit evaluation and generation" : "Running evaluation…"} singleFactLabel={experiment.job?.progress_phase === "post_edit_evaluation" ? "Post-edit evaluation and generation…" : "Evaluating fact…"} total={progressTotal} /> : null}
+      {running ? <EvaluationProgressIndicator className="mt-2" phase={experiment.job?.progress_phase} preparing={experiment.job?.progress_phase === "post_edit_evaluation" ? false : undefined} current={progressCurrent} multiFactLabel={experiment.job?.progress_phase === "post_edit_evaluation" ? "Post-edit evaluation and generation" : "Running evaluation…"} singleFactLabel={experiment.job?.progress_phase === "post_edit_evaluation" ? "Post-edit evaluation and generation…" : "Evaluating fact…"} total={progressTotal} /> : null}
     </span>
   );
   const statusBadge = <span className={`rounded-md border px-2 py-1 font-mono text-xs ${statusClassName(status)}`}>{canceling ? "canceling" : status}</span>;

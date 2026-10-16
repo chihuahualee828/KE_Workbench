@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ml.editing.training_hparams import TrainingHyperparameters
 
@@ -162,29 +162,63 @@ class EvaluationRequest(ApiSchema):
     prompts: list[str] = Field(default_factory=list)
 
 
-class ReliabilityEvaluationRequest(ApiSchema):
+EvaluationMetric = Literal["reliability", "generalization", "locality", "portability"]
+EvaluationProtocol = Literal["traditional", "LLM-judge", "generate-text"]
+
+
+class EvaluationProtocolsRequest(ApiSchema):
+    evaluation_protocols: dict[EvaluationMetric, EvaluationProtocol] = Field(default_factory=dict)
+
+    @field_validator("evaluation_protocols")
+    @classmethod
+    def validate_evaluation_protocols(
+        cls, protocols: dict[EvaluationMetric, EvaluationProtocol]
+    ) -> dict[EvaluationMetric, EvaluationProtocol]:
+        if protocols.get("locality") == "LLM-judge":
+            raise ValueError("Locality does not support the LLM-judge evaluation protocol.")
+        if any(metric != "locality" and protocol == "generate-text" for metric, protocol in protocols.items()):
+            raise ValueError("Only locality supports the generate-text preservation protocol.")
+        return protocols
+
+
+class ReliabilityEvaluationRequest(EvaluationProtocolsRequest):
     """Evaluate edit quality on the current active model without editing it."""
 
     model_id: str = "gpt2-xl"
     method: Literal["rome", "r_rome", "memit", "kn", "ft", "lora"]
     edits: list[EditSpec] = Field(min_length=1)
     include_generations: bool = False
-    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
 
 
-class ActiveModelEvaluationRequest(ApiSchema):
-    """Evaluate the edit facts currently active for a model.
+class UploadedEvaluationFact(ApiSchema):
+    """A normalized uploaded fact to evaluate against the currently loaded model."""
 
-    Unlike ``ReliabilityEvaluationRequest``, this deliberately does not receive
-    the full edit list from the browser.  The server resolves that list from the
-    active patch stack so a large evaluation does not require the page to have
-    loaded every fact first.
-    """
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    key: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    relation_prompt: str
+    new_object: str = Field(min_length=1)
+    ground_truth: str = ""
+    rephrase_prompt: str | None = None
+    locality_prompt: str | None = None
+    locality_ground_truth: str | None = None
+    portability_prompt: str | None = None
+    portability_ground_truth: str | None = None
+
+
+class ActiveModelEvaluationRequest(EvaluationProtocolsRequest):
+    """Evaluate uploaded facts or resolve facts from the active patch stack."""
 
     model_id: str = "gpt2-xl"
-    evaluation_modes: list[Literal["reliability", "generalization", "locality", "portability"]] = Field(default_factory=list)
+    evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
     rephrase_overrides: dict[str, str] = Field(default_factory=dict)
     include_generations: bool = True
+    fluency_modes: list[EvaluationMetric] = Field(default_factory=list)
+    facts: list[UploadedEvaluationFact] | None = Field(default=None, min_length=1)
+    fact_source_id: str | None = None
 
 
 class JobResponse(ApiSchema):

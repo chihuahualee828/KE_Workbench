@@ -79,7 +79,7 @@ def test_r_rome_sequential_series_updates_one_cumulative_patch(
     monkeypatch.setattr(
         r_rome_wrapper,
         "evaluate_post_edit_reliability",
-        lambda model_id, method, edits: evaluated.append((model_id, method, edits)) or {"reliability": {"mean_reliability": 1.0}, "generations": []},
+        lambda model_id, method, edits, **kwargs: evaluated.append((model_id, method, edits)) or {"reliability": {"mean_reliability": 1.0}, "generations": []},
     )
 
     result = r_rome_wrapper.run_r_rome_sequential_edits(

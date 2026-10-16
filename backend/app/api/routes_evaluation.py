@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from app.api.operation_guard import operation_guard
 
+from app.config import require_deepseek_api_key
 from app.db.schemas import ActiveModelEvaluationRequest, EvaluationRequest, JobResponse, ReliabilityEvaluationRequest
 from app.services.evaluation_service import evaluation_service
 from app.services.experiment_service import experiment_service
@@ -17,6 +18,16 @@ EVALUATION_PAGE_SIZE = 50
 RELIABILITY_TEST_PAGE_SIZE = 25
 _active_model_evaluation_lock = threading.Lock()
 _reliability_evaluation_lock = threading.Lock()
+
+
+def _resolve_evaluation_protocols(modes: list[str], protocols: dict[str, str]) -> dict[str, str]:
+    resolved = {mode: protocols.get(mode, "traditional") for mode in modes}
+    if "LLM-judge" in resolved.values():
+        try:
+            require_deepseek_api_key()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return resolved
 
 
 @router.post("/evaluate", response_model=JobResponse)
@@ -56,6 +67,10 @@ def evaluate_reliability(request: ReliabilityEvaluationRequest) -> JobResponse:
     except ModelNotLoadedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    modes = list(dict.fromkeys(request.evaluation_modes)) or ["reliability"]
+    if not request.evaluation_modes and any(edit.rephrase_prompts for edit in request.edits):
+        modes.append("generalization")
+    protocols = _resolve_evaluation_protocols(modes, request.evaluation_protocols)
     experiment = experiment_service.create(
         "evaluation",
         request.model_id,
@@ -65,6 +80,8 @@ def evaluate_reliability(request: ReliabilityEvaluationRequest) -> JobResponse:
             "method": request.method,
             "edit_count": len(request.edits),
             "include_generations": request.include_generations,
+            "evaluation_modes": modes,
+            "evaluation_protocols": protocols,
         },
     )
     job = experiment_service.create_job(experiment["id"])
@@ -74,6 +91,8 @@ def evaluate_reliability(request: ReliabilityEvaluationRequest) -> JobResponse:
         method=request.method,
         edits=[edit.model_dump() for edit in request.edits],
         include_generations=request.include_generations,
+        evaluation_modes=modes,
+        evaluation_protocols=protocols,
     )
     return JobResponse(
         job_id=job["id"],
@@ -125,6 +144,8 @@ def _start_reliability_evaluation(
     method: str,
     edits: list[dict[str, Any]],
     include_generations: bool,
+    evaluation_modes: list[str] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
 ) -> None:
     operation_guard.start_thread(
         target=_run_reliability_evaluation,
@@ -134,6 +155,8 @@ def _start_reliability_evaluation(
             "method": method,
             "edits": edits,
             "include_generations": include_generations,
+            "evaluation_modes": evaluation_modes,
+            "evaluation_protocols": evaluation_protocols,
         },
     )
 
@@ -145,6 +168,8 @@ def _run_reliability_evaluation(
     method: str,
     edits: list[dict[str, Any]],
     include_generations: bool,
+    evaluation_modes: list[str] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
 ) -> None:
     try:
         with _reliability_evaluation_lock:
@@ -157,6 +182,10 @@ def _run_reliability_evaluation(
             reliability_count = 0
             generalization_total = 0.0
             generalization_count = 0
+            locality_total = 0.0
+            locality_count = 0
+            portability_total = 0.0
+            portability_count = 0
             active_patch_ids: list[str] = []
 
             def summary() -> dict[str, Any]:
@@ -170,6 +199,12 @@ def _run_reliability_evaluation(
                     reliability_count=reliability_count,
                     generalization_total=generalization_total,
                     generalization_count=generalization_count,
+                    locality_total=locality_total,
+                    locality_count=locality_count,
+                    portability_total=portability_total,
+                    portability_count=portability_count,
+                    evaluation_modes=evaluation_modes,
+                    evaluation_protocols=evaluation_protocols,
                 )
 
             experiment_service.append_job_log(job_id, "Preparing EasyEdit")
@@ -197,11 +232,14 @@ def _run_reliability_evaluation(
                     include_generation=include_generations,
                     on_generation=persist_generation if include_generations else None,
                     cancel_job_id=job_id,
+                    **({"evaluation_modes": evaluation_modes} if evaluation_modes else {}),
+                    **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
                 )
                 current_job = experiment_service.get_job(job_id)
                 if current_job is None or current_job.get("status") != "running":
                     return
                 case = pair["case"]
+                case["evaluation_protocols"] = evaluation_protocols or case.get("evaluation_protocols", {})
                 score = case.get("reliability_score")
                 if isinstance(score, (int, float)):
                     reliability_total += float(score)
@@ -210,6 +248,14 @@ def _run_reliability_evaluation(
                 if isinstance(generalization_score, (int, float)):
                     generalization_total += float(generalization_score)
                     generalization_count += 1
+                locality_score = case.get("locality_score")
+                if isinstance(locality_score, (int, float)):
+                    locality_total += float(locality_score)
+                    locality_count += 1
+                portability_score = case.get("portability_score")
+                if isinstance(portability_score, (int, float)):
+                    portability_total += float(portability_score)
+                    portability_count += 1
                 patch_ids = pair.get("active_patch_ids")
                 active_patch_ids = [str(patch_id) for patch_id in patch_ids] if isinstance(patch_ids, list) else []
                 completed_count = index
@@ -244,6 +290,12 @@ def _reliability_result(
     reliability_count: int,
     generalization_total: float,
     generalization_count: int,
+    locality_total: float = 0.0,
+    locality_count: int = 0,
+    portability_total: float = 0.0,
+    portability_count: int = 0,
+    evaluation_modes: list[str] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "model_id": model_id,
@@ -252,6 +304,10 @@ def _reliability_result(
         "metric_name": "rewrite_acc",
         "mean_reliability": _mean_score(reliability_total, reliability_count),
         "mean_generalization": _mean_score(generalization_total, generalization_count),
+        "mean_locality": _mean_score(locality_total, locality_count),
+        "mean_portability": _mean_score(portability_total, portability_count),
+        "evaluation_modes": evaluation_modes or [],
+        "evaluation_protocols": evaluation_protocols or {},
         "completed_fact_count": completed_count,
         "total_fact_count": total_count,
     }
@@ -316,17 +372,49 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     active_patch_ids = patch_service.active_patches_for_model(request.model_id)
-    if not active_patch_ids:
+    uploaded_facts = request.facts is not None
+    if not active_patch_ids and not uploaded_facts:
         raise HTTPException(status_code=400, detail="Load at least one patch before evaluating its edit facts.")
-    method = str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
+    method = (
+        str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
+        if active_patch_ids else "rome"
+    )
     if method not in {"rome", "r_rome", "memit", "kn", "ft", "lora"}:
         raise HTTPException(status_code=400, detail="The active patch method does not support this evaluation.")
 
     modes = list(dict.fromkeys(request.evaluation_modes))
+    fluency_modes = list(dict.fromkeys(request.fluency_modes))
+    if any(mode not in modes for mode in fluency_modes):
+        raise HTTPException(status_code=400, detail="Select the metric before enabling its fluency test.")
     if not modes:
         raise HTTPException(status_code=400, detail="Select at least one evaluation metric.")
-    facts = patch_service.active_evaluation_facts(request.model_id)
-    needs_edit_quality = any(mode in {"reliability", "generalization", "locality"} for mode in modes)
+    protocols = _resolve_evaluation_protocols(modes, request.evaluation_protocols)
+    if uploaded_facts:
+        facts = []
+        by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+        for supplied_fact in request.facts:
+            fact = supplied_fact.model_dump(exclude_none=True)
+            identity = (fact["prompt"], fact["new_object"])
+            existing = by_identity.get(identity)
+            if existing is not None:
+                for field in (
+                    "ground_truth", "locality_prompt", "locality_ground_truth",
+                    "portability_prompt", "portability_ground_truth",
+                ):
+                    if not existing.get(field) and fact.get(field):
+                        existing[field] = fact[field]
+                if (
+                    not existing.get("rephrase_prompt")
+                    or existing["rephrase_prompt"] == existing["prompt"]
+                ) and fact.get("rephrase_prompt"):
+                    existing["rephrase_prompt"] = fact["rephrase_prompt"]
+                continue
+            fact["relation_prompt"] = fact["relation_prompt"] or fact["prompt"]
+            by_identity[identity] = fact
+            facts.append(fact)
+    else:
+        facts = patch_service.active_evaluation_facts(request.model_id)
+    needs_edit_quality = bool(modes)
     if needs_edit_quality and not facts:
         raise HTTPException(status_code=400, detail="The active patches do not contain any evaluable edit facts.")
 
@@ -345,11 +433,18 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
                 "ground_truth": fact["ground_truth"] or None,
                 "rephrase_prompts": [rephrase] if "generalization" in modes else [],
             }
+            if uploaded_facts:
+                # Imported prompts may be complete questions or contain literal
+                # braces. Preserve them verbatim instead of rebuilding a template.
+                edit["prompt"] = fact["prompt"]
             locality_prompt = str(fact.get("locality_prompt") or "").strip()
             locality_ground_truth = str(fact.get("locality_ground_truth") or "").strip()
-            if "locality" in modes and locality_prompt and locality_ground_truth:
+            if "locality" in modes and locality_prompt:
                 edit["locality_prompt"] = locality_prompt
                 edit["locality_ground_truth"] = locality_ground_truth
+            if "portability" in modes:
+                edit["portability_prompt"] = str(fact.get("portability_prompt") or "").strip()
+                edit["portability_ground_truth"] = str(fact.get("portability_ground_truth") or "").strip()
             edits.append(edit)
 
     experiment = experiment_service.create(
@@ -357,9 +452,14 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         request.model_id,
         {
             "source": "evaluation_page",
+            "fact_source": "uploaded" if uploaded_facts else "active_patches",
+            **({"fact_source_id": request.fact_source_id} if uploaded_facts else {}),
+            "edit_count": len(facts),
             "model_id": request.model_id,
             "method": method,
             "evaluation_modes": modes,
+            "evaluation_protocols": protocols,
+            "fluency_modes": fluency_modes,
             "active_patch_ids": active_patch_ids,
             "rephrase_override_count": len(request.rephrase_overrides),
         },
@@ -375,6 +475,10 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         modes=modes,
         include_generations=request.include_generations,
         needs_edit_quality=needs_edit_quality,
+        fluency_modes=fluency_modes,
+        evaluation_protocols=protocols,
+        fact_source="uploaded" if uploaded_facts else "active_patches",
+        fact_source_id=request.fact_source_id if uploaded_facts else None,
     )
     return JobResponse(
         job_id=job["id"],
@@ -396,6 +500,10 @@ def _start_active_model_evaluation(
     modes: list[str],
     include_generations: bool,
     needs_edit_quality: bool,
+    fluency_modes: list[str] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
+    fact_source: str = "active_patches",
+    fact_source_id: str | None = None,
 ) -> None:
     operation_guard.start_thread(
         target=_run_active_model_evaluation,
@@ -409,6 +517,10 @@ def _start_active_model_evaluation(
             "modes": modes,
             "include_generations": include_generations,
             "needs_edit_quality": needs_edit_quality,
+            "fluency_modes": fluency_modes or [],
+            "evaluation_protocols": evaluation_protocols or {},
+            "fact_source": fact_source,
+            "fact_source_id": fact_source_id,
         },
     )
 
@@ -424,6 +536,10 @@ def _run_active_model_evaluation(
     modes: list[str],
     include_generations: bool,
     needs_edit_quality: bool,
+    fluency_modes: list[str] | None = None,
+    evaluation_protocols: dict[str, str] | None = None,
+    fact_source: str = "active_patches",
+    fact_source_id: str | None = None,
 ) -> None:
     try:
         with _active_model_evaluation_lock:
@@ -436,12 +552,23 @@ def _run_active_model_evaluation(
             )
             experiment_service.set_job_progress(job_id, 0.05)
 
+            baseline_started = False
+
+            def update_baseline_progress(current: int, total: int) -> None:
+                nonlocal baseline_started
+                baseline_started = True
+                experiment_service.set_job_progress(
+                    job_id, 0.5 * current / total if total else 0.05,
+                    progress_current=current, progress_total=total, progress_phase="baseline",
+                )
+
             def update_progress(current: int, total: int) -> None:
                 experiment_service.set_job_progress(
                     job_id,
-                    current / total if total else 0.05,
+                    (0.5 + 0.5 * current / total if baseline_started else current / total) if total else 0.05,
                     progress_current=current,
                     progress_total=total,
+                    progress_phase="evaluation",
                 )
 
             raw_result = (
@@ -451,7 +578,11 @@ def _run_active_model_evaluation(
                     edits=edits,
                     include_generations=include_generations,
                     on_progress=update_progress,
+                    on_baseline_progress=update_baseline_progress,
                     cancel_job_id=job_id,
+                    **({"fluency_modes": fluency_modes} if fluency_modes else {}),
+                    **({"evaluation_modes": modes} if modes else {}),
+                    **({"evaluation_protocols": evaluation_protocols} if evaluation_protocols else {}),
                 )
                 if needs_edit_quality
                 else {
@@ -461,7 +592,14 @@ def _run_active_model_evaluation(
                     "cases": [],
                 }
             )
-            result, overview, pages = _build_paged_evaluation_result(raw_result, facts, modes)
+            raw_result = {
+                **raw_result,
+                "fact_source": fact_source,
+                **({"fact_source_id": fact_source_id} if fact_source == "uploaded" else {}),
+            }
+            result, overview, pages = _build_paged_evaluation_result(
+                raw_result, facts, modes, evaluation_protocols
+            )
             experiment_service.complete_paged_evaluation_job(job_id, result, overview, pages)
     except Exception as exc:
         experiment_service.fail_job(job_id, str(exc))
@@ -498,10 +636,14 @@ def _build_paged_evaluation_result(
     raw_result: dict[str, Any],
     facts: list[dict[str, Any]],
     modes: list[str],
+    evaluation_protocols: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    supplied_protocols = evaluation_protocols or raw_result.get("evaluation_protocols") or {}
+    protocols = {mode: supplied_protocols.get(mode, "traditional") for mode in modes}
     reliability_generations = raw_result.get("sample_generations") if isinstance(raw_result.get("sample_generations"), list) else []
     generalization_generations = raw_result.get("sample_rephrase_generations") if isinstance(raw_result.get("sample_rephrase_generations"), list) else []
     locality_generations = raw_result.get("sample_locality_generations") if isinstance(raw_result.get("sample_locality_generations"), list) else []
+    portability_generations = raw_result.get("sample_portability_generations") if isinstance(raw_result.get("sample_portability_generations"), list) else []
     cases = raw_result.get("cases") if isinstance(raw_result.get("cases"), list) else []
     metrics: dict[str, Any] = {}
     if "reliability" in modes:
@@ -511,7 +653,11 @@ def _build_paged_evaluation_result(
     if "locality" in modes:
         metrics["locality_preservation_acc"] = raw_result.get("mean_locality")
     if "portability" in modes:
-        metrics["portability_score"] = 0
+        metrics["portability_score"] = raw_result.get("mean_portability")
+    for mode in modes:
+        if mode in raw_result.get("fluency_modes", []):
+            metrics[f"{mode}_fluency_ngram_entropy"] = raw_result.get("mean_fluency", {}).get(mode)
+    metrics = {key: value for mode in ("reliability", "generalization", "locality", "portability") for key, value in metrics.items() if key.startswith(mode + "_")}
 
     items = []
     for index, fact in enumerate(facts):
@@ -526,24 +672,33 @@ def _build_paged_evaluation_result(
                 "reliability_generation": reliability_generation,
                 "generalization_generation": generalization_generation,
                 "locality_generation": locality_generation,
+                "portability_generation": portability_generations[index] if index < len(portability_generations) else None,
+                "fluency": case.get("fluency", {}),
                 "reliability_score": case.get("reliability_score"),
                 "generalization_score": case.get("generalization_score"),
                 "locality_score": case.get("locality_score"),
+                "portability_score": case.get("portability_score"),
+                "evaluation_protocols": protocols,
             }
         )
 
     overview = {
         "model_id": raw_result.get("model_id"),
+        "fact_source": raw_result.get("fact_source", "active_patches"),
+        **({"fact_source_id": raw_result.get("fact_source_id")} if raw_result.get("fact_source") == "uploaded" else {}),
         "method": raw_result.get("method"),
         "active_patch_ids": raw_result.get("active_patch_ids", []),
         "metrics": metrics,
         "evaluation_modes": modes,
+        "evaluation_protocols": protocols,
+        "fluency_modes": raw_result.get("fluency_modes", []),
         "total": len(items),
         "available_generation_metrics": [
             metric for metric, generations in (
                 ("reliability", reliability_generations),
                 ("generalization", generalization_generations),
                 ("locality", locality_generations),
+                ("portability", portability_generations),
             ) if metric in modes and any(isinstance(generation, dict) for generation in generations)
         ],
     }
