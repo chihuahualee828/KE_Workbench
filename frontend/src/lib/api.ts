@@ -1,4 +1,4 @@
-import type { EditMethod, BatchWeightMethod, TrainingMethod, Mom2Method } from "./editingMethods";
+import type { EditJobOptions, EditMethod, BatchWeightMethod, TrainingMethod, Mom2Method } from "./editingMethods";
 import type { LoraModuleCatalog } from "./loraModules";
 import type { TrainingHyperparameters } from "./trainingHyperparameters";
 import type { ActiveEvaluationFacts, EvaluationFact, EvaluationMetric, EvaluationProtocols, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
@@ -485,7 +485,7 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify(body)
     }),
-  romeEdit: (body: {
+  romeEdit: (body: EditJobOptions & {
     model_id: string;
     subject: string;
     relation_prompt: string;
@@ -503,7 +503,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  rRomeEdit: (body: {
+  rRomeEdit: (body: EditJobOptions & {
     model_id: string;
     subject: string;
     relation_prompt: string;
@@ -521,7 +521,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  romeSequentialEdits: (body: {
+  romeSequentialEdits: (body: EditJobOptions & {
     model_id: string;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
@@ -533,7 +533,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  rRomeSequentialEdits: (body: {
+  rRomeSequentialEdits: (body: EditJobOptions & {
     model_id: string;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
@@ -553,7 +553,7 @@ export const api = {
     request<LoraModuleCatalog>("/api/edit/lora/modules", { method: "POST", body: JSON.stringify(body) }),
   trainingDefaults: (body: { model_id: string; method: TrainingMethod }) =>
     request<{ layers: number[]; hparams: TrainingHyperparameters; warning?: string | null }>("/api/edit/training-defaults", { method: "POST", body: JSON.stringify(body) }),
-  trainingEdit: (method: TrainingMethod, body: {
+  trainingEdit: (method: TrainingMethod, body: EditJobOptions & {
     model_id: string;
     batch_size: number;
     hparams?: TrainingHyperparameters;
@@ -564,7 +564,7 @@ export const api = {
     portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
     sequential_edit?: boolean;
   }) => request<EditJob>(`/api/edit/${method}`, { method: "POST", body: JSON.stringify(body) }),
-  knEdit: (body: {
+  knEdit: (body: EditJobOptions & {
     model_id: string;
     subject: string;
     relation_prompt: string;
@@ -639,7 +639,7 @@ export const api = {
     request<Record<string, unknown>>(`/api/evaluate/results/${encodeURIComponent(experimentId)}/raw`)
 };
 
-export type BatchWeightEditRequest = {
+export type BatchWeightEditRequest = EditJobOptions & {
     model_id: string;
     batch_size?: number;
     edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;

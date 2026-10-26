@@ -692,6 +692,8 @@ class HardUnloadModelRuntimeService:
         transaction = current_edit.get()
         if transaction is not None:
             payload = {**payload, "_edit_job_id": transaction.job_id}
+            if transaction.seed is not None:
+                payload["seed"] = transaction.seed
         model_id = payload.get("model_id")
         if not isinstance(model_id, str):
             raise ValueError("Model worker commands require model_id.")

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.ml.editing.methods import EditMethod, Mom2Method
 from app.ml.editing.training_hparams import TrainingHyperparameters
+from app.ml.editing.random_state import DEFAULT_EDIT_SEED, MAX_EDIT_SEED
 
 
 class ApiSchema(BaseModel):
@@ -67,7 +68,11 @@ class CausalTraceRequest(ApiSchema):
     seed: int = Field(default=1, ge=0, le=2_147_483_647)
 
 
-class RankOneEditRequest(ApiSchema):
+class EditJobRequest(ApiSchema):
+    seed: int = Field(default=DEFAULT_EDIT_SEED, ge=0, le=MAX_EDIT_SEED, strict=True)
+
+
+class RankOneEditRequest(EditJobRequest):
     model_id: str = "gpt2-xl"
     subject: str
     relation_prompt: str
@@ -82,7 +87,7 @@ class RankOneEditRequest(ApiSchema):
     mom2_adjustment: bool = False
 
 
-class KnEditRequest(ApiSchema):
+class KnEditRequest(EditJobRequest):
     model_id: str = "gpt2-xl"
     subject: str
     relation_prompt: str
@@ -101,7 +106,7 @@ class EditSpec(ApiSchema):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class RankOneSeriesRequest(ApiSchema):
+class RankOneSeriesRequest(EditJobRequest):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     target_layer: int = Field(ge=0)
@@ -110,7 +115,7 @@ class RankOneSeriesRequest(ApiSchema):
     mom2_adjustment: bool = False
 
 
-class BatchWeightEditRequest(ApiSchema):
+class BatchWeightEditRequest(EditJobRequest):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     batch_size: int = Field(default=1, ge=1, strict=True)
@@ -122,7 +127,7 @@ class BatchWeightEditRequest(ApiSchema):
     mom2_adjustment: Literal[True] = True
 
 
-class TrainingEditRequest(ApiSchema):
+class TrainingEditRequest(EditJobRequest):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     hparams: TrainingHyperparameters = Field(default_factory=TrainingHyperparameters)

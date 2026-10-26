@@ -51,6 +51,11 @@ class PatchService:
         }
         if extra_metadata:
             metadata.update(extra_metadata)
+        from app.ml.editing.edit_cancellation import current_edit
+
+        transaction = current_edit.get()
+        if transaction is not None and transaction.seed is not None:
+            metadata["seed"] = transaction.seed
         metadata["delta_paths"] = self._relative_delta_paths(metadata["delta_paths"])
         if delta_paths is None:
             local_store.write_json(

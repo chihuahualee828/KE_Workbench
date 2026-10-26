@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from copy import deepcopy
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,62 @@ from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
 
 FACT = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy", "ground_truth": "France", "target_neg": "France"}
+
+
+@pytest.mark.parametrize("method", ["ft", "lora"])
+def test_training_seed_reaches_algorithm_and_repeats_in_same_runtime(tiny_training, monkeypatch, capsys, method):
+    from safetensors.torch import load_file
+
+    model = tiny_training.model
+    clean = {name: value.clone() for name, value in model.state_dict().items()}
+    loader = runtime._load_easyedit
+    algorithm_seeds = []
+
+    def load(name):
+        editor_cls, hparams_cls = loader(name)
+
+        def create(hparams):
+            editor = editor_cls.from_hparams(hparams)
+            apply = editor.apply_algo
+
+            def record(*args, **kwargs):
+                algorithm_seeds.append(torch.initial_seed())
+                before = torch.get_rng_state().clone()
+                result = apply(*args, **kwargs)
+                if method == "ft":
+                    # Installed FT uses ordered batches and the loaded eval-mode
+                    # model. Confirm it consumes no CPU RNG during this test.
+                    assert torch.equal(before, torch.get_rng_state())
+                return result
+
+            editor.apply_algo = record
+            return editor
+
+        return SimpleNamespace(from_hparams=create), hparams_cls
+
+    monkeypatch.setattr(runtime, "_load_easyedit", load)
+    deltas = []
+    losses = []
+    for index, seed in enumerate((123, 124, 123)):
+        patch_service.deactivate_runtime_patches_for_model("tiny")
+        patch_service.sync_active_patches_to_model(model, "tiny")
+        model.load_state_dict(clean)
+        result = _run_local_edit(
+            f"job_seed_{index}", training.run_training_edit,
+            {"method": method, "model_id": "tiny", "edits": [FACT] * 3,
+             "layers": [0], "batch_size": 2, "generate_evaluation": False}, seed=seed,
+        )
+        assert result["patch"]["seed"] == seed
+        deltas.append(load_file(patch_service.resolve_delta_path(result["patch"]["delta_paths"][0])))
+        losses.append(re.findall(r"Batch loss ([^\n]+)", capsys.readouterr().out))
+    assert algorithm_seeds == [123, 123, 124, 124, 123, 123]
+    assert deltas[0].keys() == deltas[2].keys()
+    assert all(torch.equal(deltas[0][name], deltas[2][name]) for name in deltas[0])
+    if method == "ft":
+        assert losses[0] and losses[0] == losses[1] == losses[2]
+        assert all(torch.equal(deltas[0][name], deltas[1][name]) for name in deltas[0])
+    else:
+        assert any(not torch.equal(deltas[0][name], deltas[1][name]) for name in deltas[0])
 
 
 def test_real_easyedit_post_edit_fluency(tiny_training, monkeypatch):
