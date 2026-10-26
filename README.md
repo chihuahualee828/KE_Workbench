@@ -308,7 +308,7 @@ The frontend uses **Next.js 14, React 18, TypeScript, Tailwind CSS, and Recharts
 | `frontend/src/lib/` | API access, shared resources, browser persistence, and job progress helpers. |
 | `backend/app/api/` | REST routes, job-wait endpoints, and event streams. |
 | `backend/app/services/` | Model registry/cache/runtime, patches, experiments, and evaluation orchestration. |
-| `backend/app/ml/editing/` | EasyEdit runtime integration and ROME, r-ROME, KN, MEMIT, FT, and LoRA wrappers. |
+| `backend/app/ml/editing/` | EasyEdit integration with shared `rome_wrapper.py` (ROME-style), `memit_wrapper.py` (MEMIT-style), and training runners; KN retains its sparse-edit runner. |
 | `backend/app/ml/tracing/` | Activation corruption, restoration, and causal-effect computation. |
 | `backend/app/ml/lens/` | Logit lens projections. |
 | `backend/app/storage/` | Local artifact storage and the query catalog. |

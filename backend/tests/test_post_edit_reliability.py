@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.ml.editing import easyedit_runtime, kn_wrapper, memit_wrapper, r_rome_wrapper, rome_wrapper
+import pytest
+
+from app.ml.editing import easyedit_runtime, kn_wrapper, memit_wrapper, rome_wrapper
 import app.services.model_runtime_service as runtime_module
 
 
@@ -36,7 +38,8 @@ def test_post_edit_evaluation_worker_receives_its_own_job_and_progress(monkeypat
     assert progress == [(1, 2)]
 
 
-def test_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
+@pytest.mark.parametrize("method", ["rome", "r_rome"])
+def test_rank_one_edit_runs_post_edit_reliability(monkeypatch, method) -> None:
     monkeypatch.setattr(runtime_module, "model_runtime_service", SimpleNamespace(uses_hard_worker=False))
     monkeypatch.setattr(rome_wrapper.model_registry, "get", lambda _: {"n_layers": 24})
     monkeypatch.setattr(rome_wrapper, "run_easyedit", lambda **_: {"patch_id": "patch_demo"})
@@ -48,6 +51,7 @@ def test_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
     )
 
     result = rome_wrapper.run_rome_edit(
+        method=method,
         model_id="gpt2-xl",
         subject="Fact",
         relation_prompt="{} is",
@@ -62,37 +66,7 @@ def test_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
         mom2_adjustment=False,
     )
 
-    assert calls == [("gpt2-xl", "rome", [{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated", "ground_truth": "original"}])]
-    assert result["reliability"] == {"mean_reliability": 1.0}
-
-
-def test_r_rome_edit_runs_post_edit_reliability(monkeypatch) -> None:
-    monkeypatch.setattr(runtime_module, "model_runtime_service", SimpleNamespace(uses_hard_worker=False))
-    monkeypatch.setattr(r_rome_wrapper.model_registry, "get", lambda _: {"n_layers": 24})
-    monkeypatch.setattr(r_rome_wrapper, "run_easyedit", lambda **_: {"patch_id": "patch_demo"})
-    calls: list[tuple[str, str, list[dict]]] = []
-    monkeypatch.setattr(
-        r_rome_wrapper,
-        "evaluate_post_edit_reliability",
-        lambda model_id, method, edits, **kwargs: calls.append((model_id, method, edits)) or RELIABILITY_RESULT,
-    )
-
-    result = r_rome_wrapper.run_r_rome_edit(
-        model_id="gpt2-xl",
-        subject="Fact",
-        relation_prompt="{} is",
-        new_object="updated",
-        ground_truth="original",
-        target_layer=17,
-        evaluation_prompts=[],
-        rephrase_prompts=[],
-        locality_inputs=None,
-        portability_inputs=None,
-        sequential_edit=False,
-        mom2_adjustment=False,
-    )
-
-    assert calls == [("gpt2-xl", "r_rome", [{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated", "ground_truth": "original"}])]
+    assert calls == [("gpt2-xl", method, [{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated", "ground_truth": "original"}])]
     assert result["reliability"] == {"mean_reliability": 1.0}
 
 
@@ -107,6 +81,7 @@ def test_memit_edit_runs_post_edit_reliability(monkeypatch) -> None:
     )
 
     result = memit_wrapper.run_memit_edit(
+        method="memit",
         model_id="gpt2-xl",
         edits=[{"subject": "Fact", "relation_prompt": "{} is", "new_object": "updated"}],
         layers=[17],

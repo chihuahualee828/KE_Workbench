@@ -1,3 +1,4 @@
+import type { EditMethod, BatchWeightMethod, TrainingMethod, Mom2Method } from "./editingMethods";
 import type { LoraModuleCatalog } from "./loraModules";
 import type { TrainingHyperparameters } from "./trainingHyperparameters";
 import type { ActiveEvaluationFacts, EvaluationFact, EvaluationMetric, EvaluationProtocols, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
@@ -424,7 +425,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  editDefaultLayers: (body: { model_id: string; method: "rome" | "r_rome" | "memit" | "ft" | "lora" }) =>
+  editDefaultLayers: (body: { model_id: string; method: Exclude<EditMethod, "kn"> }) =>
     request<{ layers: number[]; hparams_path: string }>("/api/edit/default-layers", {
       method: "POST",
       body: JSON.stringify(body)
@@ -439,7 +440,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  setMom2StatisticsPrecision: (body: { model_id: string; method: "rome" | "r_rome" | "memit"; mom2_dtype: Mom2Dtype | null }) =>
+  setMom2StatisticsPrecision: (body: { model_id: string; method: Mom2Method; mom2_dtype: Mom2Dtype | null }) =>
     request<Mom2StatisticsStatus>("/api/edit/mom2/precision", {
       method: "POST",
       body: JSON.stringify(body)
@@ -530,26 +531,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
-  memitEdit: (body: {
-    model_id: string;
-    batch_size?: number;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
-    layers?: number[] | null;
-    evaluation_prompts: string[];
-    locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
-    portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
-    sequential_edit?: boolean;
-    mom2_adjustment?: boolean;
-  }) =>
-    request<EditJob>("/api/edit/memit", {
-      method: "POST",
-      body: JSON.stringify(body)
-    }),
+  memitEdit: (body: BatchWeightEditRequest) =>
+    request<EditJob>("/api/edit/memit", { method: "POST", body: JSON.stringify(body) }),
+  batchWeightEdit: (method: BatchWeightMethod, body: BatchWeightEditRequest) =>
+    request<EditJob>(`/api/edit/${method.replaceAll("_", "-")}`, { method: "POST", body: JSON.stringify(body) }),
   loraModules: (body: { model_id: string }) =>
     request<LoraModuleCatalog>("/api/edit/lora/modules", { method: "POST", body: JSON.stringify(body) }),
-  trainingDefaults: (body: { model_id: string; method: "ft" | "lora" }) =>
+  trainingDefaults: (body: { model_id: string; method: TrainingMethod }) =>
     request<{ layers: number[]; hparams: TrainingHyperparameters; warning?: string | null }>("/api/edit/training-defaults", { method: "POST", body: JSON.stringify(body) }),
-  trainingEdit: (method: "ft" | "lora", body: {
+  trainingEdit: (method: TrainingMethod, body: {
     model_id: string;
     batch_size: number;
     hparams?: TrainingHyperparameters;
@@ -587,7 +577,7 @@ export const api = {
     }),
   easyEditReliability: (body: {
     model_id: string;
-    method: "rome" | "r_rome" | "memit" | "kn" | "ft" | "lora";
+    method: EditMethod;
     edits: Array<{
       subject: string;
       relation_prompt: string;
@@ -634,3 +624,15 @@ export const api = {
   evaluationResultRaw: (experimentId: string) =>
     request<Record<string, unknown>>(`/api/evaluate/results/${encodeURIComponent(experimentId)}/raw`)
 };
+
+export type BatchWeightEditRequest = {
+    model_id: string;
+    batch_size?: number;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    layers?: number[] | null;
+    evaluation_prompts: string[];
+    locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    portability_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
+    sequential_edit?: boolean;
+    mom2_adjustment?: boolean;
+  };

@@ -4,6 +4,7 @@ import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, R
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { editMethods, batchWeightMethods, trainingMethods, isBatchEditMethod, type EditMethod, type BatchWeightMethod, type TrainingMethod } from "@/lib/editingMethods";
 import { api, invalidateApiReads } from "@/lib/api";
 import { refreshPatchHistory, updatePatchesFromEditJob } from "@/lib/workbenchResources";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
@@ -32,6 +33,7 @@ const DEFAULT_FACT_EDIT_DRAFTS: FactEditDraft[] = [
 ];
 const VIRTUAL_FACT_CARD_HEIGHT = 412;
 const VIRTUAL_FACT_OVERSCAN = 3;
+
 const ACTIVE_EDIT_JOB_STORAGE_KEY = "kew:edit:activeJob";
 
 function useRuntimeConnection() {
@@ -54,7 +56,7 @@ type PendingFactImport = {
 };
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
-  const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "ft" | "lora" | "patches">("kew:edit:tab", "rome");
+  const [tab, setTab] = usePersistentState<EditMethod | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
   const setResult = useCallback((result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result })), [setEdit]);
   const setJob = useCallback((job: EditJob | null) => setEdit((current) => ({ ...current, job })), [setEdit]);
@@ -107,19 +109,12 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
   return (
     <div className="grid gap-4">
       <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-white p-1.5">
-        {[
-          ["rome", "ROME"],
-          ["r_rome", "r-ROME"],
-          ["kn", "KN"],
-          ["memit", "MEMIT"],
-          ["ft", "FT"],
-          ["lora", "LoRA"]
-        ].map(([id, label]) => (
+        {Object.entries(editMethods).map(([id, label]) => (
           <button
             key={id}
             aria-pressed={tab === id}
             className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit" | "ft" | "lora")}
+            onClick={() => setTab(id as EditMethod)}
           >
             {label}
           </button>
@@ -128,8 +123,8 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "r_rome" ? <RomeForm method="r_rome" models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "ft" || tab === "lora" ? <TrainingForm key={tab} method={tab} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab in batchWeightMethods ? <BatchWeightForm key={tab} method={tab as BatchWeightMethod} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab in trainingMethods ? <TrainingForm key={tab} method={tab as TrainingMethod} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
     </div>
   );
@@ -1045,7 +1040,8 @@ function VirtualFactDraftCard({
   );
 }
 
-function MemitForm({
+function BatchWeightForm({
+  method = "memit",
   models,
   runtime,
   result,
@@ -1054,6 +1050,7 @@ function MemitForm({
   setJob,
   onPatchesChanged
 }: {
+  method?: BatchWeightMethod;
   models: SupportedModel[];
   runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
@@ -1062,13 +1059,14 @@ function MemitForm({
   setJob: (job: EditJob | null) => void;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
-  const memitModels = useMemo(() => models.filter((model) => model.supports_memit), [models]);
-  const [modelId, setModelId] = usePersistentState("kew:edit:memit:modelId", memitModels[0]?.id ?? "gpt2-xl");
-  const [inputMode, setInputMode] = usePersistentState<"form" | "json">("kew:edit:memit:inputMode", "form");
-  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
+  const methodLabel = batchWeightMethods[method];
+  const memitModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
+  const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, memitModels[0]?.id ?? "gpt2-xl");
+  const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
+  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
-  const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
-  const [batchSize, setBatchSize] = usePersistentState("kew:edit:memit:batchSize", "1");
+  const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
+  const [batchSize, setBatchSize] = usePersistentState(`kew:edit:${method}:batchSize`, "1");
   const parsedBatchSize = Number(batchSize);
   const validBatchSize = /^\d+$/.test(batchSize) && Number.isSafeInteger(parsedBatchSize) && parsedBatchSize >= 1;
   const mom2Adjustment = true;
@@ -1081,9 +1079,9 @@ function MemitForm({
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const batchDataset = useIndexedFactDataset({
-    datasetId: "kew:edit:memit:batch-facts",
+    datasetId: `kew:edit:${method}:batch-facts`,
     initialValues: DEFAULT_FACT_EDIT_DRAFTS,
-    legacyStorageKey: "kew:edit:memit:edits",
+    legacyStorageKey: `kew:edit:${method}:edits`,
     normalize: normalizeFactEditDraft
   });
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
@@ -1092,7 +1090,7 @@ function MemitForm({
   const layers = layersByModel[modelId] ?? "";
   const selectedLayers = parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
-  const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const modelLoaded = Boolean(selectedModel) && runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
   const evaluationPrompts = useFactEvaluationPromptPreview(batchDataset, true);
 
@@ -1112,7 +1110,7 @@ function MemitForm({
   useEffect(() => {
     let active = true;
     if (!selectedModelId) return;
-    api.editDefaultLayers({ model_id: selectedModelId, method: "memit" })
+    api.editDefaultLayers({ model_id: selectedModelId, method })
       .then((result) => {
         const defaults = result.layers.filter((layer) => Number.isInteger(layer) && layer >= 0 && layer <= maxLayer);
         if (!active || defaults.length === 0) return;
@@ -1129,7 +1127,7 @@ function MemitForm({
     return () => {
       active = false;
     };
-  }, [maxLayer, selectedModelId, setLayersByModel]);
+  }, [maxLayer, method, selectedModelId, setLayersByModel]);
 
   async function run() {
     if (!modelLoaded || busy) return;
@@ -1140,7 +1138,7 @@ function MemitForm({
     try {
       const parsedEdits = await batchDataset.getAll();
       if (!parsedEdits.length) {
-        throw new Error("Batch Edits needs at least one MEMIT fact.");
+        throw new Error(`Batch Edits needs at least one ${methodLabel} fact.`);
       }
       if (!validBatchSize) {
         throw new Error("Batch size must be a positive whole number.");
@@ -1152,7 +1150,7 @@ function MemitForm({
       if (!selectedLayers?.length) {
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
       }
-      const response = await api.memitEdit({
+      const response = await api.batchWeightEdit(method, {
         model_id: modelId,
         batch_size: parsedBatchSize,
         edits: parsedEdits.map((edit) => ({
@@ -1194,7 +1192,7 @@ function MemitForm({
       const edits = await batchDataset.getAll();
       const response = await api.easyEditReliability({
         model_id: modelId,
-        method: "memit",
+        method,
         edits: edits.map((edit) => ({
           subject: edit.subject,
           relation_prompt: edit.relation_prompt,
@@ -1230,13 +1228,14 @@ function MemitForm({
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        {!memitModels.length ? <p className="text-sm text-ink/60">No models are configured for {methodLabel}.</p> : null}
         <FactDatasetEditor
           label="Batch Edits"
           dataset={batchDataset}
           editorMode={inputMode}
           onEditorModeChange={setInputMode}
           onError={setError}
-          uploadTitle="MEMIT edits JSON"
+          uploadTitle={`${methodLabel} edits JSON`}
         />
         <label className="grid gap-2">
           <span className="label">Batch Size</span>
@@ -1299,25 +1298,25 @@ function MemitForm({
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
-          <input type="checkbox" checked={mom2Adjustment} disabled title="Required for MEMIT" />
+          <input type="checkbox" checked={mom2Adjustment} disabled title={`Required for ${methodLabel}`} />
         </label>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-ink/60">Required for MEMIT. Prepare Wikipedia statistics for every selected layer.</p>
+          <p className="text-xs text-ink/60">Required for {methodLabel}. Prepare statistics for every selected layer.</p>
           <button className="ghost-button min-h-8 shrink-0 px-2 py-1 text-xs" onClick={() => setMom2CacheOpen(true)} title="Peek cached second-moment statistics" type="button">
             <Database size={14} />
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? `Apply ${methodLabel} edit at the selected layers` : "Load the selected model before editing"}>
           <Layers size={16} />
-          {busy ? "Editing" : "Apply MEMIT"}
+          {busy ? "Editing" : `Apply ${methodLabel}`}
         </button>
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
-      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
+      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
   );
 }
@@ -1332,7 +1331,7 @@ function TrainingForm({
   setJob,
   onPatchesChanged
 }: {
-  method: "ft" | "lora";
+  method: TrainingMethod;
   models: SupportedModel[];
   runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
@@ -1341,8 +1340,8 @@ function TrainingForm({
   setJob: (job: EditJob | null) => void;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
-  const methodLabel = method === "ft" ? "FT" : "LoRA";
-  const trainingModels = useMemo(() => models.filter((model) => method === "ft" ? model.supports_ft : model.supports_lora), [method, models]);
+  const methodLabel = trainingMethods[method];
+  const trainingModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, trainingModels[0]?.id ?? "gpt2-xl");
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
@@ -2268,7 +2267,7 @@ function ResultPanel({
   const evaluationMethod = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).method
     : undefined;
-  const usesBatchEditing = evaluationMethod === "memit" || evaluationMethod === "ft" || evaluationMethod === "lora";
+  const usesBatchEditing = isBatchEditMethod(evaluationMethod);
   const immediateReliabilityLabel = usesBatchEditing ? "Immediate post-batch reliability" : "Immediate post-edit reliability";
   const completedFactCount = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).completed_fact_count
@@ -2406,6 +2405,7 @@ function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultIt
     {typeof score === "number" ? <span>Rewrite accuracy: <strong className="text-cyan">{formatReliabilityScore(score)}</strong></span> : <span>Evaluating…</span>}
   </EditEvaluationCard>;
 }
+
 
 function EditJobProgress({ job }: { job: EditJob | null }) {
   if (!job || job.status !== "running") return null;

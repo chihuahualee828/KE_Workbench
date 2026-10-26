@@ -9,6 +9,50 @@ import pytest
 from app.services import model_registry as registry_module
 
 
+@pytest.mark.parametrize("method", registry_module.METHODS)
+def test_method_registration_requires_profile_and_preserves_metadata(monkeypatch, tmp_path, method):
+    monkeypatch.setattr(registry_module, "settings", SimpleNamespace(data_dir=tmp_path / "data"))
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"n_layer": 2}')
+    registry = registry_module.ModelRegistry()
+    spec = registry_module.METHODS[method]
+    registration = {
+        "id": "local-custom", "local_path": str(model_dir), "model_type": "gpt2",
+        spec["support_key"]: True,
+    }
+    with pytest.raises(ValueError, match="hparams path"):
+        registry.add_local_model(registration)
+
+    registration[spec["hparams_key"]] = f"custom/{method}.yaml"
+    registered = registry.add_local_model(registration)
+    reloaded = registry.get(registered["id"])
+    assert reloaded["easyedit"] == {spec["hparams_key"]: f"custom/{method}.yaml"}
+    for candidate, candidate_spec in registry_module.METHODS.items():
+        assert reloaded[candidate_spec["support_key"]] is (candidate == method)
+
+
+@pytest.mark.parametrize("method", registry_module.METHODS)
+def test_profile_inheritance_preserves_explicit_flags_and_paths(monkeypatch, method):
+    spec = registry_module.METHODS[method]
+    base = next(model for model in registry_module.SUPPORTED_MODELS if model[spec["support_key"]])
+    registrations = [
+        {"id": "local-disabled", "base_model_id": base["id"], spec["support_key"]: False},
+        {"id": "local-custom", "base_model_id": base["id"], spec["support_key"]: True,
+         "easyedit": {spec["hparams_key"]: "custom.yaml"}},
+    ]
+    monkeypatch.setattr(registry_module, "_read_local_models", lambda: registrations)
+    monkeypatch.setattr(registry_module, "_migrate_managed_local_models", lambda _: False)
+
+    disabled, custom = registry_module.ModelRegistry().list_local_models()
+
+    assert disabled[spec["support_key"]] is False
+    assert spec["hparams_key"] not in disabled.get("easyedit", {})
+    assert custom[spec["support_key"]] is True
+    assert custom["easyedit"][spec["hparams_key"]] == "custom.yaml"
+    assert base["easyedit"][spec["hparams_key"]] != "custom.yaml"
+
+
 def test_imported_model_persists_selected_mom2_statistics_source(monkeypatch) -> None:
     registry = registry_module.ModelRegistry()
     models = [
@@ -51,8 +95,7 @@ def test_catalog_hides_missing_local_models_without_removing_registrations(
         "managed_local": managed_local,
         "import_metadata": {},
         "n_layers": 2,
-        "supports_ft": False,
-        "supports_lora": False,
+        **{spec["support_key"]: False for spec in registry_module.METHODS.values()},
     }
     missing = {
         **available,
@@ -193,8 +236,7 @@ def test_manual_registration_keeps_its_external_path(monkeypatch, tmp_path: Path
         "managed_local": False,
         "local_path": str(model_dir),
         "hf_id": str(model_dir),
-        "supports_ft": False,
-        "supports_lora": False,
+        **{spec["support_key"]: False for spec in registry_module.METHODS.values()},
     }
     registry_module._write_local_models([record])
 

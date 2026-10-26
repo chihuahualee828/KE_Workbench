@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import settings
+from app.ml.editing.methods import METHODS, get_editing_hparams, get_editing_support
 
 
 # These are the architecture families for which the workbench currently has
@@ -40,32 +41,17 @@ def _hub_model(
     name: str,
     hf_id: str,
     n_layers: int,
+    hparams: dict[str, str],
     model_type: str = "auto",
     supports_logit_lens: bool = False,
     supports_causal_trace: bool = False,
     trust_remote_code: bool = False,
     generation_use_cache: bool = True,
-    rome_hparams: str | None = None,
-    r_rome_hparams: str | None = None,
-    memit_hparams: str | None = None,
-    kn_hparams: str | None = None,
-    ft_hparams: str | None = None,
-    lora_hparams: str | None = None,
     estimated_vram_gb: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    easyedit = {
-        key: value
-        for key, value in {
-            "rome_hparams": rome_hparams,
-            "r_rome_hparams": r_rome_hparams,
-            "memit_hparams": memit_hparams,
-            "kn_hparams": kn_hparams,
-            "ft_hparams": ft_hparams,
-            "lora_hparams": lora_hparams,
-            "estimated_vram_gb": estimated_vram_gb,
-        }.items()
-        if value
-    }
+    easyedit = {METHODS[method]["hparams_key"]: path for method, path in hparams.items() if path}
+    if estimated_vram_gb:
+        easyedit["estimated_vram_gb"] = estimated_vram_gb
     return {
         "id": model_id,
         "name": name,
@@ -77,12 +63,7 @@ def _hub_model(
         "supports_causal_trace": supports_causal_trace,
         "trust_remote_code": trust_remote_code,
         "generation_use_cache": generation_use_cache,
-        "supports_rome": bool(rome_hparams),
-        "supports_r_rome": bool(r_rome_hparams),
-        "supports_memit": bool(memit_hparams),
-        "supports_kn": bool(kn_hparams),
-        "supports_ft": bool(ft_hparams),
-        "supports_lora": bool(lora_hparams),
+        **{spec["support_key"]: bool(easyedit.get(spec["hparams_key"])) for spec in METHODS.values()},
         "easyedit": easyedit,
         "source": "hub",
     }
@@ -96,13 +77,15 @@ SUPPORTED_MODELS = [
         n_layers=48,
         supports_logit_lens=True,
         supports_causal_trace=True,
-        rome_hparams="hparams/ROME/gpt2-xl.yaml",
-        ft_hparams="hparams/FT/gpt2-xl.yaml",
-        lora_hparams="hparams/LoRA/gpt2-xl.yaml",
-        r_rome_hparams="hparams/R-ROME/gpt2-xl.yaml",
-        memit_hparams="hparams/MEMIT/gpt2-xl.yaml",
-        kn_hparams="hparams/KN/gpt2-xl.yaml",
         estimated_vram_gb={"rome": 10, "memit": 11},
+        hparams={
+            "rome": "hparams/ROME/gpt2-xl.yaml",
+            "r_rome": "hparams/R-ROME/gpt2-xl.yaml",
+            "memit": "hparams/MEMIT/gpt2-xl.yaml",
+            "ft": "hparams/FT/gpt2-xl.yaml",
+            "lora": "hparams/LoRA/gpt2-xl.yaml",
+            "kn": "hparams/KN/gpt2-xl.yaml",
+        },
     ),
     _hub_model(
         model_id="gpt-j-6b",
@@ -110,13 +93,15 @@ SUPPORTED_MODELS = [
         hf_id="EleutherAI/gpt-j-6B",
         model_type="gptj",
         n_layers=28,
-        rome_hparams="hparams/ROME/gpt-j-6B.yaml",
-        ft_hparams="hparams/FT/gpt-j-6B.yaml",
-        lora_hparams="hparams/LoRA/gpt-j-6B.yaml",
-        r_rome_hparams="hparams/R-ROME/gpt-j-6B.yaml",
-        memit_hparams="hparams/MEMIT/gpt-j-6B.yaml",
-        kn_hparams="hparams/KN/gpt-j-6B.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
+        hparams={
+            "rome": "hparams/ROME/gpt-j-6B.yaml",
+            "r_rome": "hparams/R-ROME/gpt-j-6B.yaml",
+            "memit": "hparams/MEMIT/gpt-j-6B.yaml",
+            "ft": "hparams/FT/gpt-j-6B.yaml",
+            "lora": "hparams/LoRA/gpt-j-6B.yaml",
+            "kn": "hparams/KN/gpt-j-6B.yaml",
+        },
     ),
     _hub_model(
         model_id="baichuan-7b",
@@ -125,10 +110,12 @@ SUPPORTED_MODELS = [
         model_type="baichuan",
         n_layers=32,
         trust_remote_code=True,
-        rome_hparams="hparams/ROME/baichuan-7b.yaml",
-        ft_hparams="hparams/FT/baichuan-7b.yaml",
-        memit_hparams="hparams/MEMIT/baichuan-7b.yaml",
-        kn_hparams="hparams/KN/baichuan-7b.yaml",
+        hparams={
+            "rome": "hparams/ROME/baichuan-7b.yaml",
+            "memit": "hparams/MEMIT/baichuan-7b.yaml",
+            "ft": "hparams/FT/baichuan-7b.yaml",
+            "kn": "hparams/KN/baichuan-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="chatglm2-6b",
@@ -137,11 +124,13 @@ SUPPORTED_MODELS = [
         model_type="chatglm",
         n_layers=28,
         trust_remote_code=True,
-        rome_hparams="hparams/ROME/chatglm2-6b.yaml",
-        ft_hparams="hparams/FT/chatglm2-6b.yaml",
-        lora_hparams="hparams/LoRA/chatglm2-6b.yaml",
-        memit_hparams="hparams/MEMIT/chatglm2-6b.yaml",
-        kn_hparams="hparams/KN/chatglm2-6b.yaml",
+        hparams={
+            "rome": "hparams/ROME/chatglm2-6b.yaml",
+            "memit": "hparams/MEMIT/chatglm2-6b.yaml",
+            "ft": "hparams/FT/chatglm2-6b.yaml",
+            "lora": "hparams/LoRA/chatglm2-6b.yaml",
+            "kn": "hparams/KN/chatglm2-6b.yaml",
+        },
     ),
     _hub_model(
         model_id="chatglm4-9b",
@@ -150,10 +139,12 @@ SUPPORTED_MODELS = [
         model_type="chatglm",
         n_layers=40,
         trust_remote_code=True,
-        rome_hparams="hparams/ROME/chatglm4-9b.yaml",
-        ft_hparams="hparams/FT/chatglm4-9b.yaml",
-        lora_hparams="hparams/LoRA/chatglm4-9b.yaml",
-        r_rome_hparams="hparams/R-ROME/chatglm4-9b.yaml",
+        hparams={
+            "rome": "hparams/ROME/chatglm4-9b.yaml",
+            "r_rome": "hparams/R-ROME/chatglm4-9b.yaml",
+            "ft": "hparams/FT/chatglm4-9b.yaml",
+            "lora": "hparams/LoRA/chatglm4-9b.yaml",
+        },
     ),
     _hub_model(
         model_id="internlm-7b",
@@ -163,10 +154,12 @@ SUPPORTED_MODELS = [
         n_layers=32,
         trust_remote_code=True,
         generation_use_cache=False,
-        rome_hparams="hparams/ROME/internlm-7b.yaml",
-        ft_hparams="hparams/FT/internlm-7b.yaml",
-        memit_hparams="hparams/MEMIT/internlm-7b.yaml",
-        kn_hparams="hparams/KN/internlm-7b.yaml",
+        hparams={
+            "rome": "hparams/ROME/internlm-7b.yaml",
+            "memit": "hparams/MEMIT/internlm-7b.yaml",
+            "ft": "hparams/FT/internlm-7b.yaml",
+            "kn": "hparams/KN/internlm-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="llama-7b",
@@ -174,12 +167,14 @@ SUPPORTED_MODELS = [
         hf_id="meta-llama/Llama-2-7b-hf",
         model_type="llama",
         n_layers=32,
-        rome_hparams="hparams/ROME/llama-7b.yaml",
-        ft_hparams="hparams/FT/llama-7b.yaml",
-        lora_hparams="hparams/LoRA/llama-7b.yaml",
-        r_rome_hparams="hparams/R-ROME/llama-7b.yaml",
-        memit_hparams="hparams/MEMIT/llama-7b.yaml",
-        kn_hparams="hparams/KN/llama-7b.yaml",
+        hparams={
+            "rome": "hparams/ROME/llama-7b.yaml",
+            "r_rome": "hparams/R-ROME/llama-7b.yaml",
+            "memit": "hparams/MEMIT/llama-7b.yaml",
+            "ft": "hparams/FT/llama-7b.yaml",
+            "lora": "hparams/LoRA/llama-7b.yaml",
+            "kn": "hparams/KN/llama-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="llama3-8b",
@@ -187,11 +182,13 @@ SUPPORTED_MODELS = [
         hf_id="meta-llama/Meta-Llama-3-8B",
         model_type="llama",
         n_layers=32,
-        rome_hparams="hparams/ROME/llama3-8b.yaml",
-        ft_hparams="hparams/FT/llama3-8b.yaml",
-        lora_hparams="hparams/LoRA/llama3-8b.yaml",
-        kn_hparams="hparams/KN/llama3-8b.yaml",
         estimated_vram_gb={"rome": 18},
+        hparams={
+            "rome": "hparams/ROME/llama3-8b.yaml",
+            "ft": "hparams/FT/llama3-8b.yaml",
+            "lora": "hparams/LoRA/llama3-8b.yaml",
+            "kn": "hparams/KN/llama3-8b.yaml",
+        },
     ),
     _hub_model(
         model_id="llama3.2-3b",
@@ -199,13 +196,15 @@ SUPPORTED_MODELS = [
         hf_id="meta-llama/Llama-3.2-3B",
         model_type="llama",
         n_layers=28,
-        rome_hparams="hparams/ROME/llama3.2-3b.yaml",
-        ft_hparams="hparams/FT/llama3.2-3b.yaml",
-        lora_hparams="hparams/LoRA/llama3.2-3b.yaml",
-        r_rome_hparams="hparams/R-ROME/llama3.2-3b.yaml",
-        memit_hparams="hparams/MEMIT/llama3.2-3b.yaml",
-        kn_hparams="hparams/KN/llama3.2-3b.yaml",
         estimated_vram_gb={"rome": 8, "memit": 9},
+        hparams={
+            "rome": "hparams/ROME/llama3.2-3b.yaml",
+            "r_rome": "hparams/R-ROME/llama3.2-3b.yaml",
+            "memit": "hparams/MEMIT/llama3.2-3b.yaml",
+            "ft": "hparams/FT/llama3.2-3b.yaml",
+            "lora": "hparams/LoRA/llama3.2-3b.yaml",
+            "kn": "hparams/KN/llama3.2-3b.yaml",
+        },
     ),
     _hub_model(
         model_id="mistral-7b",
@@ -213,11 +212,13 @@ SUPPORTED_MODELS = [
         hf_id="mistralai/Mistral-7B-v0.1",
         model_type="mistral",
         n_layers=32,
-        rome_hparams="hparams/ROME/mistral-7b.yaml",
-        ft_hparams="hparams/FT/mistral-7b.yaml",
-        memit_hparams="hparams/MEMIT/mistral-7b.yaml",
-        kn_hparams="hparams/KN/mistral-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
+        hparams={
+            "rome": "hparams/ROME/mistral-7b.yaml",
+            "memit": "hparams/MEMIT/mistral-7b.yaml",
+            "ft": "hparams/FT/mistral-7b.yaml",
+            "kn": "hparams/KN/mistral-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="qwen2.5-7b",
@@ -225,13 +226,15 @@ SUPPORTED_MODELS = [
         hf_id="Qwen/Qwen2.5-7B",
         model_type="qwen",
         n_layers=28,
-        rome_hparams="hparams/ROME/qwen2.5-7b.yaml",
-        ft_hparams="hparams/FT/qwen2.5-7b.yaml",
-        lora_hparams="hparams/LoRA/qwen2.5-7b.yaml",
-        r_rome_hparams="hparams/R-ROME/qwen2.5-7b.yaml",
-        memit_hparams="hparams/MEMIT/qwen2.5-7b.yaml",
-        kn_hparams="hparams/KN/qwen2.5-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
+        hparams={
+            "rome": "hparams/ROME/qwen2.5-7b.yaml",
+            "r_rome": "hparams/R-ROME/qwen2.5-7b.yaml",
+            "memit": "hparams/MEMIT/qwen2.5-7b.yaml",
+            "ft": "hparams/FT/qwen2.5-7b.yaml",
+            "lora": "hparams/LoRA/qwen2.5-7b.yaml",
+            "kn": "hparams/KN/qwen2.5-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="qwen2-7b",
@@ -239,11 +242,13 @@ SUPPORTED_MODELS = [
         hf_id="Qwen/Qwen2-7B",
         model_type="qwen",
         n_layers=28,
-        rome_hparams="hparams/ROME/qwen2-7b.yaml",
-        ft_hparams="hparams/FT/qwen2-7b.yaml",
-        memit_hparams="hparams/MEMIT/qwen2-7b.yaml",
-        kn_hparams="hparams/KN/qwen2-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
+        hparams={
+            "rome": "hparams/ROME/qwen2-7b.yaml",
+            "memit": "hparams/MEMIT/qwen2-7b.yaml",
+            "ft": "hparams/FT/qwen2-7b.yaml",
+            "kn": "hparams/KN/qwen2-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="qwen-7b",
@@ -252,11 +257,13 @@ SUPPORTED_MODELS = [
         model_type="qwen",
         n_layers=32,
         trust_remote_code=True,
-        rome_hparams="hparams/ROME/qwen-7b.yaml",
-        ft_hparams="hparams/FT/qwen-7b.yaml",
-        memit_hparams="hparams/MEMIT/qwen-7b.yaml",
-        kn_hparams="hparams/KN/qwen-7b.yaml",
         estimated_vram_gb={"rome": 16, "memit": 18},
+        hparams={
+            "rome": "hparams/ROME/qwen-7b.yaml",
+            "memit": "hparams/MEMIT/qwen-7b.yaml",
+            "ft": "hparams/FT/qwen-7b.yaml",
+            "kn": "hparams/KN/qwen-7b.yaml",
+        },
     ),
     _hub_model(
         model_id="qwen3.5-9b",
@@ -264,9 +271,11 @@ SUPPORTED_MODELS = [
         hf_id="Qwen/Qwen3.5-9B",
         model_type="qwen",
         n_layers=32,
-        rome_hparams="hparams/ROME/qwen3.5-9b.yaml",
-        ft_hparams="hparams/FT/qwen3.5-9b.yaml",
-        r_rome_hparams="hparams/R-ROME/qwen3.5-9b.yaml",
+        hparams={
+            "rome": "hparams/ROME/qwen3.5-9b.yaml",
+            "r_rome": "hparams/R-ROME/qwen3.5-9b.yaml",
+            "ft": "hparams/FT/qwen3.5-9b.yaml",
+        },
     ),
 ]
 
@@ -328,11 +337,12 @@ class ModelRegistry:
             _write_local_models(models)
         for model in models:
             profile = next((item for item in SUPPORTED_MODELS if item["id"] == model.get("base_model_id")), {})
-            for method in ("ft", "lora"):
-                model.setdefault(f"supports_{method}", bool(profile.get(f"supports_{method}")))
-                path = profile.get("easyedit", {}).get(f"{method}_hparams")
-                if path and model.get(f"supports_{method}"):
-                    model.setdefault("easyedit", {}).setdefault(f"{method}_hparams", path)
+            for spec in METHODS.values():
+                support_key, hparams_key = spec["support_key"], spec["hparams_key"]
+                model.setdefault(support_key, bool(profile.get(support_key)))
+                path = profile.get("easyedit", {}).get(hparams_key)
+                if path and model.get(support_key):
+                    model.setdefault("easyedit", {}).setdefault(hparams_key, path)
             relative_path = _managed_local_model_relative_path(model)
             if relative_path is not None:
                 resolved_path = str(settings.data_dir / relative_path)
@@ -379,18 +389,10 @@ class ModelRegistry:
             )
         if model.get("supports_causal_trace") and configured_layers <= 0:
             raise ValueError("Causal trace local models need a positive layer count.")
-        if model.get("supports_rome") and not model.get("rome_hparams"):
-            raise ValueError("ROME local models need a ROME hparams path.")
-        if model.get("supports_r_rome") and not model.get("r_rome_hparams"):
-            raise ValueError("R-ROME local models need an R-ROME hparams path.")
-        if model.get("supports_memit") and not model.get("memit_hparams"):
-            raise ValueError("MEMIT local models need a MEMIT hparams path.")
-        if model.get("supports_ft") and not model.get("ft_hparams"):
-            raise ValueError("FT local models need a hparams path.")
-        if model.get("supports_lora") and not model.get("lora_hparams"):
-            raise ValueError("LORA local models need a hparams path.")
-        if model.get("supports_kn") and not model.get("kn_hparams"):
-            raise ValueError("KN local models need a KN hparams path.")
+        for method, spec in METHODS.items():
+            if model.get(spec["support_key"]) and not model.get(spec["hparams_key"]):
+                label = method.upper().replace("_", "-")
+                raise ValueError(f"{label} local models need a hparams path.")
         if model.get("supports_kn") and model_type not in {
             "gpt2", "gptj", "llama", "baichuan", "chatglm", "internlm", "mistral", "qwen"
         }:
@@ -411,12 +413,7 @@ class ModelRegistry:
             "supports_generation": bool(model.get("supports_generation", True)),
             "supports_logit_lens": bool(model.get("supports_logit_lens", False)),
             "supports_causal_trace": bool(model.get("supports_causal_trace", False)),
-            "supports_rome": bool(model.get("supports_rome", False)),
-            "supports_r_rome": bool(model.get("supports_r_rome", False)),
-            "supports_memit": bool(model.get("supports_memit", False)),
-            "supports_ft": bool(model.get("supports_ft", False)),
-            "supports_lora": bool(model.get("supports_lora", False)),
-            "supports_kn": bool(model.get("supports_kn", False)),
+            **get_editing_support(model),
             "trust_remote_code": bool(model.get("trust_remote_code", False)),
             "generation_use_cache": bool(model.get("generation_use_cache", True)),
             **(
@@ -426,14 +423,7 @@ class ModelRegistry:
             ),
             "easyedit": {
                 key: value
-                for key, value in {
-                    "rome_hparams": model.get("rome_hparams") or None,
-                    "r_rome_hparams": model.get("r_rome_hparams") or None,
-                    "memit_hparams": model.get("memit_hparams") or None,
-                    "ft_hparams": model.get("ft_hparams") or None,
-                    "lora_hparams": model.get("lora_hparams") or None,
-                    "kn_hparams": model.get("kn_hparams") or None,
-                }.items()
+                for key, value in get_editing_hparams(model).items()
                 if value
             },
         }
@@ -515,12 +505,7 @@ class ModelRegistry:
             # generic AutoModel can load the checkpoint.
             "supports_logit_lens": model_type == "gpt2",
             "supports_causal_trace": model_type == "gpt2",
-            "supports_rome": bool(profile and profile.get("supports_rome")),
-            "supports_r_rome": bool(profile and profile.get("supports_r_rome")),
-            "supports_memit": bool(profile and profile.get("supports_memit")),
-            "supports_ft": bool(profile and profile.get("supports_ft")),
-            "supports_lora": bool(profile and profile.get("supports_lora")),
-            "supports_kn": bool(profile and profile.get("supports_kn")),
+            **get_editing_support(profile or {}),
             "easyedit": easyedit,
             "trust_remote_code": bool(config.get("auto_map")) and model_type in _REMOTE_CODE_MODEL_TYPES,
             "generation_use_cache": profile.get("generation_use_cache", True) if profile else True,
@@ -568,12 +553,7 @@ class ModelRegistry:
             "supports_generation": metadata["supports_generation"],
             "supports_logit_lens": metadata["supports_logit_lens"],
             "supports_causal_trace": metadata["supports_causal_trace"],
-            "supports_rome": metadata["supports_rome"],
-            "supports_r_rome": metadata["supports_r_rome"],
-            "supports_memit": metadata["supports_memit"],
-            "supports_ft": metadata["supports_ft"],
-            "supports_lora": metadata["supports_lora"],
-            "supports_kn": metadata["supports_kn"],
+            **get_editing_support(metadata),
             "trust_remote_code": metadata["trust_remote_code"],
             "generation_use_cache": metadata["generation_use_cache"],
             "easyedit": metadata["easyedit"],

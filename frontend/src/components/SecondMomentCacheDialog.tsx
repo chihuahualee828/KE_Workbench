@@ -3,11 +3,12 @@
 import { Database, Loader2, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import type { Mom2Method } from "@/lib/editingMethods";
 import { api } from "@/lib/api";
 import type { Mom2Cache, Mom2Dtype } from "@/lib/types";
 import { formatMom2Precision, Mom2PrecisionSelect } from "./Mom2PrecisionSelect";
 
-export function SecondMomentCacheDialog({ modelId, method, statsSource, onClose }: { modelId: string; method: "rome" | "r_rome" | "memit"; statsSource?: "base" | "model"; onClose: () => void }) {
+export function SecondMomentCacheDialog({ modelId, method, statsSource, onClose }: { modelId: string; method: Mom2Method; statsSource?: "base" | "model"; onClose: () => void }) {
   const [cache, setCache] = useState<Mom2Cache | null>(null);
   const [deletingLayer, setDeletingLayer] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -81,7 +82,7 @@ export function SecondMomentCacheDialog({ modelId, method, statsSource, onClose 
               <h2 id="second-moment-cache-title" className="text-base font-semibold">Second-Moment Cache</h2>
             </div>
             <p className="mt-1 break-words text-sm text-ink/60">
-              {modelId} · {method === "r_rome" ? "R-ROME" : method.toUpperCase()} · {cache?.dataset ?? "Loading dataset..."}
+              {modelId} · {method === "r_rome" ? "R-ROME" : method.toUpperCase().replaceAll("_", "-")} · {cache?.dataset ?? "Loading dataset..."}
               {cache ? ` · ${cache.stats_source === "base" ? `Base model (${cache.base_model_id})` : "Model statistics"}` : ""}
             </p>
           </div>

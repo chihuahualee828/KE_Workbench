@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from app.api.operation_guard import operation_guard
 
+from app.ml.editing.methods import METHODS
 from app.config import require_deepseek_api_key
 from app.db.schemas import ActiveModelEvaluationRequest, EvaluationRequest, JobResponse, ReliabilityEvaluationRequest
 from app.services.evaluation_service import evaluation_service
@@ -379,7 +380,7 @@ def evaluate_active_model(request: ActiveModelEvaluationRequest) -> JobResponse:
         str(patch_service.get_patch(active_patch_ids[-1]).get("method") or "").lower()
         if active_patch_ids else "rome"
     )
-    if method not in {"rome", "r_rome", "memit", "kn", "ft", "lora"}:
+    if method not in METHODS:
         raise HTTPException(status_code=400, detail="The active patch method does not support this evaluation.")
 
     modes = list(dict.fromkeys(request.evaluation_modes))

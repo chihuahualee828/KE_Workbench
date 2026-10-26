@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from app.db.schemas import MemitEditRequest, RomeSequentialEditsRequest
+from app.db.schemas import BatchWeightEditRequest, RankOneSeriesRequest
 
 
 def test_memit_request_preserves_imported_source_metadata() -> None:
-    request = MemitEditRequest.model_validate(
+    request = BatchWeightEditRequest.model_validate(
         {
             "model_id": "gpt2-xl",
             "edits": [
@@ -37,7 +37,7 @@ def test_rome_sequential_request_accepts_more_than_one_hundred_facts() -> None:
         "new_object": "updated",
     }
 
-    request = RomeSequentialEditsRequest.model_validate(
+    request = RankOneSeriesRequest.model_validate(
         {"edits": [fact] * 101, "target_layer": 17}
     )
 
@@ -46,7 +46,7 @@ def test_rome_sequential_request_accepts_more_than_one_hundred_facts() -> None:
 
 
 def test_rome_sequential_request_can_start_from_clean_patch_stack() -> None:
-    request = RomeSequentialEditsRequest.model_validate(
+    request = RankOneSeriesRequest.model_validate(
         {
             "edits": [{"subject": "Example", "relation_prompt": "{} is", "new_object": "updated"}],
             "target_layer": 17,

@@ -1,3 +1,4 @@
+import type { Mom2Method } from "./editingMethods";
 export type SupportedModel = {
   id: string;
   name: string;
@@ -39,7 +40,7 @@ export type Mom2Dtype = "float16" | "float32" | "float64";
 
 export type Mom2StatisticsRequest = {
   model_id: string;
-  method: "rome" | "r_rome" | "memit";
+  method: Mom2Method;
   layers?: number[] | null;
   stats_source?: "base" | "model" | null;
   mom2_dtype?: Mom2Dtype | null;

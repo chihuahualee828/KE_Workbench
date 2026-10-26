@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api import routes_editing
-from app.db.schemas import MemitEditRequest
+from app.db.schemas import BatchWeightEditRequest
 from app.ml.editing import memit_wrapper
 import app.services.model_runtime_service as runtime_module
 
@@ -15,14 +15,14 @@ FACT = {"subject": "A", "relation_prompt": "{} is", "new_object": "B"}
 @pytest.mark.parametrize("value", [0, -1, 1.5, True, "2", None])
 def test_memit_request_rejects_invalid_batch_sizes(value):
     with pytest.raises(ValidationError):
-        MemitEditRequest(edits=[FACT], batch_size=value)
+        BatchWeightEditRequest(edits=[FACT], batch_size=value)
 
 
 def test_memit_request_defaults_to_one_and_requires_facts():
-    assert MemitEditRequest(edits=[FACT]).batch_size == 1
-    assert MemitEditRequest(edits=[FACT], batch_size=20).batch_size == 20
+    assert BatchWeightEditRequest(edits=[FACT]).batch_size == 1
+    assert BatchWeightEditRequest(edits=[FACT], batch_size=20).batch_size == 20
     with pytest.raises(ValidationError):
-        MemitEditRequest(edits=[])
+        BatchWeightEditRequest(edits=[])
 
 
 def test_memit_route_keeps_batch_size_in_job_and_runner(monkeypatch):
@@ -37,7 +37,7 @@ def test_memit_route_keeps_batch_size_in_job_and_runner(monkeypatch):
         "id": "job_test", "experiment_id": "exp_test", "status": "running", "logs": [],
     })
     monkeypatch.setattr(routes_editing, "_start_edit_thread", lambda label, job_id, runner, payload: recorded.update(runner=payload))
-    response = routes_editing.memit_edit(MemitEditRequest(edits=[FACT], batch_size=20))
+    response = routes_editing.memit_edit(BatchWeightEditRequest(edits=[FACT], batch_size=20))
     assert response.status == "running"
     assert recorded["input"]["batch_size"] == recorded["runner"]["batch_size"] == 20
 
@@ -57,6 +57,7 @@ def test_memit_wrapper_preserves_batch_size_and_all_facts(monkeypatch, worker):
     monkeypatch.setattr(memit_wrapper, "evaluate_post_edit_reliability", lambda model, method, edits, **kwargs: {"evaluated": len(edits)})
     edits = [{**FACT, "subject": str(index), "rephrase_prompts": [f"Rephrase {index}"]} for index in range(105)]
     result = memit_wrapper.run_memit_edit(
+        method="memit",
         model_id="demo", edits=edits, layers=[0], evaluation_prompts=[],
         locality_inputs=None, portability_inputs=None, sequential_edit=False,
         mom2_adjustment=True, batch_size=20,

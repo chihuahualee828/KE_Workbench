@@ -15,6 +15,7 @@ from typing import Any, BinaryIO
 from uuid import uuid4
 
 from app.config import settings
+from app.ml.editing.methods import get_editing_hparams, get_editing_support
 from app.services.model_registry import model_registry
 from app.services.model_cache_paths import model_cache_paths
 from app.storage.local_store import local_store
@@ -513,6 +514,8 @@ class ModelCacheService:
                 staged_model_path.rename(destination)
                 moved = True
                 preview = dict(job["preview"])
+                # Keep inspected capabilities and profile paths from the preview;
+                # registration supplies only the model ID and display name.
                 registration = {
                     **preview,
                     "id": model_id,
@@ -521,23 +524,6 @@ class ModelCacheService:
                         "import_id": import_job_id,
                         "uploaded_at": job.get("created_at"),
                         "source_folder": job.get("source_name"),
-                    },
-                    # The inspected architecture remains the authority for an
-                    # upload. Analysis/editing capabilities are not manual
-                    # registration switches.
-                    **{
-                        key: bool(preview[key])
-                        for key in (
-                            "supports_generation",
-                            "supports_logit_lens",
-                            "supports_causal_trace",
-                            "supports_rome",
-                            "supports_r_rome",
-                            "supports_memit",
-                            "supports_ft",
-                            "supports_lora",
-                            "supports_kn",
-                        )
                     },
                 }
                 registration.pop("import_job_id", None)
@@ -687,20 +673,10 @@ class ModelCacheService:
             "supports_generation": metadata["supports_generation"],
             "supports_logit_lens": metadata["supports_logit_lens"],
             "supports_causal_trace": metadata["supports_causal_trace"],
-            "supports_rome": metadata["supports_rome"],
-            "supports_r_rome": metadata["supports_r_rome"],
-            "supports_memit": metadata["supports_memit"],
-            "supports_ft": metadata["supports_ft"],
-            "supports_lora": metadata["supports_lora"],
-            "supports_kn": metadata["supports_kn"],
+            **get_editing_support(metadata),
             "trust_remote_code": metadata["trust_remote_code"],
             "generation_use_cache": metadata["generation_use_cache"],
-            "rome_hparams": metadata["easyedit"].get("rome_hparams"),
-            "r_rome_hparams": metadata["easyedit"].get("r_rome_hparams"),
-            "memit_hparams": metadata["easyedit"].get("memit_hparams"),
-            "ft_hparams": metadata["easyedit"].get("ft_hparams"),
-            "lora_hparams": metadata["easyedit"].get("lora_hparams"),
-            "kn_hparams": metadata["easyedit"].get("kn_hparams"),
+            **get_editing_hparams(metadata["easyedit"]),
         }
         relative_model_path = model_root.relative_to(_local_import_job_dir(job_id))
         job = self._require_local_import_job(job_id)

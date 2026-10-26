@@ -1,9 +1,12 @@
+"""Shared batch execution and reliability evaluation for MEMIT-style methods."""
 from __future__ import annotations
 
+from app.ml.editing.methods import BATCH_WEIGHT_METHODS
 from app.ml.editing.easyedit_runtime import evaluate_post_edit_reliability, run_easyedit
 
 
 def run_memit_edit(
+    method: str,
     model_id: str,
     edits: list[dict],
     layers: list[int] | None,
@@ -15,11 +18,13 @@ def run_memit_edit(
     batch_size: int = 1,
     generate_evaluation: bool = True,
 ) -> dict:
+    if method not in BATCH_WEIGHT_METHODS:
+        raise ValueError(f"Unsupported batch weight method: {method}")
     from app.services.model_runtime_service import model_runtime_service
 
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(
-            "memit_edit",
+            f"{method}_edit",
             {
                 "model_id": model_id,
                 "edits": edits,
@@ -40,7 +45,7 @@ def run_memit_edit(
     ]
     rephrase_prompts = _single_rephrase_per_edit(normalized_edits)
     result = run_easyedit(
-        method="memit",
+        method=method,
         model_id=model_id,
         edits=normalized_edits,
         layers=layers,
@@ -53,7 +58,7 @@ def run_memit_edit(
     )
     result["edited_facts"] = len(normalized_edits)
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "memit", normalized_edits, edit_result=result, single_batch=len(normalized_edits) <= batch_size))
+        result.update(evaluate_post_edit_reliability(model_id, method, normalized_edits, edit_result=result, single_batch=len(normalized_edits) <= batch_size))
     return result
 
 

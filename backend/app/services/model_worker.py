@@ -7,6 +7,8 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+from app.ml.editing.methods import BATCH_WEIGHT_METHODS, RANK_ONE_METHODS
+
 
 class _WorkerLogStream:
     def __init__(self, connection: Any) -> None:
@@ -167,26 +169,18 @@ def _dispatch(
             progress_callback=(lambda current, total: progress_callback({"current": current, "total": total}))
             if progress_callback is not None else None,
         )
-    if action == "rome_edit":
+    if action.endswith("_edit") and action.removesuffix("_edit") in RANK_ONE_METHODS:
         from app.ml.editing.rome_wrapper import run_rome_edit
 
-        return run_rome_edit(**payload)
-    if action == "r_rome_edit":
-        from app.ml.editing.r_rome_wrapper import run_r_rome_edit
-
-        return run_r_rome_edit(**payload)
-    if action == "rome_sequential_edits":
+        return run_rome_edit(method=action.removesuffix("_edit"), **payload)
+    if action.endswith("_sequential_edits") and action.removesuffix("_sequential_edits") in RANK_ONE_METHODS:
         from app.ml.editing.rome_wrapper import run_rome_sequential_edits
 
-        return run_rome_sequential_edits(**payload)
-    if action == "r_rome_sequential_edits":
-        from app.ml.editing.r_rome_wrapper import run_r_rome_sequential_edits
-
-        return run_r_rome_sequential_edits(**payload)
-    if action == "memit_edit":
+        return run_rome_sequential_edits(method=action.removesuffix("_sequential_edits"), **payload)
+    if action.endswith("_edit") and action.removesuffix("_edit") in BATCH_WEIGHT_METHODS:
         from app.ml.editing.memit_wrapper import run_memit_edit
 
-        return run_memit_edit(**payload)
+        return run_memit_edit(method=action.removesuffix("_edit"), **payload)
     if action in {"ft_edit", "lora_edit"}:
         from app.ml.editing.training_wrapper import run_training_edit
 

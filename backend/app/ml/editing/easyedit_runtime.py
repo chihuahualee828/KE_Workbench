@@ -19,6 +19,7 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
+from app.ml.editing.methods import METHODS
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
 from app.ml.editing.evaluation_protocols import ProtocolEvaluator, normalize_protocols
 from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
@@ -57,41 +58,6 @@ class EasyEditSeriesContext:
     patch_created: bool = False
 
 
-METHODS = {
-    "rome": {
-        "hparams_class": "ROMEHyperParams",
-        "hparams_key": "rome_hparams",
-        "support_key": "supports_rome",
-        "requires_subject": True,
-    },
-    "r_rome": {
-        "hparams_class": "R_ROMEHyperParams",
-        "hparams_key": "r_rome_hparams",
-        "support_key": "supports_r_rome",
-        "requires_subject": True,
-    },
-    "memit": {
-        "hparams_class": "MEMITHyperParams",
-        "hparams_key": "memit_hparams",
-        "support_key": "supports_memit",
-        "requires_subject": True,
-    },
-    "ft": {
-        "hparams_class": "FTHyperParams",
-        "hparams_key": "ft_hparams",
-        "support_key": "supports_ft",
-    },
-    "lora": {
-        "hparams_class": "LoRAHyperParams",
-        "hparams_key": "lora_hparams",
-        "support_key": "supports_lora",
-    },
-    "kn": {
-        "hparams_class": "KNHyperParams",
-        "hparams_key": "kn_hparams",
-        "support_key": "supports_kn",
-    },
-}
 
 MOM2_DTYPES = ("float16", "float32", "float64")
 _mom2_precision_lock = threading.Lock()

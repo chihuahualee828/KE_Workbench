@@ -7,14 +7,17 @@ from types import SimpleNamespace
 import pytest
 
 from app.api import routes_editing
-from app.db.schemas import RomeEditRequest
+from app.db.schemas import RankOneEditRequest, RankOneSeriesRequest
 from app.ml.editing.edit_cancellation import current_edit
 from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
 
 
-def test_rome_edit_returns_the_new_job_after_starting_the_background_thread(monkeypatch) -> None:
+@pytest.mark.parametrize("method", ["rome", "r_rome"])
+@pytest.mark.parametrize("series", [False, True])
+def test_rank_one_route_starts_the_correct_runner(monkeypatch, method, series) -> None:
     started: list[tuple[str, str]] = []
+    selected = {}
     job = {"id": "job_demo", "experiment_id": "exp_demo", "status": "running", "progress": 0.0, "logs": ["Job started"], "log_count": 1}
 
     monkeypatch.setattr(routes_editing, "_require_loaded_model", lambda _: None)
@@ -23,24 +26,24 @@ def test_rome_edit_returns_the_new_job_after_starting_the_background_thread(monk
                         lambda _: (_ for _ in ()).throw(AssertionError("Do not reset patches before the transaction")))
     monkeypatch.setattr(routes_editing.experiment_service, "create", lambda *_: {"id": "exp_demo"})
     monkeypatch.setattr(routes_editing.experiment_service, "create_job", lambda _: job)
-    monkeypatch.setattr(
-        routes_editing,
-        "_start_edit_thread",
-        lambda label, job_id, _function, _payload: started.append((label, job_id)),
-    )
+    def start(label, job_id, runner, payload):
+        started.append((label, job_id))
+        selected.update(method=runner.keywords["method"], runner=runner.func, payload=payload)
+    monkeypatch.setattr(routes_editing, "_start_edit_thread", start)
 
-    response = routes_editing.rome_edit(
-        RomeEditRequest(
-            model_id="gpt2-xl",
-            subject="The Space Needle",
-            relation_prompt="{} is located in",
-            new_object="Paris",
-        )
-    )
+    fact = {"subject": "The Space Needle", "relation_prompt": "{} is located in", "new_object": "Paris"}
+    request = (RankOneSeriesRequest(edits=[fact], target_layer=17) if series
+               else RankOneEditRequest(**fact))
+    endpoint = getattr(routes_editing, f"{method}_sequential_edits" if series else f"{method}_edit")
+    response = endpoint(request)
 
     assert response.job_id == "job_demo"
     assert response.experiment_id == "exp_demo"
-    assert started == [("ROME", "job_demo")]
+    label = method.upper().replace("_", "-") + (" sequential series" if series else "")
+    assert started == [(label, "job_demo")]
+    assert selected["method"] == method
+    assert selected["runner"] is (routes_editing.run_rome_sequential_edits if series else routes_editing.run_rome_edit)
+    assert selected["payload"] == request.model_dump()
 
 
 def test_cancel_active_edit_requests_cleanup_without_stopping_worker(monkeypatch) -> None:
