@@ -44,8 +44,10 @@ def editing(monkeypatch, tmp_path):
             assert kwargs["sequential_edit"] is True
             for offset in range(0, len(kwargs["prompts"]), self.hparams.batch_size):
                 state.batch_calls.append(kwargs["prompts"][offset:offset + self.hparams.batch_size])
-                self.edit(**kwargs)
+                self.apply_algo(**kwargs)
             return {}, model, {}
+
+        apply_algo = edit
 
     monkeypatch.setattr(runtime, "_load_easyedit", lambda _: (
         SimpleNamespace(from_hparams=lambda _: Editor()), SimpleNamespace(from_hparams=lambda _: hparams)))

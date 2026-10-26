@@ -231,10 +231,13 @@ def test_eamet_layer_selection_keeps_profile_weights_aligned():
 
 
 @pytest.mark.parametrize("method", WEIGHT_METHODS)
-def test_real_batch_algorithms_save_replayable_patches(tiny_weight_edit, method):
+def test_real_batch_algorithms_save_replayable_patches(tiny_weight_edit, method, capsys):
     model = tiny_weight_edit
     before = {name: value.clone() for name, value in model.state_dict().items()}
     result = run_weight_edit(method)
+    progress = [line for line in capsys.readouterr().out.splitlines() if " edit batch " in line]
+    assert progress == ["Applying edit batch 1/2.", "Completed edit batch 1/2.",
+                        "Applying edit batch 2/2.", "Completed edit batch 2/2."]
     assert len(result["metrics"]) == 3
     assert result["patch"]["batch_size"] == 2 and result["patch"]["method"] == method
     from safetensors.torch import load_file

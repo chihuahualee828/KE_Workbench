@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from app.ml.editing import easyedit_runtime as runtime
+from app.ml.editing.batch_progress import track_batch_progress
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit
 from app.ml.editing.memit_wrapper import _single_rephrase_per_edit
 from app.ml.editing.training_hparams import METHOD_FIELDS, validate_training_hparams
@@ -113,15 +114,16 @@ def run_training_edit(
                     editor.apply_algo = apply_dpo_batch
                 print(f"{method.upper()} batch size: {batch_size}; facts: {len(edits)}.")
                 print("Starting EasyEdit algorithm.")
-                metrics, edited_model, _ = editor.batch_edit(
-                    prompts=[runtime.build_prompt(edit["subject"], edit["relation_prompt"]) for edit in edits],
-                    target_new=[edit["new_object"] for edit in edits],
-                    **({"target_neg": [edit["target_neg"] for edit in edits]} if method == "dpo" else {}),
-                    ground_truth=[edit.get("ground_truth") for edit in edits],
-                    rephrase_prompts=_single_rephrase_per_edit(edits),
-                    locality_inputs=locality_inputs, portability_inputs=portability_inputs,
-                    sequential_edit=True,
-                )
+                with track_batch_progress(editor, len(edits), batch_size):
+                    metrics, edited_model, _ = editor.batch_edit(
+                        prompts=[runtime.build_prompt(edit["subject"], edit["relation_prompt"]) for edit in edits],
+                        target_new=[edit["new_object"] for edit in edits],
+                        **({"target_neg": [edit["target_neg"] for edit in edits]} if method == "dpo" else {}),
+                        ground_truth=[edit.get("ground_truth") for edit in edits],
+                        rephrase_prompts=_single_rephrase_per_edit(edits),
+                        locality_inputs=locality_inputs, portability_inputs=portability_inputs,
+                        sequential_edit=True,
+                    )
                 check_edit_cancellation()
                 if method == "lora":
                     # Fold the trained adapters into original parameter names for replay/export.
