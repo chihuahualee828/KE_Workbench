@@ -266,6 +266,7 @@ export const api = {
     supports_emmet?: boolean;
     supports_memit_fe?: boolean;
     supports_pmet?: boolean;
+    supports_dpo?: boolean;
     supports_eamet?: boolean;
     supports_alphaedit?: boolean;
     supports_sphere?: boolean;
@@ -278,6 +279,7 @@ export const api = {
     emmet_hparams?: string | null;
     memit_fe_hparams?: string | null;
     pmet_hparams?: string | null;
+    dpo_hparams?: string | null;
     eamet_hparams?: string | null;
     alphaedit_hparams?: string | null;
     sphere_hparams?: string | null;
@@ -521,7 +523,7 @@ export const api = {
     }),
   romeSequentialEdits: (body: {
     model_id: string;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
     evaluation_prompts: string[];
     sequential_edit?: boolean;
@@ -533,7 +535,7 @@ export const api = {
     }),
   rRomeSequentialEdits: (body: {
     model_id: string;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     target_layer: number;
     evaluation_prompts: string[];
     sequential_edit?: boolean;
@@ -555,7 +557,7 @@ export const api = {
     model_id: string;
     batch_size: number;
     hparams?: TrainingHyperparameters;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     layers?: number[] | null;
     evaluation_prompts: string[];
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;
@@ -640,7 +642,7 @@ export const api = {
 export type BatchWeightEditRequest = {
     model_id: string;
     batch_size?: number;
-    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
+    edits: Array<{ subject: string; relation_prompt: string; new_object: string; ground_truth?: string | null; target_neg?: string; rephrase_prompts?: string[]; source_metadata?: Record<string, unknown> }>;
     layers?: number[] | null;
     evaluation_prompts: string[];
     locality_inputs?: Record<string, { prompt: string[]; ground_truth: string[] }> | null;

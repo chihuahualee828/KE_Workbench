@@ -3,7 +3,7 @@ import test from "node:test";
 import { api, invalidateApiReads } from "../src/lib/api";
 import { saveBackendConnection } from "../src/lib/backendConnection";
 
-test("additional batch edit methods send complete batches", async () => {
+test("additional edit methods send complete batches and DPO rejected answers", async () => {
   const original = globalThis.fetch;
   const calls: { url: string; body: unknown }[] = [];
   globalThis.fetch = async (url, init) => {
@@ -11,13 +11,16 @@ test("additional batch edit methods send complete batches", async () => {
     return new Response(JSON.stringify({ job_id: "test" }), { status: 200 });
   };
   try {
-    const fact = { subject: "Paris", relation_prompt: "{} is in", new_object: "Italy" };
+    const fact = { subject: "Paris", relation_prompt: "{} is in", new_object: "Italy", target_neg: "France" };
     const body = { model_id: "llama-7b", edits: [fact, fact, fact], batch_size: 2, evaluation_prompts: [] };
     for (const method of ["emmet", "memit_fe", "pmet", "eamet", "alphaedit", "sphere"] as const) {
       await api.batchWeightEdit(method, body);
       assert.ok(calls.at(-1)?.url.endsWith(`/api/edit/${method.replaceAll("_", "-")}`));
       assert.deepEqual(calls.at(-1)?.body, body);
     }
+    await api.trainingEdit("dpo", body);
+    assert.ok(calls.at(-1)?.url.endsWith("/api/edit/dpo"));
+    assert.deepEqual(calls.at(-1)?.body, body);
   } finally { globalThis.fetch = original; invalidateApiReads(); }
 });
 

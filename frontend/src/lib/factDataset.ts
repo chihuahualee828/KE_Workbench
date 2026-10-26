@@ -13,6 +13,7 @@ export type FactEditDraft = {
   relation_prompt: string;
   ground_truth: string;
   new_object: string;
+  target_neg?: string;
   rephrase_prompts?: string[];
   /** Original imported values that are not edited in the compact fact form. */
   source_metadata?: Record<string, unknown>;

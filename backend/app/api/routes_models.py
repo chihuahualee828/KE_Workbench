@@ -44,6 +44,8 @@ class LocalModelRequest(ApiSchema):
     memit_fe_hparams: str | None = None
     supports_pmet: bool = False
     pmet_hparams: str | None = None
+    supports_dpo: bool = False
+    dpo_hparams: str | None = None
     supports_eamet: bool = False
     eamet_hparams: str | None = None
     supports_alphaedit: bool = False

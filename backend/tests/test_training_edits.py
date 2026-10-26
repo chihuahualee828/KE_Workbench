@@ -15,7 +15,7 @@ from app.ml.editing.edit_cancellation import _run_local_edit, request_cancel
 from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
 
-FACT = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy", "ground_truth": "France"}
+FACT = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy", "ground_truth": "France", "target_neg": "France"}
 
 
 def test_real_easyedit_post_edit_fluency(tiny_training, monkeypatch):
@@ -46,7 +46,7 @@ def test_training_batch_size_validation(batch_size):
         TrainingEditRequest(edits=[FACT], batch_size=batch_size)
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 def test_training_route_starts_job_with_batch_size(monkeypatch, method):
     captured = {}
     monkeypatch.setattr(routes_editing, "_require_loaded_model", lambda _: None)
@@ -73,7 +73,7 @@ def tiny_training(monkeypatch, tmp_path):
     monkeypatch.setattr(local_store, "root", tmp_path / "data")
     monkeypatch.setattr(training, "model_runtime_service", SimpleNamespace(uses_hard_worker=False))
     monkeypatch.setattr(runtime.model_registry, "get", lambda _: {
-        "id": "tiny", "hf_id": "gpt2-tiny", "n_layers": 2, "supports_ft": True, "supports_lora": True,
+        "id": "tiny", "hf_id": "gpt2-tiny", "n_layers": 2, "supports_ft": True, "supports_lora": True, "supports_dpo": True,
     })
     try:
         editor_cls, _ = runtime._load_easyedit("FTHyperParams")
@@ -81,8 +81,11 @@ def tiny_training(monkeypatch, tmp_path):
         pytest.skip(f"Requires installed EasyEdit: {exc}")
     from app.config import settings
     paths = {}
-    for method, directory in [("ft", "FT"), ("lora", "LoRA")]:
-        config = yaml.safe_load((settings.easyedit_root / f"hparams/{directory}/gpt2-xl.yaml").read_text())
+    for method, directory in [("ft", "FT"), ("lora", "LoRA"), ("dpo", "DPO")]:
+        filename = "llama-7b" if method == "dpo" else "gpt2-xl"
+        config = yaml.safe_load((settings.easyedit_root / f"hparams/{directory}/{filename}.yaml").read_text())
+        if method == "dpo":
+            config["target_modules"] = ["c_attn"]
         config.update(num_steps=1, layers=[0], lr=0.01, model_parallel=False)
         paths[f"{method}_hparams"] = tmp_path / f"{method}.yaml"
         paths[f"{method}_hparams"].write_text(yaml.safe_dump(config))
@@ -98,7 +101,7 @@ def tiny_training(monkeypatch, tmp_path):
     return SimpleNamespace(model=model, tokenizer=tokenizer, editor_cls=editor_cls)
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 @pytest.mark.parametrize("batch_size", [1, 2, 5])
 def test_real_easyedit_batches_create_replayable_patches(tiny_training, method, batch_size):
     model = tiny_training.model
@@ -134,7 +137,7 @@ def test_real_easyedit_batches_create_replayable_patches(tiny_training, method, 
         torch.testing.assert_close(value, edited[name])
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 @pytest.mark.parametrize("failure", ["cancel", "error"])
 def test_training_failure_restores_weights_and_removes_adapters(tiny_training, monkeypatch, method, failure):
     model = tiny_training.model
@@ -180,7 +183,7 @@ def test_training_failure_restores_weights_and_removes_adapters(tiny_training, m
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 def test_training_worker_payload(monkeypatch, method):
     recorded = {}
     def execute(action, payload, **kwargs):
@@ -192,7 +195,7 @@ def test_training_worker_payload(monkeypatch, method):
     assert recorded["batch_size"] == 2 and len(recorded["edits"]) == 5
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 @pytest.mark.parametrize("continuing", [False, True])
 def test_training_patch_lineage(tiny_training, method, continuing):
     model = tiny_training.model
@@ -234,7 +237,7 @@ def test_lora_default_layers_preserve_empty_yaml(monkeypatch, tmp_path):
     assert runtime.get_easyedit_default_layers("tiny", "lora")["layers"] == []
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 def test_training_reliability_uses_loaded_cpu_model(tiny_training, method):
     result = runtime.evaluate_easyedit_quality("tiny", method, [FACT])
     assert result["method"] == method
@@ -262,7 +265,7 @@ def test_training_hparams_reject_wrong_method(method, values):
         validate_training_hparams(method, values)
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 def test_real_training_hparam_overrides(tiny_training, method):
     from app.ml.editing.training_hparams import get_training_defaults
     defaults = get_training_defaults("tiny", method)
@@ -272,6 +275,8 @@ def test_real_training_hparam_overrides(tiny_training, method):
         overrides.update(objective_optimization="target_new", norm_constraint=False)
     else:
         overrides.update(target_modules=["c_fc"], rank=2, lora_alpha=4, lora_dropout=0)
+    if method == "dpo":
+        overrides.update(alpha=0.5, beta=0.2)
     result = training.run_training_edit(method, "tiny", [FACT] * 2, [] if method == "lora" else [0],
                                        batch_size=2, hparams=overrides)
     assert result["patch"]["training_hparams"] == overrides
@@ -316,7 +321,7 @@ def test_training_defaults_warn_about_invalid_yaml_and_allow_override(tiny_train
     assert result["patch"]["training_hparams"]["objective_optimization"] == "target_new"
 
 
-@pytest.mark.parametrize("method", ["ft", "lora"])
+@pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 def test_training_route_preserves_hparams_in_job_and_worker(monkeypatch, method):
     captured = {}
     monkeypatch.setattr(routes_editing, "_require_loaded_model", lambda _: None)

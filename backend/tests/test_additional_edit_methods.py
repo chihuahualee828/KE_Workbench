@@ -7,12 +7,14 @@ import numpy as np
 import pytest
 import torch
 import yaml
+from pydantic import ValidationError
 
 from app.api import routes_editing
-from app.db.schemas import BatchWeightEditRequest, ReliabilityEvaluationRequest, TrainingEditRequest
+from app.db.schemas import BatchWeightEditRequest, DpoEditRequest, ReliabilityEvaluationRequest, TrainingEditRequest
 from app.ml.editing import easyedit_runtime as runtime, memit_wrapper
 from app.ml.editing.edit_cancellation import _run_local_edit, request_cancel
 from app.ml.editing.methods import BATCH_WEIGHT_METHODS, COVARIANCE_MODULES, METHODS
+from app.ml.editing.training_hparams import validate_training_hparams
 from app.services import model_registry as registry
 from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
@@ -21,7 +23,7 @@ FACT = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy"
 WEIGHT_METHODS = ["emmet", "memit_fe", "pmet", "eamet", "alphaedit", "sphere"]
 
 
-@pytest.mark.parametrize("method", [*BATCH_WEIGHT_METHODS, "ft", "lora"])
+@pytest.mark.parametrize("method", [*BATCH_WEIGHT_METHODS, "ft", "lora", "dpo"])
 def test_routes_keep_batch_size_and_method(monkeypatch, method):
     captured = {}
     monkeypatch.setattr(routes_editing, "_require_loaded_model", lambda _: None)
@@ -35,8 +37,8 @@ def test_routes_keep_batch_size_and_method(monkeypatch, method):
     if method in BATCH_WEIGHT_METHODS:
         schema = BatchWeightEditRequest
     else:
-        schema = TrainingEditRequest
-    request = schema(model_id="llama-7b", edits=[FACT], batch_size=2)
+        schema = DpoEditRequest if method == "dpo" else TrainingEditRequest
+    request = schema(model_id="llama-7b", edits=[{**FACT, "target_neg": "France"}], batch_size=2)
     result = getattr(routes_editing, f"{method}_edit")(request)
     assert result.experiment_id == f"{method}_edit"
     assert captured["method"] == method and captured["batch_size"] == 2
@@ -45,9 +47,21 @@ def test_routes_keep_batch_size_and_method(monkeypatch, method):
     assert ReliabilityEvaluationRequest(method=method, edits=[FACT]).method == method
 
 
+@pytest.mark.parametrize("negative", [None, "", "  ", "Italy", " Italy "])
+def test_dpo_requires_distinct_rejected_answer(negative):
+    with pytest.raises(ValidationError):
+        DpoEditRequest(edits=[{**FACT, "target_neg": negative}])
+
+
+@pytest.mark.parametrize("hparams", [{"alpha": -0.1}, {"alpha": 1.1}, {"beta": 0}, {"beta": True}])
+def test_dpo_validates_loss_settings(hparams):
+    with pytest.raises(ValueError):
+        validate_training_hparams("dpo", hparams)
+
+
 def test_installed_profiles_load_and_select_valid_layers():
     for model in registry.SUPPORTED_MODELS:
-        for method in BATCH_WEIGHT_METHODS:
+        for method in (*BATCH_WEIGHT_METHODS, "dpo"):
             spec = runtime.METHODS[method]
             assert model[spec["support_key"]] == bool(model["easyedit"].get(spec["hparams_key"]))
             if not model[spec["support_key"]]:

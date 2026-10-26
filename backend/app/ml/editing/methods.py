@@ -2,7 +2,7 @@
 from collections.abc import Mapping
 from typing import Any, Literal
 
-EditMethod = Literal["rome", "r_rome", "kn", "memit", "ft", "lora", "emmet", "memit_fe", "pmet", "eamet", "alphaedit", "sphere"]
+EditMethod = Literal["rome", "r_rome", "kn", "memit", "ft", "lora", "emmet", "memit_fe", "pmet", "dpo", "eamet", "alphaedit", "sphere"]
 Mom2Method = Literal["rome", "r_rome", "memit", "emmet", "memit_fe", "pmet", "eamet", "alphaedit", "sphere"]
 RANK_ONE_METHODS = ("rome", "r_rome")
 SCOPED_WEIGHT_METHODS = ("eamet", "alphaedit", "sphere")
@@ -68,6 +68,11 @@ METHODS = {
         "hparams_key": "pmet_hparams",
         "support_key": "supports_pmet",
         "requires_subject": True,
+    },
+    "dpo": {
+        "hparams_class": "DPOHyperParams",
+        "hparams_key": "dpo_hparams",
+        "support_key": "supports_dpo",
     },
     "eamet": {
         "hparams_class": "EAMETHyperParams",

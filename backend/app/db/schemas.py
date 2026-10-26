@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.ml.editing.methods import EditMethod, Mom2Method
 from app.ml.editing.training_hparams import TrainingHyperparameters
@@ -132,6 +132,22 @@ class TrainingEditRequest(ApiSchema):
     locality_inputs: dict[str, dict[str, list[str]]] | None = None
     portability_inputs: dict[str, dict[str, list[str]]] | None = None
     sequential_edit: bool = False
+
+
+class DpoEditSpec(EditSpec):
+    target_neg: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_preference(self):
+        if not self.target_neg.strip() or not self.new_object.strip():
+            raise ValueError("DPO needs a desired answer and a rejected answer for every fact.")
+        if self.target_neg.strip() == self.new_object.strip():
+            raise ValueError("DPO desired and rejected answers must differ.")
+        return self
+
+
+class DpoEditRequest(TrainingEditRequest):
+    edits: list[DpoEditSpec] = Field(min_length=1)
 
 
 class Mom2StatisticsRequest(ApiSchema):

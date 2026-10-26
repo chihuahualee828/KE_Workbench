@@ -1,10 +1,10 @@
 export const batchWeightMethods = {
   memit: "MEMIT", emmet: "EMMET", memit_fe: "MEMIT-FE", pmet: "PMET", eamet: "EAMET", alphaedit: "AlphaEdit", sphere: "SPHERE",
 } as const;
-export const trainingMethods = { ft: "FT", lora: "LoRA" } as const;
+export const trainingMethods = { ft: "FT", lora: "LoRA", dpo: "DPO" } as const;
 export const editMethods = {
   rome: "ROME", r_rome: "r-ROME", kn: "KN", memit: "MEMIT", ft: "FT", lora: "LoRA",
-  emmet: "EMMET", memit_fe: "MEMIT-FE", pmet: "PMET",
+  emmet: "EMMET", memit_fe: "MEMIT-FE", pmet: "PMET", dpo: "DPO",
   eamet: "EAMET", alphaedit: "AlphaEdit", sphere: "SPHERE",
 } as const;
 export type BatchWeightMethod = keyof typeof batchWeightMethods;

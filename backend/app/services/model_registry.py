@@ -187,6 +187,7 @@ SUPPORTED_MODELS = [
             "emmet": "hparams/EMMET/llama-7b.yaml",
             "memit_fe": "hparams/MEMIT-FE/llama-7b.yaml",
             "pmet": "hparams/PMET/llama-7b.yaml",
+            "dpo": "hparams/DPO/llama-7b.yaml",
         },
     ),
     _hub_model(
@@ -202,6 +203,7 @@ SUPPORTED_MODELS = [
             "lora": "hparams/LoRA/llama3-8b.yaml",
             "kn": "hparams/KN/llama3-8b.yaml",
             "memit_fe": "hparams/MEMIT-FE/llama3-8b.yaml",
+            "dpo": "hparams/DPO/llama3-8b.yaml",
             "alphaedit": "hparams/AlphaEdit/llama3-8b.yaml",
             "sphere": "hparams/SPHERE/llama3-8b.yaml",
         },

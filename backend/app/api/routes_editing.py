@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.config import settings
 from app.ml.editing.edit_cancellation import run_cancellable_edit
 from app.api.operation_guard import operation_guard
-from app.db.schemas import ApiSchema, BatchWeightEditRequest, KnEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RankOneEditRequest, RankOneSeriesRequest, JobResponse, PatchListResponse, TrainingEditRequest
+from app.db.schemas import ApiSchema, BatchWeightEditRequest, DpoEditRequest, KnEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RankOneEditRequest, RankOneSeriesRequest, JobResponse, PatchListResponse, TrainingEditRequest
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -44,7 +44,7 @@ router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
 _EDIT_METHODS = {"ROME": "rome", "R-ROME": "r_rome", "ROME sequential series": "rome",
                  "R-ROME sequential series": "r_rome", "KN": "kn", "MEMIT": "memit",
-                 "FT": "ft", "LORA": "lora",
+                 "FT": "ft", "LORA": "lora", "DPO": "dpo",
                  "EMMET": "emmet", "MEMIT-FE": "memit_fe", "PMET": "pmet",
                  "EAMET": "eamet", "ALPHAEDIT": "alphaedit", "SPHERE": "sphere"}
 
@@ -196,6 +196,12 @@ def alphaedit_edit(request: BatchWeightEditRequest) -> JobResponse:
 @operation_guard.protect()
 def sphere_edit(request: BatchWeightEditRequest) -> JobResponse:
     return _start_batch_weight_edit("sphere", request)
+
+
+@router.post("/edit/dpo", response_model=JobResponse)
+@operation_guard.protect()
+def dpo_edit(request: DpoEditRequest) -> JobResponse:
+    return _start_training_edit("dpo", request)
 
 
 @router.post("/edit/ft", response_model=JobResponse)

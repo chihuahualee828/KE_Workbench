@@ -91,7 +91,7 @@ def get_easyedit_default_layers(model_id: str, method: str) -> dict[str, Any]:
         layers = [int(configured_layers)]
     else:
         layers = []
-    if not layers and method_key != "lora":
+    if not layers and method_key not in {"lora", "dpo"}:
         raise EasyEditRuntimeError(f"EasyEdit hparams has no configured edit layers: {hparams_path}")
     return {"layers": layers, "hparams_path": str(hparams_path)}
 
@@ -1375,7 +1375,7 @@ def _easyedit_runtime_access(model_id: str):
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
         return
-    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA", "EMMET", "MEMIT-FE", "PMET", "EAMET", "AlphaEdit", "SPHERE"}:
+    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA", "DPO", "EMMET", "MEMIT-FE", "PMET", "EAMET", "AlphaEdit", "SPHERE"}:
         # Profiles often contain a machine-specific CUDA index.
         hparams.device = "cpu"
         return

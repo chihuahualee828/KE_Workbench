@@ -26,6 +26,7 @@ export type SupportedModel = {
   supports_emmet?: boolean;
   supports_memit_fe?: boolean;
   supports_pmet?: boolean;
+  supports_dpo?: boolean;
   supports_eamet?: boolean;
   supports_alphaedit?: boolean;
   supports_sphere?: boolean;
@@ -39,6 +40,7 @@ export type SupportedModel = {
     emmet_hparams?: string;
     memit_fe_hparams?: string;
     pmet_hparams?: string;
+    dpo_hparams?: string;
     eamet_hparams?: string;
     alphaedit_hparams?: string;
     sphere_hparams?: string;
@@ -223,6 +225,7 @@ export type LocalModelImportPreview = {
   supports_emmet?: boolean;
   supports_memit_fe?: boolean;
   supports_pmet?: boolean;
+  supports_dpo?: boolean;
   supports_eamet?: boolean;
   supports_alphaedit?: boolean;
   supports_sphere?: boolean;
@@ -237,6 +240,7 @@ export type LocalModelImportPreview = {
   emmet_hparams?: string | null;
   memit_fe_hparams?: string | null;
   pmet_hparams?: string | null;
+  dpo_hparams?: string | null;
   eamet_hparams?: string | null;
   alphaedit_hparams?: string | null;
   sphere_hparams?: string | null;

@@ -33,6 +33,7 @@ const DEFAULT_FACT_EDIT_DRAFTS: FactEditDraft[] = [
 ];
 const VIRTUAL_FACT_CARD_HEIGHT = 412;
 const VIRTUAL_FACT_OVERSCAN = 3;
+const DEFAULT_DPO_FACT_EDIT_DRAFTS = DEFAULT_FACT_EDIT_DRAFTS.map((fact) => ({ ...fact, target_neg: fact.ground_truth }));
 
 const ACTIVE_EDIT_JOB_STORAGE_KEY = "kew:edit:activeJob";
 
@@ -42,7 +43,7 @@ function useRuntimeConnection() {
   return connected;
 }
 
-type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object" | "target_neg";
 type FactImportOptionalField = "rephrase_prompt" | "locality_prompt" | "locality_ground_truth" | "portability_prompt" | "portability_ground_truth";
 type FactImportField = FactEditableField | FactImportOptionalField;
 type FactImportFieldMapping = Record<FactImportField, string>;
@@ -731,7 +732,8 @@ function FactDatasetEditor({
   label,
   onEditorModeChange,
   onError,
-  uploadTitle
+  uploadTitle,
+  preferenceEditing = false
 }: {
   dataset: IndexedFactDataset<FactEditDraft>;
   editorMode: "form" | "json";
@@ -739,6 +741,7 @@ function FactDatasetEditor({
   onEditorModeChange: (value: "form" | "json") => void;
   onError: (value: string) => void;
   uploadTitle: string;
+  preferenceEditing?: boolean;
 }) {
   const [jsonValue, setJsonValue] = useState<string | null>(null);
   const [loadingJson, setLoadingJson] = useState(false);
@@ -859,7 +862,7 @@ function FactDatasetEditor({
         dataset.status === "loading" ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading saved facts…</div>
           : dataset.status === "error" ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-xs text-rust">{dataset.error}</div>
             : <>
-                <VirtualFactDraftList dataset={dataset} onError={onError} />
+                <VirtualFactDraftList dataset={dataset} onError={onError} preferenceEditing={preferenceEditing} />
                 <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={() => void dataset.append(emptyFactEditDraft())} type="button"><Plus size={14} />Add fact</button>
               </>
       ) : loadingJson ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading JSON from local browser storage…</div>
@@ -867,7 +870,7 @@ function FactDatasetEditor({
             <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={savingJson || jsonValue === null} onClick={formatJson} type="button">Format JSON</button></div>
             <textarea className="control min-h-64 font-mono text-xs" value={jsonValue ?? ""} onChange={(event) => setJsonValue(event.target.value)} />
           </>}
-      {pendingImport ? <FactImportMappingDialog label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
+      {pendingImport ? <FactImportMappingDialog preferenceEditing={preferenceEditing} label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
     </div>
   );
 }
@@ -875,12 +878,14 @@ function FactDatasetEditor({
 function FactImportMappingDialog({
   label,
   mapping: initialMapping,
+  preferenceEditing = false,
   records,
   onClose,
   onConfirm
 }: {
   label: string;
   mapping: FactImportFieldMapping;
+  preferenceEditing?: boolean;
   records: Record<string, unknown>[];
   onClose: () => void;
   onConfirm: (mapping: FactImportFieldMapping) => void;
@@ -890,7 +895,8 @@ function FactImportMappingDialog({
   const keys = useMemo(() => Array.from(new Set(records.flatMap((record) => Object.keys(record)))).sort((left, right) => left.localeCompare(right)), [records]);
 
   function confirm() {
-    const missing = REQUIRED_FACT_IMPORT_FIELDS.find((field) => !mapping[field].trim());
+    const requiredFields = preferenceEditing ? [...REQUIRED_FACT_IMPORT_FIELDS, "target_neg" as const] : REQUIRED_FACT_IMPORT_FIELDS;
+    const missing = requiredFields.find((field) => !mapping[field].trim());
     if (missing) {
       setError(`Choose a JSON attribute for ${factImportFieldLabel(missing)}.`);
       return;
@@ -916,7 +922,7 @@ function FactImportMappingDialog({
           <button aria-label="Close import mapping" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
         </div>
         <div className="mt-5 grid gap-3">
-          {FACT_IMPORT_FIELDS.map((field) => (
+          {(preferenceEditing ? [...FACT_IMPORT_FIELDS, "target_neg" as const] : FACT_IMPORT_FIELDS).map((field) => (
             <label className="grid gap-1" key={field}>
               <span className="label">{factImportFieldLabel(field)}</span>
               <input className="control font-mono text-sm" list={`fact-import-keys-${field}`} value={mapping[field]} onChange={(event) => setMapping((current) => ({ ...current, [field]: event.target.value }))} />
@@ -926,7 +932,7 @@ function FactImportMappingDialog({
             </label>
           ))}
         </div>
-        <p className="mt-4 text-xs leading-5 text-ink/60">Only the first four fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
+        <p className="mt-4 text-xs leading-5 text-ink/60">The main fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
         {error ? <div className="mt-4 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
         <div className="mt-5 flex justify-end gap-2">
           <button className="ghost-button min-h-9 px-3 py-1 text-sm" onClick={onClose} type="button">Cancel</button>
@@ -937,13 +943,14 @@ function FactImportMappingDialog({
   );
 }
 
-function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDataset<FactEditDraft>; onError: (value: string) => void }) {
+function VirtualFactDraftList({ dataset, onError, preferenceEditing = false }: { dataset: IndexedFactDataset<FactEditDraft>; onError: (value: string) => void; preferenceEditing?: boolean }) {
+  const cardHeight = VIRTUAL_FACT_CARD_HEIGHT + (preferenceEditing ? 68 : 0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(384);
   const [facts, setFacts] = useState<FactEditDraft[]>([]);
-  const visibleCount = Math.max(1, Math.ceil(viewportHeight / VIRTUAL_FACT_CARD_HEIGHT));
-  const startIndex = Math.max(0, Math.floor(scrollTop / VIRTUAL_FACT_CARD_HEIGHT) - VIRTUAL_FACT_OVERSCAN);
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / cardHeight));
+  const startIndex = Math.max(0, Math.floor(scrollTop / cardHeight) - VIRTUAL_FACT_OVERSCAN);
   const endIndex = Math.min(dataset.count, startIndex + visibleCount + VIRTUAL_FACT_OVERSCAN * 2);
 
   useEffect(() => {
@@ -976,8 +983,8 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
 
   return (
     <div ref={scrollRef} className="max-h-96 overflow-y-auto pr-1" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
-      <div className="relative" style={{ height: dataset.count * VIRTUAL_FACT_CARD_HEIGHT }}>
-        <div className="absolute inset-x-0 grid gap-3" style={{ transform: `translateY(${startIndex * VIRTUAL_FACT_CARD_HEIGHT}px)` }}>
+      <div className="relative" style={{ height: dataset.count * cardHeight }}>
+        <div className="absolute inset-x-0 grid gap-3" style={{ transform: `translateY(${startIndex * cardHeight}px)` }}>
           {Array.from({ length: Math.max(0, endIndex - startIndex) }, (_, offset) => {
             const index = startIndex + offset;
             const fact = facts[offset];
@@ -985,13 +992,15 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
               <VirtualFactDraftCard
                 key={index}
                 count={dataset.count}
+                preferenceEditing={preferenceEditing}
+                cardHeight={cardHeight}
                 fact={fact}
                 index={index}
                 onError={onError}
                 onRemove={() => void dataset.remove(index).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
                 onUpdate={(field, value) => void dataset.update(index, (current) => ({ ...current, [field]: value })).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
               />
-            ) : <div key={index} className="animate-pulse border border-line bg-panel" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }} />;
+            ) : <div key={index} className="animate-pulse border border-line bg-panel" style={{ height: cardHeight - 12 }} />;
           })}
         </div>
       </div>
@@ -1000,6 +1009,8 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
 }
 
 function VirtualFactDraftCard({
+  preferenceEditing = false,
+  cardHeight = VIRTUAL_FACT_CARD_HEIGHT,
   count,
   fact,
   index,
@@ -1007,6 +1018,8 @@ function VirtualFactDraftCard({
   onRemove,
   onUpdate
 }: {
+  preferenceEditing?: boolean;
+  cardHeight?: number;
   count: number;
   fact: FactEditDraft;
   index: number;
@@ -1027,7 +1040,7 @@ function VirtualFactDraftCard({
   }
 
   return (
-    <section className="grid gap-3 border border-line bg-panel p-3" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }}>
+    <section className="grid gap-3 border border-line bg-panel p-3" style={{ height: cardHeight - 12 }}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium">Fact {index + 1}</span>
         <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={count === 1} onClick={onRemove} title="Remove fact" type="button"><Trash2 size={15} /></button>
@@ -1036,6 +1049,7 @@ function VirtualFactDraftCard({
       <FactInput label="Relation Prompt" value={value.relation_prompt} onChange={(fieldValue) => update("relation_prompt", fieldValue)} />
       <FactInput label="New Object" value={value.new_object} onChange={(fieldValue) => update("new_object", fieldValue)} />
       <FactInput label="Ground Truth" value={value.ground_truth} onChange={(fieldValue) => update("ground_truth", fieldValue)} />
+      {preferenceEditing ? <FactInput label="Rejected Answer (DPO)" value={value.target_neg ?? ""} onChange={(fieldValue) => update("target_neg", fieldValue)} /> : null}
     </section>
   );
 }
@@ -1365,7 +1379,7 @@ function TrainingForm({
   const reliabilityTestCancellation = useReliabilityTestCancellation();
   const batchDataset = useIndexedFactDataset({
     datasetId: `kew:edit:${method}:batch-facts`,
-    initialValues: DEFAULT_FACT_EDIT_DRAFTS,
+    initialValues: method === "dpo" ? DEFAULT_DPO_FACT_EDIT_DRAFTS : DEFAULT_FACT_EDIT_DRAFTS,
     legacyStorageKey: `kew:edit:${method}:edits`,
     normalize: normalizeFactEditDraft
   });
@@ -1373,7 +1387,7 @@ function TrainingForm({
   const selectedModelId = selectedModel?.id;
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
   const layers = layersByModel[modelId] ?? "";
-  const selectedLayers = method === "lora" && !layers.trim() ? [] : parseMemitLayers(layers, maxLayer);
+  const selectedLayers = method !== "ft" && !layers.trim() ? [] : parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = Boolean(selectedModel) && runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
@@ -1433,6 +1447,10 @@ function TrainingForm({
       const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
       if (invalidEdit >= 0) {
         throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
+      }
+      if (method === "dpo") {
+        const invalidPreference = parsedEdits.findIndex((edit) => !edit.target_neg?.trim() || edit.target_neg.trim() === edit.new_object.trim());
+        if (invalidPreference >= 0) throw new Error(`Fact ${invalidPreference + 1} needs a rejected answer different from the new object.`);
       }
       if (!selectedLayers || (method === "ft" && !selectedLayers.length)) {
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
@@ -1520,6 +1538,7 @@ function TrainingForm({
           onEditorModeChange={setInputMode}
           onError={setError}
           uploadTitle={`${methodLabel} edits JSON`}
+          preferenceEditing={method === "dpo"}
         />
         <label className="grid min-w-0 grid-cols-1 gap-2">
           <span className="label">Batch Size</span>
@@ -1543,7 +1562,7 @@ function TrainingForm({
           <input
             className="control"
             inputMode="numeric"
-            placeholder={method === "lora" ? "All matching layers (leave empty)" : undefined}
+            placeholder={method !== "ft" ? "All matching layers (leave empty)" : undefined}
             value={layers}
             onChange={(event) => {
               const value = event.target.value;
@@ -2056,6 +2075,7 @@ function normalizeFactEditDraft(value: unknown): FactEditDraft {
     relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
     ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
     new_object: typeof edit.new_object === "string" ? edit.new_object : "",
+    ...(typeof edit.target_neg === "string" ? { target_neg: edit.target_neg } : {}),
     rephrase_prompts: Array.isArray(edit.rephrase_prompts)
       ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
       : undefined,
@@ -2075,6 +2095,7 @@ function detectFactImportMapping(records: Record<string, unknown>[]): FactImport
     subject: findImportKey(keys, ["subject", "entity", "entityname", "name"]),
     relation_prompt: findImportKey(keys, ["relationprompt", "prompt", "relation", "template"]),
     new_object: findImportKey(keys, ["newobject", "targetnew", "newtarget", "target"]),
+    target_neg: findImportKey(keys, ["targetneg", "rejectedanswer", "rejected", "negativeanswer"]),
     ground_truth: findImportKey(keys, ["groundtruth", "targettrue", "targetold", "originalobject"]),
     rephrase_prompt: findImportKey(keys, ["rephraseprompt", "rephraseprompts"]),
     locality_prompt: findImportKey(keys, ["localityprompt"]),
@@ -2105,6 +2126,7 @@ function normalizeImportedFactDraft(record: Record<string, unknown>, mapping: Fa
     relation_prompt: relationPromptFromImportedValue(sourcePrompt, subject),
     ground_truth: groundTruth,
     new_object: newObject,
+    ...(mapping.target_neg ? { target_neg: stringImportValue(record, mapping.target_neg) } : {}),
     ...(rephrasePrompts.length ? { rephrase_prompts: rephrasePrompts } : {}),
     source_metadata: sourceMetadata
   };
@@ -2152,6 +2174,7 @@ function factImportFieldLabel(field: FactImportField) {
     relation_prompt: "Relation Prompt",
     new_object: "New Object",
     ground_truth: "Ground Truth",
+    target_neg: "Rejected Answer (DPO)",
     rephrase_prompt: "Rephrase Prompt",
     locality_prompt: "Locality Prompt",
     locality_ground_truth: "Locality Ground Truth",

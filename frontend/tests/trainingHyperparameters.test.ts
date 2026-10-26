@@ -4,6 +4,16 @@ import { parseTrainingHyperparameters, trainingValueText } from "../src/lib/trai
 
 const lora = { lr: "5e-4", num_steps: "2", weight_decay: "0", rank: "8", lora_alpha: "32", lora_dropout: "0.1", target_modules: " q_proj, v_proj " };
 
+test("DPO validates preference loss settings alongside adapter settings", () => {
+  const values = { ...lora, alpha: "0.5", beta: "0.2" };
+  assert.deepEqual(parseTrainingHyperparameters("dpo", values), {
+    ...parseTrainingHyperparameters("lora", lora), alpha: 0.5, beta: 0.2,
+  });
+  for (const [key, value] of [["alpha", "-0.1"], ["alpha", "1.1"], ["beta", "0"], ["beta", "Infinity"]]) {
+    assert.throws(() => parseTrainingHyperparameters("dpo", { ...values, [key]: value }));
+  }
+});
+
 test("LoRA fields serialize numeric values and target module names", () => {
   assert.deepEqual(parseTrainingHyperparameters("lora", lora), {
     lr: 0.0005, num_steps: 2, weight_decay: 0, rank: 8, lora_alpha: 32, lora_dropout: 0.1, target_modules: ["q_proj", "v_proj"],
