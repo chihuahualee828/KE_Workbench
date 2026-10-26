@@ -2,7 +2,7 @@
 
 A local, full-stack workspace for exploring and editing factual knowledge in Hugging Face language models. Generate text, inspect layer predictions, trace activations, apply EasyEdit knowledge edits, and evaluate the resulting model—all from one interface.
 
-The workbench runs inference against real model weights and integrates **ROME, r-ROME, Knowledge Neurons (KN), MEMIT, FT, and LoRA** through EasyEdit. Edits are tracked as saved patches with an active model lineage, so you can compare states, reload edits, revert changes, and export an edited model.
+The workbench runs inference against real model weights and integrates **ROME, r-ROME, Knowledge Neurons (KN), MEMIT, FT, LoRA, EMMET, MEMIT-FE, PMET, EAMET, AlphaEdit, and SPHERE** through EasyEdit. Edits are tracked as saved patches with an active model lineage, so you can compare states, reload edits, revert changes, and export an edited model.
 
 ## What you can do
 
@@ -57,14 +57,26 @@ Each intervention restores the clean activation from the **same token and layer*
 | **MEMIT** | Batch editing of multiple facts, with configured or explicitly selected layers. |
 | **FT** | Fine-tune configured layers, with a configurable batch size. |
 | **LoRA** | Train low-rank adapters in batches and save reversible merged weight deltas. |
+| **EMMET** | Batch weight editing through EasyEdit's EMMET implementation. |
+| **MEMIT-FE** | Batch weight editing through EasyEdit's MEMIT-FE implementation. |
+| **PMET** | Batch weight editing with statistics and saved deltas for each configured rewrite module. |
+| **EAMET** | Batch weight editing with layer-specific covariance weights from EasyEdit. |
+| **AlphaEdit** | Null-space constrained batch editing, with history shared within a job. |
+| **SPHERE** | Batch editing through EasyEdit’s SPHERE algorithm, with history shared within a job. |
 
 Editing controls include method-compatible model selection, layer configuration where supported, and the option to continue from the active patch lineage. ROME/r-ROME sequential series accumulate their edits in one cumulative patch.
 
 MEMIT exposes a **Batch Size** setting (default `1`): each batch jointly edits up to that many facts through EasyEdit's `batch_edit()`. Batches accumulate within the job and are saved as one patch; **Continue from active patches** controls only the starting model state. Larger batches can change edit quality and memory requirements. Cancellation rolls back the entire MEMIT job, including completed batches.
 
+EMMET, MEMIT-FE, and PMET reuse this batch form and execution pipeline, including **Batch Size**, layer selection, statistics preparation, reliability evaluation, cancellation rollback, and saved patch replay. They operate on the already loaded model. Initial catalog profiles enable EMMET for GPT-2 XL, GPT-J, Llama 2 7B, and Llama 3.2 3B; PMET for GPT-J, Llama 2 7B, and Llama 3.2 3B; and MEMIT-FE for the configured GPT-2 XL, GPT-J, Baichuan 2, ChatGLM2, InternLM, Llama 2 7B, Llama 3 8B, Mistral, and Qwen models. Compatible imported models inherit their base model's profiles. Hyperparameter files come from EasyEdit directly. Llama 3.2 3B is not enabled for MEMIT-FE because its upstream profile specifies the MEMIT algorithm.
+
+EAMET, AlphaEdit, and SPHERE also reuse the batch form, statistics controls, jobs, and reversible patch storage. EAMET initially supports Qwen2.5-7B; AlphaEdit and SPHERE support GPT-2 XL, Llama 3 8B, and Qwen2.5-7B. EAMET layer selection must use layers from its upstream profile so each layer retains its configured covariance weight. AlphaEdit uses EasyEdit's `BaseEditor.batch_edit()`. EAMET and SPHERE use EasyEdit's registered algorithm and evaluation APIs in chunks because this checkout does not include them in the batch-editor allowlist; the workbench does not modify that allowlist or EasyEdit source.
+
+AlphaEdit and SPHERE compute projections through EasyEdit using the selected model, layers, and prepared statistics. Projection files are temporary and removed when the job ends. Their editing history accumulates across batches **within one job**, then resets. **Continue from active patches** continues from edited weights; it does not resume a lifelong editor session. Saved patches record this scope, and failures/cancellation discard the job's auxiliary state along with rolling back weights. CORE remains unavailable because this checkout has no upstream CORE hyperparameter profile; the workbench does not supply replacement profiles.
+
 FT and LoRA use EasyEdit's `FTHyperParams` / `LoRAHyperParams` and `BaseEditor.batch_edit()` on the already loaded model. Both expose **Batch Size** (default `1`) and edit layers in the same batch form. Batches accumulate into one reversible patch; cancellation restores the pre-job weights and active patches. FT preserves all changed parameters, including biases. LoRA uses standard LoRA (overriding upstream profiles that select AdaLoRA), then merges the adapters into a saved weight delta so patch replay and model export use the existing workflow. Expand **Training hyperparameters** to adjust learning rate, training steps, and weight decay. FT also exposes its objective and norm constraint; LoRA exposes target modules, rank, alpha, and dropout. The **Target modules** dropdown inspects the loaded model on first opening and groups supported projections by name. Search and check multiple groups to select targets, or expand a group to inspect full paths, module types, and weight shapes. The dropdown stays open while selecting; Done, Escape, or clicking outside closes it. Tied weights are shown as unavailable; discovery does not run inference or load a second model. Values start from the model's YAML, persist separately per model/method in the browser, and can be reset to defaults. Each saved patch records the effective settings. LoRA accepts an empty layer field (`[]`), preserving EasyEdit's no-layer-restriction behavior; target modules still determine which projections receive adapters. Other training settings come from the model's EasyEdit YAML. Model choices are limited to configured method-specific profiles; inherited local models use their base profile.
 
-For sequential series and MEMIT/FT/LoRA batches, the fact editor supports:
+For sequential series and batch editing methods, the fact editor supports:
 
 - Editable fact cards and a JSON editor.
 - JSON file import with attribute mapping and automatic matching of common field aliases.
@@ -72,7 +84,7 @@ For sequential series and MEMIT/FT/LoRA batches, the fact editor supports:
 - Browser-backed dataset storage and virtualized lists for larger collections.
 - Reliability testing on the current model, with per-fact progress and generated answers.
 
-**Second-moment statistics** are managed separately. The workbench can inspect, prepare, import, and delete cached statistics. ROME/r-ROME expose a second-moment adjustment option; MEMIT requires it. Compatible imported models can choose statistics associated with their base model or the imported model itself.
+**Second-moment statistics** are managed separately. The workbench can inspect, prepare, import, and delete cached statistics. ROME/r-ROME expose a second-moment adjustment option; MEMIT, EMMET, MEMIT-FE, PMET, EAMET, AlphaEdit, and SPHERE use their configured statistics. Compatible imported models can choose statistics associated with their base model or the imported model itself.
 
 ### Patches, history, and exports
 

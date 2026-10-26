@@ -1229,6 +1229,8 @@ function BatchWeightForm({
       <section className="panel grid gap-4">
         <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
         {!memitModels.length ? <p className="text-sm text-ink/60">No models are configured for {methodLabel}.</p> : null}
+        {method === "alphaedit" || method === "sphere" ? <p className="text-xs text-ink/60">Editing history is shared across batches in this job and resets for each new job. Continue from active patches retains the model’s edited weights.</p> : null}
+        {method === "eamet" ? <p className="text-xs text-ink/60">Choose layers from the EasyEdit defaults; each has its own configured covariance weight.</p> : null}
         <FactDatasetEditor
           label="Batch Edits"
           dataset={batchDataset}

@@ -19,11 +19,11 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
-from app.ml.editing.methods import METHODS
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
 from app.ml.editing.evaluation_protocols import ProtocolEvaluator, normalize_protocols
 from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
 from app.ml.editing.fluency_resources import FluencyResourceError, ensure_fluency_tokenizer_data
+from app.ml.editing.methods import METHODS, BATCH_WEIGHT_METHODS, COVARIANCE_MODULES, SCOPED_WEIGHT_METHODS
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -56,8 +56,6 @@ class EasyEditSeriesContext:
     completed_edits: list[dict[str, Any]] = field(default_factory=list)
     metrics_by_edit: list[Any] = field(default_factory=list)
     patch_created: bool = False
-
-
 
 MOM2_DTYPES = ("float16", "float32", "float64")
 _mom2_precision_lock = threading.Lock()
@@ -119,11 +117,11 @@ def run_easyedit(
         raise ValueError("EasyEdit series mode requires a shared series context.")
 
     method_key = method.lower()
-    if method_key == "memit":
+    if method_key in BATCH_WEIGHT_METHODS:
         if type(batch_size) is not int or batch_size < 1:
-            raise ValueError("MEMIT batch size must be a positive integer.")
+            raise ValueError("Batch size must be a positive integer.")
         if not edits:
-            raise ValueError("Provide at least one MEMIT edit fact.")
+            raise ValueError("Provide at least one edit fact.")
     spec = METHODS.get(method_key)
     if spec is None:
         raise EasyEditUnsupportedError(f"EasyEdit method is not configured: {method}")
@@ -139,16 +137,26 @@ def run_easyedit(
     BaseEditor, hparams_cls = _load_easyedit(spec["hparams_class"])
     hparams_path = _resolve_hparams_path(model, spec["hparams_key"])
     hparams = hparams_cls.from_hparams(str(hparams_path))
-    if method_key == "memit":
+    if method_key in BATCH_WEIGHT_METHODS:
         hparams.batch_size = batch_size
     print(f"Loaded EasyEdit hparams from {hparams_path}.")
 
     _override_model_name(hparams, model)
+    if method_key in SCOPED_WEIGHT_METHODS:
+        from app.ml.editing.scoped_weight_edit import configure_scoped_layers
+
+        configure_scoped_layers(method_key, hparams, layers)
     _override_layers(hparams, layers)
     _override_mom2_adjustment(hparams, mom2_adjustment)
     _configure_stats_dir(hparams)
     easyedit_model_name = hparams.model_name
     effective_layers = _hparams_layers(hparams)
+    if method_key in BATCH_WEIGHT_METHODS and method_key != "memit":
+        if not effective_layers or any(layer < 0 or layer >= model["n_layers"] for layer in effective_layers):
+            raise ValueError(f"Edit layers must be between 0 and {model['n_layers'] - 1}.")
+        if any(not str(edit.get(key) or "").strip() for edit in edits
+               for key in ("subject", "relation_prompt", "new_object")):
+            raise ValueError("Provide edit facts with a subject, relation prompt, and new object.")
     print(f"{method_key.upper()} hparams: {hparams}")
 
     prompts: list[str] = []
@@ -176,7 +184,7 @@ def run_easyedit(
         check_edit_cancellation()
         transaction = current_edit.get()
         if transaction is not None:
-            names = [f"{hparams.rewrite_module_tmp.format(layer)}.weight" for layer in _hparams_layers(hparams)]
+            names = _rewrite_weight_names(hparams)
             transaction.capture(runtime_bundle["model"], model_id, names)
         if patch_mode == "series" and series_context is not None:
             if not series_context.runtime_stack_initialized:
@@ -250,12 +258,17 @@ def run_easyedit(
             # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
             check_edit_cancellation()
-            with memit_cancellation_hook(editor.model, enabled=method_key == "memit"):
-                if method_key == "memit":
+            with memit_cancellation_hook(editor.model, enabled=method_key in BATCH_WEIGHT_METHODS):
+                if method_key in SCOPED_WEIGHT_METHODS:
+                    from app.ml.editing.scoped_weight_edit import run_scoped_batches
+
+                    print(f"{method_key.upper()} batch size: {batch_size}; facts: {len(edits)}.")
+                    metrics, edited_model, _ = run_scoped_batches(method_key, editor, edit_args)
+                elif method_key in BATCH_WEIGHT_METHODS:
                     # Always accumulate chunks within this job, independently of
                     # whether the job started from clean or already patched weights.
                     # One pre-job snapshot/delta keeps cancellation all-or-nothing.
-                    print(f"MEMIT batch size: {batch_size}; facts: {len(edits)}.")
+                    print(f"{method_key.upper()} batch size: {batch_size}; facts: {len(edits)}.")
                     metrics, edited_model, _ = editor.batch_edit(**edit_args)
                 else:
                     metrics, edited_model, _ = editor.edit(**edit_args)
@@ -346,7 +359,8 @@ def run_easyedit(
                         "layer_source": layer_source or ("request" if layers else "easyedit_hparams"),
                         "mom2_adjustment": bool(getattr(hparams, "mom2_adjustment", False)),
                         "used_loaded_runtime": used_loaded_runtime,
-                        **({"batch_size": batch_size} if method_key == "memit" else {}),
+                        **({"batch_size": batch_size} if method_key in BATCH_WEIGHT_METHODS else {}),
+                        **({"editing_history_scope": "job"} if method_key in {"alphaedit", "sphere"} else {}),
                     },
                     patch_id=patch_id,
                 )
@@ -1361,8 +1375,8 @@ def _easyedit_runtime_access(model_id: str):
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
         return
-    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA"}:
-        # Training profiles often contain a machine-specific CUDA index.
+    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA", "EMMET", "MEMIT-FE", "PMET", "EAMET", "AlphaEdit", "SPHERE"}:
+        # Profiles often contain a machine-specific CUDA index.
         hparams.device = "cpu"
         return
     if loaded_device and loaded_device.startswith("cuda"):
@@ -1393,7 +1407,7 @@ def _configure_loaded_tokenizer(tokenizer: Any, model_name: str, method_key: str
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if getattr(tokenizer, "pad_token_id", None) is None and eos_token_id is not None:
         tokenizer.pad_token_id = eos_token_id
-    if method_key in {"rome", "r_rome", "memit"} and any(name in model_name.lower() for name in ("mistral", "llama", "qwen")):
+    if method_key in {"rome", "r_rome", *BATCH_WEIGHT_METHODS} and any(name in model_name.lower() for name in ("mistral", "llama", "qwen")):
         tokenizer.padding_side = "right"
 
 
@@ -1471,16 +1485,16 @@ def set_mom2_statistics_precision(model_id: str, method: str, mom2_dtype: str | 
 
 def _refresh_mom2_covariance_cache(method: str, hparams: Any, model: Any, device: str) -> None:
     module_name, cache_name = (
-        ("easyeditor.models.memit.memit_main", "COV_CACHE") if method == "memit"
+        (COVARIANCE_MODULES[method], "COV_CACHE") if method in COVARIANCE_MODULES
         else (f"easyeditor.models.{method}.compute_u", "inv_mom2_cache")
     )
     module = sys.modules.get(module_name)
     cache = getattr(module, cache_name, None)
     if not isinstance(cache, dict):
         return
-    for layer in _hparams_layers(hparams):
-        path = _mom2_statistics_path(hparams, model, layer)
-        key = (str(model.config._name_or_path).replace("/", "_"), hparams.rewrite_module_tmp.format(layer))
+    for layer, layer_profile in _mom2_layer_profiles(hparams):
+        path = _mom2_statistics_path(layer_profile, model, layer)
+        key = (str(model.config._name_or_path).replace("/", "_"), layer_profile.rewrite_module_tmp.format(layer))
         stamp = path.stat() if path.exists() else None
         profile = (str(path), stamp.st_mtime_ns if stamp else None, stamp.st_size if stamp else None)
         profile_key = (module_name, key)
@@ -1488,7 +1502,7 @@ def _refresh_mom2_covariance_cache(method: str, hparams: Any, model: Any, device
         if _mom2_covariance_profiles.get(profile_key) != profile:
             cache.pop(key, None)
             _mom2_covariance_profiles[profile_key] = profile
-        if method != "memit" and hparams.mom2_dtype == "float16" and key not in cache:
+        if method not in COVARIANCE_MODULES and hparams.mom2_dtype == "float16" and key not in cache:
             # ROME inverses cannot operate on FP16 tensors. Keep the stored stats
             # FP16, but perform the inverse in FP32, as EasyEdit returns FP32 anyway.
             import numpy as np
@@ -1512,10 +1526,10 @@ def get_mom2_statistics_status(
     )
 
     statistics = []
-    for layer in effective_layers:
-        path = _mom2_statistics_path(hparams, None, layer)
+    for layer, profile in _mom2_layer_profiles(hparams):
+        path = _mom2_statistics_path(profile, None, layer)
         statistics.append({"layer": layer, "path": str(path), "ready": path.exists() and _mom2_archive_dtype(path) == hparams.mom2_dtype})
-    missing_layers = [entry["layer"] for entry in statistics if not entry["ready"]]
+    missing_layers = sorted({entry["layer"] for entry in statistics if not entry["ready"]})
     return {
         "model_id": model_id,
         "method": method.lower(),
@@ -1616,8 +1630,8 @@ def prepare_mom2_statistics(
         try:
             from easyeditor.models.rome.layer_stats import layer_stats
 
-            for layer in effective_layers:
-                path = _mom2_statistics_path(hparams, runtime_bundle["model"], layer)
+            for layer, profile in _mom2_layer_profiles(hparams):
+                path = _mom2_statistics_path(profile, runtime_bundle["model"], layer)
                 if path.exists():
                     print(f"MOM2 statistics already cached for layer {layer}: {path}")
                     continue
@@ -1625,7 +1639,7 @@ def prepare_mom2_statistics(
                 layer_stats(
                     runtime_bundle["model"],
                     runtime_bundle["tokenizer"],
-                    str(getattr(hparams, "rewrite_module_tmp")).format(layer),
+                    str(getattr(profile, "rewrite_module_tmp")).format(layer),
                     getattr(hparams, "stats_dir"),
                     getattr(hparams, "mom2_dataset"),
                     to_collect=["mom2"],
@@ -1664,8 +1678,8 @@ def import_mom2_statistics(
         )
 
     expected_files = {
-        _mom2_statistics_path(hparams, None, layer).name: (layer, _mom2_statistics_path(hparams, None, layer))
-        for layer in effective_layers
+        _mom2_statistics_path(profile, None, layer).name: (layer, _mom2_statistics_path(profile, None, layer))
+        for layer, profile in _mom2_layer_profiles(hparams)
     }
     imported_layers: list[int] = []
     staged_files: list[tuple[int, Path, Path]] = []
@@ -1717,8 +1731,9 @@ def list_mom2_statistics(
     model = model_registry.get(model_id)
     layer_count = int(model.get("n_layers", 0))
     statistics = []
-    for layer in range(max(0, layer_count)):
-        path = _mom2_statistics_path(hparams, None, layer)
+    hparams.layers = list(range(max(0, layer_count)))
+    for layer, profile in _mom2_layer_profiles(hparams):
+        path = _mom2_statistics_path(profile, None, layer)
         if not path.exists():
             continue
         stat = path.stat()
@@ -1763,15 +1778,16 @@ def delete_mom2_statistics(
         raise EasyEditRuntimeError(f"Invalid {model_id} layer(s): {', '.join(str(layer) for layer in invalid_layers)}.")
 
     deleted_layers = []
-    for layer in sorted(set(layers)):
-        path = _mom2_statistics_path(hparams, None, layer)
+    hparams.layers = sorted(set(layers))
+    for layer, profile in _mom2_layer_profiles(hparams):
+        path = _mom2_statistics_path(profile, None, layer)
         if path.exists():
             path.unlink()
             deleted_layers.append(layer)
     result = list_mom2_statistics(
         model_id, method, getattr(hparams, "mom2_stats_source"), hparams.mom2_dtype
     )
-    result["deleted_layers"] = deleted_layers
+    result["deleted_layers"] = sorted(set(deleted_layers))
     return result
 
 
@@ -1835,6 +1851,7 @@ def _load_mom2_cache_profile(
             model_name=_mom2_cache_model_name(model, resolved_source),
             stats_dir=str(_mom2_stats_dir()),
             rewrite_module_tmp=str(payload["rewrite_module_tmp"]),
+            rewrite_module_tmps=payload.get("rewrite_module_tmps"),
             mom2_dataset=str(payload["mom2_dataset"]),
             mom2_dtype=precision,
             default_mom2_dtype=default_precision,
@@ -1891,6 +1908,14 @@ def _mom2_stats_dir() -> Path:
     if not data_dir.is_absolute():
         data_dir = (backend_root / data_dir).resolve()
     return data_dir / "stats"
+
+
+def _mom2_layer_profiles(hparams: Any):
+    for layer in _hparams_layers(hparams):
+        for template in _rewrite_module_templates(hparams):
+            profile = copy(hparams)
+            profile.rewrite_module_tmp = template
+            yield layer, profile
 
 
 def _mom2_statistics_path(hparams: Any, model: Any | None, layer: int) -> Path:
@@ -1989,17 +2014,27 @@ def _state_dict_for_weight_names(model: Any, names: list[str]) -> dict[str, Any]
     return fallback
 
 
+def _rewrite_module_templates(hparams: Any) -> list[str]:
+    templates = getattr(hparams, "rewrite_module_tmps", None)
+    if not templates:
+        template = getattr(hparams, "rewrite_module_tmp", None)
+        templates = [template] if template else []
+    return list(dict.fromkeys(templates))
+
+
+def _rewrite_weight_names(hparams: Any) -> list[str]:
+    return [f"{template.format(layer)}.weight"
+            for layer in _hparams_layers(hparams)
+            for template in _rewrite_module_templates(hparams)]
+
+
 def _snapshot_rewrite_weights(model: Any, hparams: Any) -> dict[str, Any]:
     try:
         import torch
     except ImportError as exc:
         raise EasyEditRuntimeError("Install torch to snapshot EasyEdit weights.") from exc
 
-    rewrite_module_tmp = getattr(hparams, "rewrite_module_tmp", None)
-    if not rewrite_module_tmp:
-        return {}
-
-    names = [f"{rewrite_module_tmp.format(layer)}.weight" for layer in _hparams_layers(hparams)]
+    names = _rewrite_weight_names(hparams)
     state_dict = _state_dict_for_weight_names(model, names)
     weights = {}
     for name in names:

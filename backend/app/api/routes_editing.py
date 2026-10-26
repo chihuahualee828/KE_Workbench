@@ -44,7 +44,9 @@ router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
 _EDIT_METHODS = {"ROME": "rome", "R-ROME": "r_rome", "ROME sequential series": "rome",
                  "R-ROME sequential series": "r_rome", "KN": "kn", "MEMIT": "memit",
-                 "FT": "ft", "LORA": "lora"}
+                 "FT": "ft", "LORA": "lora",
+                 "EMMET": "emmet", "MEMIT-FE": "memit_fe", "PMET": "pmet",
+                 "EAMET": "eamet", "ALPHAEDIT": "alphaedit", "SPHERE": "sphere"}
 
 
 class PatchExportRequest(ApiSchema):
@@ -158,6 +160,42 @@ def _start_batch_weight_edit(method: str, request: BatchWeightEditRequest) -> Jo
     _start_edit_thread(method.upper().replace("_", "-"), job["id"],
                        partial(run_memit_edit, method=method), request.model_dump())
     return _job_response(job)
+
+
+@router.post("/edit/emmet", response_model=JobResponse)
+@operation_guard.protect()
+def emmet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("emmet", request)
+
+
+@router.post("/edit/memit-fe", response_model=JobResponse)
+@operation_guard.protect()
+def memit_fe_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("memit_fe", request)
+
+
+@router.post("/edit/pmet", response_model=JobResponse)
+@operation_guard.protect()
+def pmet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("pmet", request)
+
+
+@router.post("/edit/eamet", response_model=JobResponse)
+@operation_guard.protect()
+def eamet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("eamet", request)
+
+
+@router.post("/edit/alphaedit", response_model=JobResponse)
+@operation_guard.protect()
+def alphaedit_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("alphaedit", request)
+
+
+@router.post("/edit/sphere", response_model=JobResponse)
+@operation_guard.protect()
+def sphere_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("sphere", request)
 
 
 @router.post("/edit/ft", response_model=JobResponse)

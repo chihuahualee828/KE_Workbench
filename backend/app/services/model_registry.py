@@ -85,6 +85,10 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/gpt2-xl.yaml",
             "lora": "hparams/LoRA/gpt2-xl.yaml",
             "kn": "hparams/KN/gpt2-xl.yaml",
+            "emmet": "hparams/EMMET/gpt2-xl.yaml",
+            "memit_fe": "hparams/MEMIT-FE/gpt2-xl.yaml",
+            "alphaedit": "hparams/AlphaEdit/gpt2-xl.yaml",
+            "sphere": "hparams/SPHERE/gpt2-xl.yaml",
         },
     ),
     _hub_model(
@@ -101,6 +105,9 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/gpt-j-6B.yaml",
             "lora": "hparams/LoRA/gpt-j-6B.yaml",
             "kn": "hparams/KN/gpt-j-6B.yaml",
+            "emmet": "hparams/EMMET/gpt-j-6B.yaml",
+            "memit_fe": "hparams/MEMIT-FE/gpt-j-6B.yaml",
+            "pmet": "hparams/PMET/gpt-j-6B.yaml",
         },
     ),
     _hub_model(
@@ -115,6 +122,7 @@ SUPPORTED_MODELS = [
             "memit": "hparams/MEMIT/baichuan-7b.yaml",
             "ft": "hparams/FT/baichuan-7b.yaml",
             "kn": "hparams/KN/baichuan-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/baichuan-7b.yaml",
         },
     ),
     _hub_model(
@@ -130,6 +138,7 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/chatglm2-6b.yaml",
             "lora": "hparams/LoRA/chatglm2-6b.yaml",
             "kn": "hparams/KN/chatglm2-6b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/chatglm2-6b.yaml",
         },
     ),
     _hub_model(
@@ -159,6 +168,7 @@ SUPPORTED_MODELS = [
             "memit": "hparams/MEMIT/internlm-7b.yaml",
             "ft": "hparams/FT/internlm-7b.yaml",
             "kn": "hparams/KN/internlm-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/internlm-7b.yaml",
         },
     ),
     _hub_model(
@@ -174,6 +184,9 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/llama-7b.yaml",
             "lora": "hparams/LoRA/llama-7b.yaml",
             "kn": "hparams/KN/llama-7b.yaml",
+            "emmet": "hparams/EMMET/llama-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/llama-7b.yaml",
+            "pmet": "hparams/PMET/llama-7b.yaml",
         },
     ),
     _hub_model(
@@ -188,6 +201,9 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/llama3-8b.yaml",
             "lora": "hparams/LoRA/llama3-8b.yaml",
             "kn": "hparams/KN/llama3-8b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/llama3-8b.yaml",
+            "alphaedit": "hparams/AlphaEdit/llama3-8b.yaml",
+            "sphere": "hparams/SPHERE/llama3-8b.yaml",
         },
     ),
     _hub_model(
@@ -204,6 +220,8 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/llama3.2-3b.yaml",
             "lora": "hparams/LoRA/llama3.2-3b.yaml",
             "kn": "hparams/KN/llama3.2-3b.yaml",
+            "emmet": "hparams/EMMET/llama3.2-3b.yaml",
+            "pmet": "hparams/PMET/llama3.2-3b.yaml",
         },
     ),
     _hub_model(
@@ -218,6 +236,7 @@ SUPPORTED_MODELS = [
             "memit": "hparams/MEMIT/mistral-7b.yaml",
             "ft": "hparams/FT/mistral-7b.yaml",
             "kn": "hparams/KN/mistral-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/mistral-7b.yaml",
         },
     ),
     _hub_model(
@@ -234,6 +253,10 @@ SUPPORTED_MODELS = [
             "ft": "hparams/FT/qwen2.5-7b.yaml",
             "lora": "hparams/LoRA/qwen2.5-7b.yaml",
             "kn": "hparams/KN/qwen2.5-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/qwen2.5-7b.yaml",
+            "eamet": "hparams/EAMET/qwen2.5-7b.yaml",
+            "alphaedit": "hparams/AlphaEdit/qwen2.5-7b.yaml",
+            "sphere": "hparams/SPHERE/qwen2.5-7b.yaml",
         },
     ),
     _hub_model(
@@ -248,6 +271,7 @@ SUPPORTED_MODELS = [
             "memit": "hparams/MEMIT/qwen2-7b.yaml",
             "ft": "hparams/FT/qwen2-7b.yaml",
             "kn": "hparams/KN/qwen2-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/qwen2-7b.yaml",
         },
     ),
     _hub_model(
@@ -263,6 +287,7 @@ SUPPORTED_MODELS = [
             "memit": "hparams/MEMIT/qwen-7b.yaml",
             "ft": "hparams/FT/qwen-7b.yaml",
             "kn": "hparams/KN/qwen-7b.yaml",
+            "memit_fe": "hparams/MEMIT-FE/qwen-7b.yaml",
         },
     ),
     _hub_model(

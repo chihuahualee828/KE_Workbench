@@ -263,12 +263,24 @@ export const api = {
     supports_memit?: boolean;
     supports_ft?: boolean;
     supports_lora?: boolean;
+    supports_emmet?: boolean;
+    supports_memit_fe?: boolean;
+    supports_pmet?: boolean;
+    supports_eamet?: boolean;
+    supports_alphaedit?: boolean;
+    supports_sphere?: boolean;
     supports_kn?: boolean;
     rome_hparams?: string | null;
     r_rome_hparams?: string | null;
     memit_hparams?: string | null;
     ft_hparams?: string | null;
     lora_hparams?: string | null;
+    emmet_hparams?: string | null;
+    memit_fe_hparams?: string | null;
+    pmet_hparams?: string | null;
+    eamet_hparams?: string | null;
+    alphaedit_hparams?: string | null;
+    sphere_hparams?: string | null;
     kn_hparams?: string | null;
     import_job_id?: string | null;
   }) =>
