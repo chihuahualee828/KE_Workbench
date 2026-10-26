@@ -6,7 +6,7 @@ cross-process lock serializes cancellation with the final commit decision.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 import fcntl
 import shutil
@@ -14,6 +14,7 @@ import tempfile
 from typing import Any
 
 from app.storage.local_store import local_store
+from app.ml.editing.random_state import DEFAULT_EDIT_SEED, edit_random_state, validate_edit_seed
 
 
 class EditCanceled(RuntimeError):
@@ -87,8 +88,9 @@ def memit_cancellation_hook(model: Any, *, enabled: bool):
 
 
 class EditTransaction:
-    def __init__(self, job_id: str, on_patch_state_changed=None):
+    def __init__(self, job_id: str, on_patch_state_changed=None, *, seed: int | None = None):
         self.job_id = job_id
+        self.seed = seed
         self.on_patch_state_changed = on_patch_state_changed
         self.model: Any = None
         self.model_id = ""
@@ -185,13 +187,14 @@ class EditTransaction:
                 shutil.rmtree(path)
 
 
-def run_cancellable_edit(job_id: str, runner, *, on_patch_state_changed=None, **payload):
+def run_cancellable_edit(job_id: str, runner, *, seed: int = DEFAULT_EDIT_SEED, on_patch_state_changed=None, **payload):
     """Execute in either the in-process runtime or the model-owning worker."""
     from app.services.model_runtime_service import model_runtime_service
 
-    # The parent delegates to a worker; only that worker owns model snapshots.
+    validate_edit_seed(seed)
+    # The parent delegates to a worker; only that worker owns model snapshots/RNGs.
     if getattr(model_runtime_service, "uses_hard_worker", False):
-        transaction = EditTransaction(job_id, on_patch_state_changed)
+        transaction = EditTransaction(job_id, on_patch_state_changed, seed=seed)
         token = current_edit.set(transaction)
         try:
             transaction.check()
@@ -201,15 +204,16 @@ def run_cancellable_edit(job_id: str, runner, *, on_patch_state_changed=None, **
         finally:
             current_edit.reset(token)
     with model_runtime_service.exclusive_runtime_access():
-        return _run_local_edit(job_id, runner, payload, on_patch_state_changed)
+        return _run_local_edit(job_id, runner, payload, on_patch_state_changed, seed=seed)
 
 
-def _run_local_edit(job_id: str, runner, payload, on_patch_state_changed=None):
-    transaction = EditTransaction(job_id, on_patch_state_changed)
+def _run_local_edit(job_id: str, runner, payload, on_patch_state_changed=None, *, seed: int | None = None):
+    transaction = EditTransaction(job_id, on_patch_state_changed, seed=seed)
     token = current_edit.set(transaction)
     try:
         transaction.check()
-        result = runner(**payload)
+        with edit_random_state(seed) if seed is not None else nullcontext():
+            result = runner(**payload)
         with control_lock(job_id) as path:
             transaction.check()
             (path / "edit.finished").touch()

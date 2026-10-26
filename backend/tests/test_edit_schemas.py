@@ -1,6 +1,26 @@
 from __future__ import annotations
 
-from app.db.schemas import BatchWeightEditRequest, RankOneSeriesRequest
+import pytest
+from pydantic import ValidationError
+
+from app.db.schemas import (
+    BatchWeightEditRequest, DpoEditRequest, KnEditRequest, RankOneEditRequest,
+    RankOneSeriesRequest, TrainingEditRequest,
+)
+
+
+@pytest.mark.parametrize("schema", [RankOneEditRequest, RankOneSeriesRequest, KnEditRequest,
+                                    BatchWeightEditRequest, TrainingEditRequest, DpoEditRequest])
+def test_edit_seed_is_shared_validated_and_defaults_to_42(schema):
+    fact = {"subject": "Paris", "relation_prompt": "{} is in", "new_object": "Italy",
+            "ground_truth": "France", "target_neg": "France"}
+    payload = {**fact, "edits": [fact], "target_layer": 0}
+    assert schema.model_validate(payload).seed == 42
+    for seed in (0, 123, 2_147_483_647):
+        assert schema.model_validate({**payload, "seed": seed}).model_dump()["seed"] == seed
+    for seed in (-1, 2_147_483_648, 1.5, True, "42", None):
+        with pytest.raises(ValidationError):
+            schema.model_validate({**payload, "seed": seed})
 
 
 def test_memit_request_preserves_imported_source_metadata() -> None:

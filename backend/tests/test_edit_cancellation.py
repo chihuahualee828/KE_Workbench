@@ -201,8 +201,9 @@ def test_worker_reports_patch_reset_as_structured_event(editing, monkeypatch):
     monkeypatch.setattr(runtime_service, "model_runtime_service", worker)
     monkeypatch.setattr(memit_wrapper, "run_memit_edit", lambda **_: run_fact(sequential_edit=False))
     events = []
-    result = _dispatch(worker, "memit_edit", {"model_id": "demo", "_edit_job_id": "job_worker"}, events.append)
+    result = _dispatch(worker, "memit_edit", {"model_id": "demo", "_edit_job_id": "job_worker", "seed": 123}, events.append)
     assert result["patch_id"]
+    assert patch_service.get_patch(result["patch_id"])["seed"] == 123
     assert events == [{"patch_state_changed": True}]
 
 
@@ -272,11 +273,13 @@ def test_parent_attaches_cancellation_context_to_worker_command(monkeypatch):
         captured.update(payload)
         return {"ok": True}
     monkeypatch.setattr(service, "_call_worker_locked", call)
-    token = current_edit.set(EditTransaction("job_parent"))
+    token = current_edit.set(EditTransaction("job_parent", seed=123))
     try:
         payload = {"model_id": "demo"}
         assert service.execute("memit_edit", payload) == {"ok": True}
         assert captured["_edit_job_id"] == "job_parent"
+        assert captured["seed"] == 123
+        assert "seed" not in payload
         assert "_edit_job_id" not in payload
     finally:
         current_edit.reset(token)
