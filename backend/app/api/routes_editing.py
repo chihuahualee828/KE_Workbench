@@ -519,13 +519,21 @@ class _JobLogStream:
                 series_progress = tuple(int(value) for value in evaluation.groups())
             completed, total = series_progress if series_progress is not None else (None, None)
             edit_started = _easyedit_edit_started(clean)
+            phase = "post_edit_evaluation" if evaluation else "editing" if edit_started else None
+            batch = re.fullmatch(r"(Applying|Completed) edit batch (\d+)/(\d+)\.", clean)
+            if batch:
+                action, index, count = batch.groups()
+                if 1 <= int(index) <= int(count):
+                    completed = int(index) - (1 if action == "Applying" else 0)
+                    total = int(count)
+                    phase = "batch_editing" if action == "Applying" else "batch_completed"
             experiment_service.append_job_log(
                 self.job_id,
                 clean,
                 progress=(completed / total if completed is not None and total else 0.1 if edit_started else None),
                 progress_current=completed,
                 progress_total=total,
-                progress_phase="post_edit_evaluation" if evaluation else "editing" if edit_started else None,
+                progress_phase=phase,
             )
 
 

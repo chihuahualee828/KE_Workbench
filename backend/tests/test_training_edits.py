@@ -103,12 +103,16 @@ def tiny_training(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 @pytest.mark.parametrize("batch_size", [1, 2, 5])
-def test_real_easyedit_batches_create_replayable_patches(tiny_training, method, batch_size):
+def test_real_easyedit_batches_create_replayable_patches(tiny_training, method, batch_size, capsys):
     model = tiny_training.model
     before = {name: value.clone() for name, value in model.state_dict().items()}
     flags = [p.requires_grad for p in model.parameters()]
     hooks = dict(model.get_input_embeddings()._forward_hooks)
     result = training.run_training_edit(method, "tiny", [FACT] * 3, [0], batch_size=batch_size)
+    total = (3 + batch_size - 1) // batch_size
+    progress = [line for line in capsys.readouterr().out.splitlines() if " edit batch " in line]
+    assert progress == [f"{action} edit batch {index}/{total}."
+                        for index in range(1, total + 1) for action in ("Applying", "Completed")]
     assert result["edited_facts"] == 3
     assert len(result["metrics"]) == 3
     assert result["patch"]["batch_size"] == batch_size

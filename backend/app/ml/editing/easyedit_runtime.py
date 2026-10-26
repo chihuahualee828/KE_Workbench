@@ -19,6 +19,7 @@ from typing import Any, Literal
 import yaml
 
 from app.config import settings
+from app.ml.editing.batch_progress import track_batch_progress
 from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
 from app.ml.editing.evaluation_protocols import ProtocolEvaluator, normalize_protocols
 from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
@@ -258,7 +259,8 @@ def run_easyedit(
             # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
             check_edit_cancellation()
-            with memit_cancellation_hook(editor.model, enabled=method_key in BATCH_WEIGHT_METHODS):
+            with memit_cancellation_hook(editor.model, enabled=method_key in BATCH_WEIGHT_METHODS), \
+                    track_batch_progress(editor, len(edits), batch_size, enabled=method_key in BATCH_WEIGHT_METHODS):
                 if method_key in SCOPED_WEIGHT_METHODS:
                     from app.ml.editing.scoped_weight_edit import run_scoped_batches
 

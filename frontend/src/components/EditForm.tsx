@@ -4,6 +4,7 @@ import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, R
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { EditJobProgress } from "./EditJobProgress";
 import { editMethods, batchWeightMethods, trainingMethods, isBatchEditMethod, type EditMethod, type BatchWeightMethod, type TrainingMethod } from "@/lib/editingMethods";
 import { api, invalidateApiReads } from "@/lib/api";
 import { refreshPatchHistory, updatePatchesFromEditJob } from "@/lib/workbenchResources";
@@ -2431,25 +2432,6 @@ function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultIt
   </EditEvaluationCard>;
 }
 
-
-function EditJobProgress({ job }: { job: EditJob | null }) {
-  if (!job || job.status !== "running") return null;
-  if (job.progress_phase === "post_edit_evaluation") return <EvaluationProgressIndicator className="mb-2" preparing={false} current={job.progress_current ?? undefined} total={job.progress_total ?? undefined} multiFactLabel="Post-edit evaluation and generation" singleFactLabel="Evaluating and generating for the final model…" />;
-  const completed = job.progress_current ?? 0;
-  const total = job.progress_total ?? 0;
-  const determinate = total > 0;
-  const percent = Math.max(0, Math.min(100, Math.round((determinate ? completed / total : job.progress) * 100)));
-  const phase = job.progress >= 0.1 ? "Editing" : "Preparing";
-
-  return (
-    <div className="mb-2 grid gap-1.5" aria-label={determinate ? `${completed} of ${total} sequential edits complete` : `${phase} edit`} role="status">
-      <div className="h-1.5 overflow-hidden rounded-full bg-line">
-        <div className={determinate ? "h-full bg-cyan transition-[width] duration-300" : "edit-progress-indeterminate h-full bg-cyan"} style={determinate ? { width: `${percent}%` } : undefined} />
-      </div>
-      <span className="font-mono text-xs text-ink/60">{determinate ? `${completed} / ${total} facts (${percent}%)` : phase}</span>
-    </div>
-  );
-}
 
 function parseGenerations(result: Record<string, unknown> | null) {
   const value = result?.generations;
