@@ -149,6 +149,7 @@ export type PatchEditPage = {
 };
 
 export type Patch = {
+  seed?: number;
   patch_id: string;
   base_model: string;
   method: string;

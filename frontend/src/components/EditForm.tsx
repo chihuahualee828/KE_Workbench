@@ -1,11 +1,12 @@
 "use client";
 
+import { EditSeedField, useEditSeed } from "./EditSeedField";
 import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, RotateCcw, Save, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EditJobProgress } from "./EditJobProgress";
-import { editMethods, batchWeightMethods, trainingMethods, isBatchEditMethod, type EditMethod, type BatchWeightMethod, type TrainingMethod } from "@/lib/editingMethods";
+import { editMethods, batchWeightMethods, trainingMethods, isBatchEditMethod, editSeedOptions, type EditMethod, type BatchWeightMethod, type TrainingMethod } from "@/lib/editingMethods";
 import { api, invalidateApiReads } from "@/lib/api";
 import { refreshPatchHistory, updatePatchesFromEditJob } from "@/lib/workbenchResources";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
@@ -397,6 +398,7 @@ function RomeForm({
   const isRRome = method === "r_rome";
   const methodLabel = isRRome ? "R-ROME" : "ROME";
   const supportsSeries = true;
+  const [seed, setSeed] = useEditSeed(method);
   const romeModels = useMemo(() => models.filter((model) => isRRome ? model.supports_r_rome : model.supports_rome), [isRRome, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, romeModels[0]?.id ?? "gpt2-xl");
   const [subject, setSubject] = usePersistentState(`kew:edit:${method}:subject`, "The Space Needle");
@@ -507,6 +509,7 @@ function RomeForm({
         : evaluationPrompts;
       const response = isSeriesEdit
         ? await startRomeSequentialSeries(seriesFacts, {
+            ...editSeedOptions(method, seed),
             modelId,
             method,
             targetLayer: targetLayerNumber,
@@ -515,6 +518,7 @@ function RomeForm({
             mom2Adjustment
           })
         : await (isRRome ? api.rRomeEdit : api.romeEdit)({
+            ...editSeedOptions(method, seed),
             model_id: modelId,
             subject,
             relation_prompt: relationPrompt,
@@ -698,6 +702,7 @@ function RomeForm({
           testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || (isSeriesEdit ? seriesDataset.status !== "ready" || seriesDataset.count === 0 : !evaluationPrompts.length)}
         />
+        <EditSeedField method={method} value={seed} onChange={setSeed} disabled={busy} />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
@@ -1075,6 +1080,7 @@ function BatchWeightForm({
   onPatchesChanged?: () => void | Promise<void>;
 }) {
   const methodLabel = batchWeightMethods[method];
+  const [seed, setSeed] = useEditSeed(method);
   const memitModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, memitModels[0]?.id ?? "gpt2-xl");
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
@@ -1166,6 +1172,7 @@ function BatchWeightForm({
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
       }
       const response = await api.batchWeightEdit(method, {
+        ...editSeedOptions(method, seed),
         model_id: modelId,
         batch_size: parsedBatchSize,
         edits: parsedEdits.map((edit) => ({
@@ -1309,6 +1316,7 @@ function BatchWeightForm({
           testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || batchDataset.status !== "ready" || batchDataset.count === 0}
         />
+        <EditSeedField method={method} value={seed} onChange={setSeed} disabled={busy} />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
@@ -1358,6 +1366,7 @@ function TrainingForm({
   onPatchesChanged?: () => void | Promise<void>;
 }) {
   const methodLabel = trainingMethods[method];
+  const [seed, setSeed] = useEditSeed(method);
   const trainingModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, trainingModels[0]?.id ?? "gpt2-xl");
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
@@ -1459,6 +1468,7 @@ function TrainingForm({
       if (!defaultHparams) throw new Error("Wait for the model hyperparameter defaults to load.");
       const hparams = parseTrainingHyperparameters(method, hparamValues);
       const response = await api.trainingEdit(method, {
+        ...editSeedOptions(method, seed),
         model_id: modelId,
         batch_size: parsedBatchSize,
         hparams,
@@ -1603,6 +1613,7 @@ function TrainingForm({
           testCanceling={reliabilityTestCancellation.canceling}
           testDisabled={busy || !modelLoaded || batchDataset.status !== "ready" || batchDataset.count === 0}
         />
+        <EditSeedField method={method} value={seed} onChange={setSeed} disabled={busy} />
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Continue from active patches</span>
           <input type="checkbox" checked={sequentialEdit} onChange={(event) => setSequentialEdit(event.target.checked)} title="Keep the active patch lineage for this edit" />
@@ -1980,6 +1991,7 @@ function formatReliabilityScore(score: number) {
 async function startRomeSequentialSeries(
   drafts: FactEditDraft[] | null,
   {
+    seed,
     modelId,
     method,
     targetLayer,
@@ -1987,6 +1999,7 @@ async function startRomeSequentialSeries(
     sequentialEdit,
     mom2Adjustment
   }: {
+    seed?: number;
     modelId: string;
     method: "rome" | "r_rome";
     targetLayer: number;
@@ -2006,6 +2019,7 @@ async function startRomeSequentialSeries(
     throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
   }
   const request = {
+    seed,
     model_id: modelId,
     edits: drafts.map((edit) => ({
       ...edit,
