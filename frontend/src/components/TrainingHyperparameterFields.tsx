@@ -1,10 +1,11 @@
 "use client";
 
+import type { TrainingMethod } from "@/lib/editingMethods";
 import { LoraTargetModules } from "./LoraTargetModules";
 import { trainingFields } from "@/lib/trainingHyperparameters";
 
 export function TrainingHyperparameterFields({ method, modelId, modelLoaded, values, ready, disabled, warning, onChange, onReset }: {
-  method: "ft" | "lora";
+  method: TrainingMethod;
   modelId: string;
   modelLoaded: boolean;
   values: Record<string, string>;

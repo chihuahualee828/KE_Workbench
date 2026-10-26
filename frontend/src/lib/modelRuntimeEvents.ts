@@ -1,3 +1,4 @@
+import { editMethods } from "./editingMethods";
 import { getModelRuntimeSnapshot, setModelRuntimeSnapshot, setUnloadingModelSnapshot } from "./modelStatusCache";
 import type { ModelRuntimeJob, ModelRuntimeStatus } from "./types";
 import { api } from "./api";
@@ -13,8 +14,7 @@ const modelSelectionKeys = [
   "kew:lens:modelId",
   "kew:trace:modelId",
   "kew:evaluate:modelId",
-  "kew:edit:rome:modelId",
-  "kew:edit:memit:modelId",
+  ...Object.keys(editMethods).map((method) => `kew:edit:${method}:modelId`),
   "kew:settings:mom2:modelId"
 ];
 const waiters = new Map<string, Promise<ModelRuntimeJob>>();

@@ -137,4 +137,4 @@ def test_openapi_preserves_decorated_request_types():
     from app.main import app
     schema = app.openapi()
     body = schema["paths"]["/api/edit/rome"]["post"]["requestBody"]
-    assert body["content"]["application/json"]["schema"]["$ref"].endswith("/RomeEditRequest")
+    assert body["content"]["application/json"]["schema"]["$ref"].endswith("/RankOneEditRequest")

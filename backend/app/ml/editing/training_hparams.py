@@ -20,6 +20,9 @@ class TrainingHyperparameters(BaseModel):
     lora_alpha: Positive | None = None
     lora_dropout: float | None = Field(default=None, ge=0, lt=1, allow_inf_nan=False, strict=True)
 
+    alpha: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False, strict=True)
+    beta: Positive | None = None
+
     @field_validator("target_modules")
     @classmethod
     def validate_modules(cls, values):
@@ -32,15 +35,17 @@ class TrainingHyperparameters(BaseModel):
 
 
 COMMON_FIELDS = {"lr", "num_steps", "weight_decay"}
+ADAPTER_FIELDS = {"target_modules", "rank", "lora_alpha", "lora_dropout"}
 METHOD_FIELDS = {
     "ft": COMMON_FIELDS | {"objective_optimization", "norm_constraint"},
-    "lora": COMMON_FIELDS | {"target_modules", "rank", "lora_alpha", "lora_dropout"},
+    "lora": COMMON_FIELDS | ADAPTER_FIELDS,
+    "dpo": COMMON_FIELDS | ADAPTER_FIELDS | {"alpha", "beta"},
 }
 
 
 def validate_training_hparams(method: str, values: dict | TrainingHyperparameters | None) -> dict:
     if method not in METHOD_FIELDS:
-        raise ValueError("Training method must be ft or lora.")
+        raise ValueError("Training method must be ft, lora, or dpo.")
     parsed = values if isinstance(values, TrainingHyperparameters) else TrainingHyperparameters.model_validate(values or {})
     overrides = parsed.model_dump(exclude_none=True)
     invalid = overrides.keys() - METHOD_FIELDS[method]
@@ -62,7 +67,7 @@ def get_training_defaults(model_id: str, method: str) -> dict:
         payload = yaml.safe_load(path.read_text())
         values = {key: payload[key] for key in METHOD_FIELDS[method]}
         # YAML scientific notation may be parsed as text, as in EasyEdit's own loader.
-        for key in ("lr", "weight_decay", "norm_constraint", "lora_alpha", "lora_dropout"):
+        for key in ("lr", "weight_decay", "norm_constraint", "lora_alpha", "lora_dropout", "alpha", "beta"):
             if key in values and values[key] is not False:
                 values[key] = float(values[key])
         # Show invalid YAML values too, so the user can correct them with an override.

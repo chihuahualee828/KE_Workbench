@@ -4,6 +4,7 @@ import { Database, Download, FlaskConical, Layers, Loader2, LocateFixed, Plus, R
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { editMethods, batchWeightMethods, trainingMethods, isBatchEditMethod, type EditMethod, type BatchWeightMethod, type TrainingMethod } from "@/lib/editingMethods";
 import { api, invalidateApiReads } from "@/lib/api";
 import { refreshPatchHistory, updatePatchesFromEditJob } from "@/lib/workbenchResources";
 import { parseTrainingHyperparameters, trainingValueText, type TrainingHyperparameters } from "@/lib/trainingHyperparameters";
@@ -32,6 +33,8 @@ const DEFAULT_FACT_EDIT_DRAFTS: FactEditDraft[] = [
 ];
 const VIRTUAL_FACT_CARD_HEIGHT = 412;
 const VIRTUAL_FACT_OVERSCAN = 3;
+const DEFAULT_DPO_FACT_EDIT_DRAFTS = DEFAULT_FACT_EDIT_DRAFTS.map((fact) => ({ ...fact, target_neg: fact.ground_truth }));
+
 const ACTIVE_EDIT_JOB_STORAGE_KEY = "kew:edit:activeJob";
 
 function useRuntimeConnection() {
@@ -40,7 +43,7 @@ function useRuntimeConnection() {
   return connected;
 }
 
-type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object";
+type FactEditableField = "subject" | "relation_prompt" | "ground_truth" | "new_object" | "target_neg";
 type FactImportOptionalField = "rephrase_prompt" | "locality_prompt" | "locality_ground_truth" | "portability_prompt" | "portability_ground_truth";
 type FactImportField = FactEditableField | FactImportOptionalField;
 type FactImportFieldMapping = Record<FactImportField, string>;
@@ -54,7 +57,7 @@ type PendingFactImport = {
 };
 
 export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { models: SupportedModel[]; patches: Patch[]; runtime?: ModelRuntimeStatus[]; onPatchesChanged?: () => void | Promise<void> }) {
-  const [tab, setTab] = usePersistentState<"rome" | "r_rome" | "kn" | "memit" | "ft" | "lora" | "patches">("kew:edit:tab", "rome");
+  const [tab, setTab] = usePersistentState<EditMethod | "patches">("kew:edit:tab", "rome");
   const { edit, setEdit } = useWorkbenchSession();
   const setResult = useCallback((result: Record<string, unknown> | null) => setEdit((current) => ({ ...current, result })), [setEdit]);
   const setJob = useCallback((job: EditJob | null) => setEdit((current) => ({ ...current, job })), [setEdit]);
@@ -107,19 +110,12 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
   return (
     <div className="grid gap-4">
       <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-white p-1.5">
-        {[
-          ["rome", "ROME"],
-          ["r_rome", "r-ROME"],
-          ["kn", "KN"],
-          ["memit", "MEMIT"],
-          ["ft", "FT"],
-          ["lora", "LoRA"]
-        ].map(([id, label]) => (
+        {Object.entries(editMethods).map(([id, label]) => (
           <button
             key={id}
             aria-pressed={tab === id}
             className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === id ? "bg-cyan/10 text-cyan" : "text-ink/55 hover:bg-panel hover:text-ink"}`}
-            onClick={() => setTab(id as "rome" | "r_rome" | "kn" | "memit" | "ft" | "lora")}
+            onClick={() => setTab(id as EditMethod)}
           >
             {label}
           </button>
@@ -128,8 +124,8 @@ export function EditForm({ models, patches, runtime = [], onPatchesChanged }: { 
       {tab === "rome" ? <RomeForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "r_rome" ? <RomeForm method="r_rome" models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       {tab === "kn" ? <KnForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "memit" ? <MemitForm models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
-      {tab === "ft" || tab === "lora" ? <TrainingForm key={tab} method={tab} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab in batchWeightMethods ? <BatchWeightForm key={tab} method={tab as BatchWeightMethod} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
+      {tab in trainingMethods ? <TrainingForm key={tab} method={tab as TrainingMethod} models={models} runtime={runtime} result={edit.result} job={edit.job} setResult={setResult} setJob={setJob} onPatchesChanged={onPatchesChanged} /> : null}
       <PatchHistory patches={patches} models={models} runtime={runtime} onPatchesChanged={onPatchesChanged} />
     </div>
   );
@@ -736,7 +732,8 @@ function FactDatasetEditor({
   label,
   onEditorModeChange,
   onError,
-  uploadTitle
+  uploadTitle,
+  preferenceEditing = false
 }: {
   dataset: IndexedFactDataset<FactEditDraft>;
   editorMode: "form" | "json";
@@ -744,6 +741,7 @@ function FactDatasetEditor({
   onEditorModeChange: (value: "form" | "json") => void;
   onError: (value: string) => void;
   uploadTitle: string;
+  preferenceEditing?: boolean;
 }) {
   const [jsonValue, setJsonValue] = useState<string | null>(null);
   const [loadingJson, setLoadingJson] = useState(false);
@@ -864,7 +862,7 @@ function FactDatasetEditor({
         dataset.status === "loading" ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading saved facts…</div>
           : dataset.status === "error" ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-xs text-rust">{dataset.error}</div>
             : <>
-                <VirtualFactDraftList dataset={dataset} onError={onError} />
+                <VirtualFactDraftList dataset={dataset} onError={onError} preferenceEditing={preferenceEditing} />
                 <button className="ghost-button min-h-9 justify-self-start px-2 py-1 text-xs" onClick={() => void dataset.append(emptyFactEditDraft())} type="button"><Plus size={14} />Add fact</button>
               </>
       ) : loadingJson ? <div className="rounded-md border border-line bg-panel p-3 text-xs text-ink/60">Loading JSON from local browser storage…</div>
@@ -872,7 +870,7 @@ function FactDatasetEditor({
             <div className="flex justify-end"><button className="ghost-button min-h-8 px-2 py-1 text-xs" disabled={savingJson || jsonValue === null} onClick={formatJson} type="button">Format JSON</button></div>
             <textarea className="control min-h-64 font-mono text-xs" value={jsonValue ?? ""} onChange={(event) => setJsonValue(event.target.value)} />
           </>}
-      {pendingImport ? <FactImportMappingDialog label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
+      {pendingImport ? <FactImportMappingDialog preferenceEditing={preferenceEditing} label={label} mapping={pendingImport.mapping} records={pendingImport.records} onClose={() => setPendingImport(null)} onConfirm={(mapping) => void commitImport(mapping)} /> : null}
     </div>
   );
 }
@@ -880,12 +878,14 @@ function FactDatasetEditor({
 function FactImportMappingDialog({
   label,
   mapping: initialMapping,
+  preferenceEditing = false,
   records,
   onClose,
   onConfirm
 }: {
   label: string;
   mapping: FactImportFieldMapping;
+  preferenceEditing?: boolean;
   records: Record<string, unknown>[];
   onClose: () => void;
   onConfirm: (mapping: FactImportFieldMapping) => void;
@@ -895,7 +895,8 @@ function FactImportMappingDialog({
   const keys = useMemo(() => Array.from(new Set(records.flatMap((record) => Object.keys(record)))).sort((left, right) => left.localeCompare(right)), [records]);
 
   function confirm() {
-    const missing = REQUIRED_FACT_IMPORT_FIELDS.find((field) => !mapping[field].trim());
+    const requiredFields = preferenceEditing ? [...REQUIRED_FACT_IMPORT_FIELDS, "target_neg" as const] : REQUIRED_FACT_IMPORT_FIELDS;
+    const missing = requiredFields.find((field) => !mapping[field].trim());
     if (missing) {
       setError(`Choose a JSON attribute for ${factImportFieldLabel(missing)}.`);
       return;
@@ -921,7 +922,7 @@ function FactImportMappingDialog({
           <button aria-label="Close import mapping" className="ghost-button grid size-8 place-items-center p-0" onClick={onClose} title="Close" type="button"><X size={16} /></button>
         </div>
         <div className="mt-5 grid gap-3">
-          {FACT_IMPORT_FIELDS.map((field) => (
+          {(preferenceEditing ? [...FACT_IMPORT_FIELDS, "target_neg" as const] : FACT_IMPORT_FIELDS).map((field) => (
             <label className="grid gap-1" key={field}>
               <span className="label">{factImportFieldLabel(field)}</span>
               <input className="control font-mono text-sm" list={`fact-import-keys-${field}`} value={mapping[field]} onChange={(event) => setMapping((current) => ({ ...current, [field]: event.target.value }))} />
@@ -931,7 +932,7 @@ function FactImportMappingDialog({
             </label>
           ))}
         </div>
-        <p className="mt-4 text-xs leading-5 text-ink/60">Only the first four fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
+        <p className="mt-4 text-xs leading-5 text-ink/60">The main fields appear in fact cards. Optional mapped fields and every original JSON value are retained with the fact and saved in patch metadata.</p>
         {error ? <div className="mt-4 rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
         <div className="mt-5 flex justify-end gap-2">
           <button className="ghost-button min-h-9 px-3 py-1 text-sm" onClick={onClose} type="button">Cancel</button>
@@ -942,13 +943,14 @@ function FactImportMappingDialog({
   );
 }
 
-function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDataset<FactEditDraft>; onError: (value: string) => void }) {
+function VirtualFactDraftList({ dataset, onError, preferenceEditing = false }: { dataset: IndexedFactDataset<FactEditDraft>; onError: (value: string) => void; preferenceEditing?: boolean }) {
+  const cardHeight = VIRTUAL_FACT_CARD_HEIGHT + (preferenceEditing ? 68 : 0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(384);
   const [facts, setFacts] = useState<FactEditDraft[]>([]);
-  const visibleCount = Math.max(1, Math.ceil(viewportHeight / VIRTUAL_FACT_CARD_HEIGHT));
-  const startIndex = Math.max(0, Math.floor(scrollTop / VIRTUAL_FACT_CARD_HEIGHT) - VIRTUAL_FACT_OVERSCAN);
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / cardHeight));
+  const startIndex = Math.max(0, Math.floor(scrollTop / cardHeight) - VIRTUAL_FACT_OVERSCAN);
   const endIndex = Math.min(dataset.count, startIndex + visibleCount + VIRTUAL_FACT_OVERSCAN * 2);
 
   useEffect(() => {
@@ -981,8 +983,8 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
 
   return (
     <div ref={scrollRef} className="max-h-96 overflow-y-auto pr-1" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
-      <div className="relative" style={{ height: dataset.count * VIRTUAL_FACT_CARD_HEIGHT }}>
-        <div className="absolute inset-x-0 grid gap-3" style={{ transform: `translateY(${startIndex * VIRTUAL_FACT_CARD_HEIGHT}px)` }}>
+      <div className="relative" style={{ height: dataset.count * cardHeight }}>
+        <div className="absolute inset-x-0 grid gap-3" style={{ transform: `translateY(${startIndex * cardHeight}px)` }}>
           {Array.from({ length: Math.max(0, endIndex - startIndex) }, (_, offset) => {
             const index = startIndex + offset;
             const fact = facts[offset];
@@ -990,13 +992,15 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
               <VirtualFactDraftCard
                 key={index}
                 count={dataset.count}
+                preferenceEditing={preferenceEditing}
+                cardHeight={cardHeight}
                 fact={fact}
                 index={index}
                 onError={onError}
                 onRemove={() => void dataset.remove(index).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
                 onUpdate={(field, value) => void dataset.update(index, (current) => ({ ...current, [field]: value })).catch((reason) => onError(reason instanceof Error ? reason.message : String(reason)))}
               />
-            ) : <div key={index} className="animate-pulse border border-line bg-panel" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }} />;
+            ) : <div key={index} className="animate-pulse border border-line bg-panel" style={{ height: cardHeight - 12 }} />;
           })}
         </div>
       </div>
@@ -1005,6 +1009,8 @@ function VirtualFactDraftList({ dataset, onError }: { dataset: IndexedFactDatase
 }
 
 function VirtualFactDraftCard({
+  preferenceEditing = false,
+  cardHeight = VIRTUAL_FACT_CARD_HEIGHT,
   count,
   fact,
   index,
@@ -1012,6 +1018,8 @@ function VirtualFactDraftCard({
   onRemove,
   onUpdate
 }: {
+  preferenceEditing?: boolean;
+  cardHeight?: number;
   count: number;
   fact: FactEditDraft;
   index: number;
@@ -1032,7 +1040,7 @@ function VirtualFactDraftCard({
   }
 
   return (
-    <section className="grid gap-3 border border-line bg-panel p-3" style={{ height: VIRTUAL_FACT_CARD_HEIGHT - 12 }}>
+    <section className="grid gap-3 border border-line bg-panel p-3" style={{ height: cardHeight - 12 }}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium">Fact {index + 1}</span>
         <button aria-label={`Remove fact ${index + 1}`} className="ghost-button grid size-8 place-items-center p-0" disabled={count === 1} onClick={onRemove} title="Remove fact" type="button"><Trash2 size={15} /></button>
@@ -1041,11 +1049,13 @@ function VirtualFactDraftCard({
       <FactInput label="Relation Prompt" value={value.relation_prompt} onChange={(fieldValue) => update("relation_prompt", fieldValue)} />
       <FactInput label="New Object" value={value.new_object} onChange={(fieldValue) => update("new_object", fieldValue)} />
       <FactInput label="Ground Truth" value={value.ground_truth} onChange={(fieldValue) => update("ground_truth", fieldValue)} />
+      {preferenceEditing ? <FactInput label="Rejected Answer (DPO)" value={value.target_neg ?? ""} onChange={(fieldValue) => update("target_neg", fieldValue)} /> : null}
     </section>
   );
 }
 
-function MemitForm({
+function BatchWeightForm({
+  method = "memit",
   models,
   runtime,
   result,
@@ -1054,6 +1064,7 @@ function MemitForm({
   setJob,
   onPatchesChanged
 }: {
+  method?: BatchWeightMethod;
   models: SupportedModel[];
   runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
@@ -1062,13 +1073,14 @@ function MemitForm({
   setJob: (job: EditJob | null) => void;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
-  const memitModels = useMemo(() => models.filter((model) => model.supports_memit), [models]);
-  const [modelId, setModelId] = usePersistentState("kew:edit:memit:modelId", memitModels[0]?.id ?? "gpt2-xl");
-  const [inputMode, setInputMode] = usePersistentState<"form" | "json">("kew:edit:memit:inputMode", "form");
-  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>("kew:edit:memit:layersByModel", EMPTY_LAYER_VALUES);
+  const methodLabel = batchWeightMethods[method];
+  const memitModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
+  const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, memitModels[0]?.id ?? "gpt2-xl");
+  const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
+  const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
   const [easyEditDefaultLayers, setEasyEditDefaultLayers] = useState<Record<string, number[]>>({});
-  const [sequentialEdit, setSequentialEdit] = usePersistentState("kew:edit:memit:sequentialEdit", false);
-  const [batchSize, setBatchSize] = usePersistentState("kew:edit:memit:batchSize", "1");
+  const [sequentialEdit, setSequentialEdit] = usePersistentState(`kew:edit:${method}:sequentialEdit`, false);
+  const [batchSize, setBatchSize] = usePersistentState(`kew:edit:${method}:batchSize`, "1");
   const parsedBatchSize = Number(batchSize);
   const validBatchSize = /^\d+$/.test(batchSize) && Number.isSafeInteger(parsedBatchSize) && parsedBatchSize >= 1;
   const mom2Adjustment = true;
@@ -1081,9 +1093,9 @@ function MemitForm({
   const [missingMom2Layers, setMissingMom2Layers] = useState<number[] | null>(null);
   const [mom2CacheOpen, setMom2CacheOpen] = useState(false);
   const batchDataset = useIndexedFactDataset({
-    datasetId: "kew:edit:memit:batch-facts",
+    datasetId: `kew:edit:${method}:batch-facts`,
     initialValues: DEFAULT_FACT_EDIT_DRAFTS,
-    legacyStorageKey: "kew:edit:memit:edits",
+    legacyStorageKey: `kew:edit:${method}:edits`,
     normalize: normalizeFactEditDraft
   });
   const selectedModel = useMemo(() => memitModels.find((model) => model.id === modelId), [memitModels, modelId]);
@@ -1092,7 +1104,7 @@ function MemitForm({
   const layers = layersByModel[modelId] ?? "";
   const selectedLayers = parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
-  const modelLoaded = runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
+  const modelLoaded = Boolean(selectedModel) && runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
   const evaluationPrompts = useFactEvaluationPromptPreview(batchDataset, true);
 
@@ -1112,7 +1124,7 @@ function MemitForm({
   useEffect(() => {
     let active = true;
     if (!selectedModelId) return;
-    api.editDefaultLayers({ model_id: selectedModelId, method: "memit" })
+    api.editDefaultLayers({ model_id: selectedModelId, method })
       .then((result) => {
         const defaults = result.layers.filter((layer) => Number.isInteger(layer) && layer >= 0 && layer <= maxLayer);
         if (!active || defaults.length === 0) return;
@@ -1129,7 +1141,7 @@ function MemitForm({
     return () => {
       active = false;
     };
-  }, [maxLayer, selectedModelId, setLayersByModel]);
+  }, [maxLayer, method, selectedModelId, setLayersByModel]);
 
   async function run() {
     if (!modelLoaded || busy) return;
@@ -1140,7 +1152,7 @@ function MemitForm({
     try {
       const parsedEdits = await batchDataset.getAll();
       if (!parsedEdits.length) {
-        throw new Error("Batch Edits needs at least one MEMIT fact.");
+        throw new Error(`Batch Edits needs at least one ${methodLabel} fact.`);
       }
       if (!validBatchSize) {
         throw new Error("Batch size must be a positive whole number.");
@@ -1152,7 +1164,7 @@ function MemitForm({
       if (!selectedLayers?.length) {
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
       }
-      const response = await api.memitEdit({
+      const response = await api.batchWeightEdit(method, {
         model_id: modelId,
         batch_size: parsedBatchSize,
         edits: parsedEdits.map((edit) => ({
@@ -1194,7 +1206,7 @@ function MemitForm({
       const edits = await batchDataset.getAll();
       const response = await api.easyEditReliability({
         model_id: modelId,
-        method: "memit",
+        method,
         edits: edits.map((edit) => ({
           subject: edit.subject,
           relation_prompt: edit.relation_prompt,
@@ -1230,13 +1242,16 @@ function MemitForm({
     <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
       <section className="panel grid gap-4">
         <ModelSelector models={memitModels} value={modelId} onChange={setModelId} onRuntimeUnloaded={onPatchesChanged} />
+        {!memitModels.length ? <p className="text-sm text-ink/60">No models are configured for {methodLabel}.</p> : null}
+        {method === "alphaedit" || method === "sphere" ? <p className="text-xs text-ink/60">Editing history is shared across batches in this job and resets for each new job. Continue from active patches retains the model’s edited weights.</p> : null}
+        {method === "eamet" ? <p className="text-xs text-ink/60">Choose layers from the EasyEdit defaults; each has its own configured covariance weight.</p> : null}
         <FactDatasetEditor
           label="Batch Edits"
           dataset={batchDataset}
           editorMode={inputMode}
           onEditorModeChange={setInputMode}
           onError={setError}
-          uploadTitle="MEMIT edits JSON"
+          uploadTitle={`${methodLabel} edits JSON`}
         />
         <label className="grid gap-2">
           <span className="label">Batch Size</span>
@@ -1299,25 +1314,25 @@ function MemitForm({
         </label>
         <label className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-sm">
           <span>Second-Moment Adjustment</span>
-          <input type="checkbox" checked={mom2Adjustment} disabled title="Required for MEMIT" />
+          <input type="checkbox" checked={mom2Adjustment} disabled title={`Required for ${methodLabel}`} />
         </label>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-ink/60">Required for MEMIT. Prepare Wikipedia statistics for every selected layer.</p>
+          <p className="text-xs text-ink/60">Required for {methodLabel}. Prepare statistics for every selected layer.</p>
           <button className="ghost-button min-h-8 shrink-0 px-2 py-1 text-xs" onClick={() => setMom2CacheOpen(true)} title="Peek cached second-moment statistics" type="button">
             <Database size={14} />
             Cache
           </button>
         </div>
-        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? "Apply MEMIT edit at the selected layers" : "Load the selected model before editing"}>
+        <button className="tool-button w-full" onClick={run} disabled={busy || !modelLoaded || batchDataset.status !== "ready" || !selectedLayers?.length || !validBatchSize || batchDataset.count === 0} title={modelLoaded ? `Apply ${methodLabel} edit at the selected layers` : "Load the selected model before editing"}>
           <Layers size={16} />
-          {busy ? "Editing" : "Apply MEMIT"}
+          {busy ? "Editing" : `Apply ${methodLabel}`}
         </button>
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
       <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
-      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method="memit" onClose={() => setMom2CacheOpen(false)} /> : null}
+      {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
   );
 }
@@ -1332,7 +1347,7 @@ function TrainingForm({
   setJob,
   onPatchesChanged
 }: {
-  method: "ft" | "lora";
+  method: TrainingMethod;
   models: SupportedModel[];
   runtime: ModelRuntimeStatus[];
   result: Record<string, unknown> | null;
@@ -1341,8 +1356,8 @@ function TrainingForm({
   setJob: (job: EditJob | null) => void;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
-  const methodLabel = method === "ft" ? "FT" : "LoRA";
-  const trainingModels = useMemo(() => models.filter((model) => method === "ft" ? model.supports_ft : model.supports_lora), [method, models]);
+  const methodLabel = trainingMethods[method];
+  const trainingModels = useMemo(() => models.filter((model) => model[`supports_${method}`]), [method, models]);
   const [modelId, setModelId] = usePersistentState(`kew:edit:${method}:modelId`, trainingModels[0]?.id ?? "gpt2-xl");
   const [inputMode, setInputMode] = usePersistentState<"form" | "json">(`kew:edit:${method}:inputMode`, "form");
   const [layersByModel, setLayersByModel] = usePersistentState<Record<string, string>>(`kew:edit:${method}:layersByModel`, EMPTY_LAYER_VALUES);
@@ -1364,7 +1379,7 @@ function TrainingForm({
   const reliabilityTestCancellation = useReliabilityTestCancellation();
   const batchDataset = useIndexedFactDataset({
     datasetId: `kew:edit:${method}:batch-facts`,
-    initialValues: DEFAULT_FACT_EDIT_DRAFTS,
+    initialValues: method === "dpo" ? DEFAULT_DPO_FACT_EDIT_DRAFTS : DEFAULT_FACT_EDIT_DRAFTS,
     legacyStorageKey: `kew:edit:${method}:edits`,
     normalize: normalizeFactEditDraft
   });
@@ -1372,7 +1387,7 @@ function TrainingForm({
   const selectedModelId = selectedModel?.id;
   const maxLayer = Math.max(0, (selectedModel?.n_layers ?? 1) - 1);
   const layers = layersByModel[modelId] ?? "";
-  const selectedLayers = method === "lora" && !layers.trim() ? [] : parseMemitLayers(layers, maxLayer);
+  const selectedLayers = method !== "ft" && !layers.trim() ? [] : parseMemitLayers(layers, maxLayer);
   const easyEditDefaultLayerValues = easyEditDefaultLayers[modelId];
   const modelLoaded = Boolean(selectedModel) && runtime.some((runtimeStatus) => runtimeStatus.model_id === modelId && runtimeStatus.loaded);
   const runtimeConnected = useRuntimeConnection();
@@ -1432,6 +1447,10 @@ function TrainingForm({
       const invalidEdit = parsedEdits.findIndex((edit) => !edit.subject.trim() || !edit.relation_prompt.trim() || !edit.new_object.trim());
       if (invalidEdit >= 0) {
         throw new Error(`Fact ${invalidEdit + 1} needs a subject, relation prompt, and new object.`);
+      }
+      if (method === "dpo") {
+        const invalidPreference = parsedEdits.findIndex((edit) => !edit.target_neg?.trim() || edit.target_neg.trim() === edit.new_object.trim());
+        if (invalidPreference >= 0) throw new Error(`Fact ${invalidPreference + 1} needs a rejected answer different from the new object.`);
       }
       if (!selectedLayers || (method === "ft" && !selectedLayers.length)) {
         throw new Error(`Enter one or more layers from 0 to ${maxLayer}.`);
@@ -1519,6 +1538,7 @@ function TrainingForm({
           onEditorModeChange={setInputMode}
           onError={setError}
           uploadTitle={`${methodLabel} edits JSON`}
+          preferenceEditing={method === "dpo"}
         />
         <label className="grid min-w-0 grid-cols-1 gap-2">
           <span className="label">Batch Size</span>
@@ -1542,7 +1562,7 @@ function TrainingForm({
           <input
             className="control"
             inputMode="numeric"
-            placeholder={method === "lora" ? "All matching layers (leave empty)" : undefined}
+            placeholder={method !== "ft" ? "All matching layers (leave empty)" : undefined}
             value={layers}
             onChange={(event) => {
               const value = event.target.value;
@@ -2055,6 +2075,7 @@ function normalizeFactEditDraft(value: unknown): FactEditDraft {
     relation_prompt: typeof edit.relation_prompt === "string" ? edit.relation_prompt : "",
     ground_truth: typeof edit.ground_truth === "string" ? edit.ground_truth : "",
     new_object: typeof edit.new_object === "string" ? edit.new_object : "",
+    ...(typeof edit.target_neg === "string" ? { target_neg: edit.target_neg } : {}),
     rephrase_prompts: Array.isArray(edit.rephrase_prompts)
       ? edit.rephrase_prompts.filter((prompt): prompt is string => typeof prompt === "string")
       : undefined,
@@ -2074,6 +2095,7 @@ function detectFactImportMapping(records: Record<string, unknown>[]): FactImport
     subject: findImportKey(keys, ["subject", "entity", "entityname", "name"]),
     relation_prompt: findImportKey(keys, ["relationprompt", "prompt", "relation", "template"]),
     new_object: findImportKey(keys, ["newobject", "targetnew", "newtarget", "target"]),
+    target_neg: findImportKey(keys, ["targetneg", "rejectedanswer", "rejected", "negativeanswer"]),
     ground_truth: findImportKey(keys, ["groundtruth", "targettrue", "targetold", "originalobject"]),
     rephrase_prompt: findImportKey(keys, ["rephraseprompt", "rephraseprompts"]),
     locality_prompt: findImportKey(keys, ["localityprompt"]),
@@ -2104,6 +2126,7 @@ function normalizeImportedFactDraft(record: Record<string, unknown>, mapping: Fa
     relation_prompt: relationPromptFromImportedValue(sourcePrompt, subject),
     ground_truth: groundTruth,
     new_object: newObject,
+    ...(mapping.target_neg ? { target_neg: stringImportValue(record, mapping.target_neg) } : {}),
     ...(rephrasePrompts.length ? { rephrase_prompts: rephrasePrompts } : {}),
     source_metadata: sourceMetadata
   };
@@ -2151,6 +2174,7 @@ function factImportFieldLabel(field: FactImportField) {
     relation_prompt: "Relation Prompt",
     new_object: "New Object",
     ground_truth: "Ground Truth",
+    target_neg: "Rejected Answer (DPO)",
     rephrase_prompt: "Rephrase Prompt",
     locality_prompt: "Locality Prompt",
     locality_ground_truth: "Locality Ground Truth",
@@ -2268,7 +2292,7 @@ function ResultPanel({
   const evaluationMethod = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).method
     : undefined;
-  const usesBatchEditing = evaluationMethod === "memit" || evaluationMethod === "ft" || evaluationMethod === "lora";
+  const usesBatchEditing = isBatchEditMethod(evaluationMethod);
   const immediateReliabilityLabel = usesBatchEditing ? "Immediate post-batch reliability" : "Immediate post-edit reliability";
   const completedFactCount = reliabilitySummary && typeof reliabilitySummary === "object"
     ? (reliabilitySummary as Record<string, unknown>).completed_fact_count
@@ -2406,6 +2430,7 @@ function ReliabilityTestGenerationCard({ item }: { item: ReliabilityTestResultIt
     {typeof score === "number" ? <span>Rewrite accuracy: <strong className="text-cyan">{formatReliabilityScore(score)}</strong></span> : <span>Evaluating…</span>}
   </EditEvaluationCard>;
 }
+
 
 function EditJobProgress({ job }: { job: EditJob | null }) {
   if (!job || job.status !== "running") return null;

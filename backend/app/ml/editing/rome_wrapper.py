@@ -1,11 +1,14 @@
+"""Shared single-fact and cumulative-series execution for ROME and r-ROME."""
 from __future__ import annotations
 
 from app.ml.editing.easyedit_runtime import EasyEditSeriesContext, evaluate_post_edit_reliability, run_easyedit
+from app.ml.editing.methods import RANK_ONE_METHODS
 from app.ml.editing.patch_format import edit_to_patch_entry
 from app.services.model_registry import model_registry
 
 
 def run_rome_edit(
+    method: str,
     model_id: str,
     subject: str,
     relation_prompt: str,
@@ -23,11 +26,13 @@ def run_rome_edit(
     patch_mode: str = "individual",
     series_context: EasyEditSeriesContext | None = None,
 ) -> dict:
+    if method not in RANK_ONE_METHODS:
+        raise ValueError(f"Unsupported rank-one editing method: {method}")
     from app.services.model_runtime_service import model_runtime_service
 
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(
-            "rome_edit",
+            f"{method}_edit",
             {
                 "model_id": model_id,
                 "subject": subject,
@@ -62,7 +67,7 @@ def run_rome_edit(
     edit_layers = [target_layer] if target_layer is not None else None
 
     result = run_easyedit(
-        method="rome",
+        method=method,
         model_id=model_id,
         edits=[edit],
         layers=edit_layers,
@@ -76,11 +81,12 @@ def run_rome_edit(
         series_context=series_context,
     )
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "rome", [edit], edit_result=result))
+        result.update(evaluate_post_edit_reliability(model_id, method, [edit], edit_result=result))
     return result
 
 
 def run_rome_sequential_edits(
+    method: str,
     model_id: str,
     edits: list[dict],
     target_layer: int,
@@ -89,11 +95,13 @@ def run_rome_sequential_edits(
     sequential_edit: bool = True,
     generate_evaluation: bool = True,
 ) -> dict:
+    if method not in RANK_ONE_METHODS:
+        raise ValueError(f"Unsupported rank-one editing method: {method}")
     from app.services.model_runtime_service import model_runtime_service
 
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(
-            "rome_sequential_edits",
+            f"{method}_sequential_edits",
             {
                 "model_id": model_id,
                 "edits": edits,
@@ -106,8 +114,9 @@ def run_rome_sequential_edits(
             timeout=7200.0,
         )
 
+    method_label = method.upper().replace("_", "-")
     if not edits:
-        raise ValueError("ROME sequential series needs at least one fact.")
+        raise ValueError(f"{method_label} sequential series needs at least one fact.")
 
     series_context = EasyEditSeriesContext(continue_from_active_patches=sequential_edit)
     patch_results: list[dict] = []
@@ -118,10 +127,11 @@ def run_rome_sequential_edits(
         new_object = str(edit.get("new_object") or "").strip()
         if not subject or not relation_prompt or not new_object:
             raise ValueError(
-                f"ROME sequential series fact {index} needs a subject, relation prompt, and new object."
+                f"{method_label} sequential series fact {index} needs a subject, relation prompt, and new object."
             )
-        print(f"Applying ROME sequential edit {index}/{len(edits)}.")
+        print(f"Applying {method_label} sequential edit {index}/{len(edits)}.")
         result = run_rome_edit(
+            method=method,
             model_id=model_id,
             subject=subject,
             relation_prompt=relation_prompt,
@@ -140,7 +150,7 @@ def run_rome_sequential_edits(
             series_context=series_context,
         )
         patch_results.append(result)
-        print(f"Created ROME sequential edit {index}/{len(edits)}.")
+        print(f"Created {method_label} sequential edit {index}/{len(edits)}.")
         print(f"Updated cumulative patch {result['patch_id']}.")
 
     final_patch_id = patch_results[-1]["patch_id"]
@@ -153,5 +163,5 @@ def run_rome_sequential_edits(
         "metrics": [entry.get("metrics", []) for entry in patch_results],
     }
     if generate_evaluation:
-        result.update(evaluate_post_edit_reliability(model_id, "rome", edits, edit_result=result))
+        result.update(evaluate_post_edit_reliability(model_id, method, edits, edit_result=result))
     return result

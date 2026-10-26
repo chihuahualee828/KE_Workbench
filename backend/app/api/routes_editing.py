@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.config import settings
 from app.ml.editing.edit_cancellation import run_cancellable_edit
 from app.api.operation_guard import operation_guard
-from app.db.schemas import ApiSchema, KnEditRequest, MemitEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RRomeEditRequest, RomeEditRequest, RomeSequentialEditsRequest, JobResponse, PatchListResponse, TrainingEditRequest
+from app.db.schemas import ApiSchema, BatchWeightEditRequest, DpoEditRequest, KnEditRequest, Mom2StatisticsRequest, Mom2StatisticsPrecisionRequest, Mom2StatisticsSourceRequest, RankOneEditRequest, RankOneSeriesRequest, JobResponse, PatchListResponse, TrainingEditRequest
 from app.ml.editing.easyedit_runtime import (
     EasyEditRuntimeError,
     EasyEditUnsupportedError,
@@ -29,10 +29,10 @@ from app.ml.editing.easyedit_runtime import (
     set_mom2_statistics_precision,
     delete_mom2_statistics,
 )
+from app.ml.editing.methods import BATCH_WEIGHT_METHODS
 from app.ml.editing.memit_wrapper import run_memit_edit
 from app.ml.editing.kn_wrapper import run_kn_edit
 from app.ml.editing.rome_wrapper import run_rome_edit, run_rome_sequential_edits
-from app.ml.editing.r_rome_wrapper import run_r_rome_edit, run_r_rome_sequential_edits
 from app.ml.editing.lora_modules import get_lora_modules
 from app.ml.editing.training_hparams import get_training_defaults, validate_training_hparams
 from app.ml.editing.training_wrapper import run_training_edit
@@ -44,7 +44,9 @@ router = APIRouter(tags=["editing"])
 _edit_job_lock = threading.Lock()
 _EDIT_METHODS = {"ROME": "rome", "R-ROME": "r_rome", "ROME sequential series": "rome",
                  "R-ROME sequential series": "r_rome", "KN": "kn", "MEMIT": "memit",
-                 "FT": "ft", "LORA": "lora"}
+                 "FT": "ft", "LORA": "lora", "DPO": "dpo",
+                 "EMMET": "emmet", "MEMIT-FE": "memit_fe", "PMET": "pmet",
+                 "EAMET": "eamet", "ALPHAEDIT": "alphaedit", "SPHERE": "sphere"}
 
 
 class PatchExportRequest(ApiSchema):
@@ -95,53 +97,43 @@ def edit_default_layers(request: EditDefaultLayersRequest) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _start_rank_one_job(
+    method: str, request: RankOneEditRequest | RankOneSeriesRequest, *, series: bool = False,
+) -> JobResponse:
+    _require_loaded_model(request.model_id)
+    layers = [request.target_layer] if request.target_layer is not None else None
+    _require_mom2_statistics(request.model_id, method, layers, request.mom2_adjustment)
+    kind = f"{method}_sequential_edits" if series else f"{method}_edit"
+    experiment = experiment_service.create(kind, request.model_id, request.model_dump())
+    job = experiment_service.create_job(experiment["id"])
+    label = method.upper().replace("_", "-") + (" sequential series" if series else "")
+    runner = run_rome_sequential_edits if series else run_rome_edit
+    _start_edit_thread(label, job["id"], partial(runner, method=method), request.model_dump())
+    return _job_response(job)
+
+
 @router.post("/edit/rome", response_model=JobResponse)
 @operation_guard.protect()
-def rome_edit(request: RomeEditRequest) -> JobResponse:
-    _require_loaded_model(request.model_id)
-    _require_mom2_statistics(request.model_id, "rome", [request.target_layer] if request.target_layer is not None else None, request.mom2_adjustment)
-    experiment = experiment_service.create("rome_edit", request.model_id, request.model_dump())
-    job = experiment_service.create_job(experiment["id"])
-    _start_edit_thread("ROME", job["id"], run_rome_edit, request.model_dump())
-    return _job_response(job)
+def rome_edit(request: RankOneEditRequest) -> JobResponse:
+    return _start_rank_one_job("rome", request)
 
 
 @router.post("/edit/r-rome", response_model=JobResponse)
 @operation_guard.protect()
-def r_rome_edit(request: RRomeEditRequest) -> JobResponse:
-    _require_loaded_model(request.model_id)
-    _require_mom2_statistics(
-        request.model_id,
-        "r_rome",
-        [request.target_layer] if request.target_layer is not None else None,
-        request.mom2_adjustment,
-    )
-    experiment = experiment_service.create("r_rome_edit", request.model_id, request.model_dump())
-    job = experiment_service.create_job(experiment["id"])
-    _start_edit_thread("R-ROME", job["id"], run_r_rome_edit, request.model_dump())
-    return _job_response(job)
+def r_rome_edit(request: RankOneEditRequest) -> JobResponse:
+    return _start_rank_one_job("r_rome", request)
 
 
 @router.post("/edit/rome/sequential", response_model=JobResponse)
 @operation_guard.protect()
-def rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
-    _require_loaded_model(request.model_id)
-    _require_mom2_statistics(request.model_id, "rome", [request.target_layer], request.mom2_adjustment)
-    experiment = experiment_service.create("rome_sequential_edits", request.model_id, request.model_dump())
-    job = experiment_service.create_job(experiment["id"])
-    _start_edit_thread("ROME sequential series", job["id"], run_rome_sequential_edits, request.model_dump())
-    return _job_response(job)
+def rome_sequential_edits(request: RankOneSeriesRequest) -> JobResponse:
+    return _start_rank_one_job("rome", request, series=True)
 
 
 @router.post("/edit/r-rome/sequential", response_model=JobResponse)
 @operation_guard.protect()
-def r_rome_sequential_edits(request: RomeSequentialEditsRequest) -> JobResponse:
-    _require_loaded_model(request.model_id)
-    _require_mom2_statistics(request.model_id, "r_rome", [request.target_layer], request.mom2_adjustment)
-    experiment = experiment_service.create("r_rome_sequential_edits", request.model_id, request.model_dump())
-    job = experiment_service.create_job(experiment["id"])
-    _start_edit_thread("R-ROME sequential series", job["id"], run_r_rome_sequential_edits, request.model_dump())
-    return _job_response(job)
+def r_rome_sequential_edits(request: RankOneSeriesRequest) -> JobResponse:
+    return _start_rank_one_job("r_rome", request, series=True)
 
 
 @router.post("/edit/kn", response_model=JobResponse)
@@ -156,13 +148,60 @@ def kn_edit(request: KnEditRequest) -> JobResponse:
 
 @router.post("/edit/memit", response_model=JobResponse)
 @operation_guard.protect()
-def memit_edit(request: MemitEditRequest) -> JobResponse:
+def memit_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("memit", request)
+
+
+def _start_batch_weight_edit(method: str, request: BatchWeightEditRequest) -> JobResponse:
     _require_loaded_model(request.model_id)
-    _require_mom2_statistics(request.model_id, "memit", request.layers, request.mom2_adjustment)
-    experiment = experiment_service.create("memit_edit", request.model_id, request.model_dump())
+    _require_mom2_statistics(request.model_id, method, request.layers, request.mom2_adjustment)
+    experiment = experiment_service.create(f"{method}_edit", request.model_id, request.model_dump())
     job = experiment_service.create_job(experiment["id"])
-    _start_edit_thread("MEMIT", job["id"], run_memit_edit, request.model_dump())
+    _start_edit_thread(method.upper().replace("_", "-"), job["id"],
+                       partial(run_memit_edit, method=method), request.model_dump())
     return _job_response(job)
+
+
+@router.post("/edit/emmet", response_model=JobResponse)
+@operation_guard.protect()
+def emmet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("emmet", request)
+
+
+@router.post("/edit/memit-fe", response_model=JobResponse)
+@operation_guard.protect()
+def memit_fe_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("memit_fe", request)
+
+
+@router.post("/edit/pmet", response_model=JobResponse)
+@operation_guard.protect()
+def pmet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("pmet", request)
+
+
+@router.post("/edit/eamet", response_model=JobResponse)
+@operation_guard.protect()
+def eamet_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("eamet", request)
+
+
+@router.post("/edit/alphaedit", response_model=JobResponse)
+@operation_guard.protect()
+def alphaedit_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("alphaedit", request)
+
+
+@router.post("/edit/sphere", response_model=JobResponse)
+@operation_guard.protect()
+def sphere_edit(request: BatchWeightEditRequest) -> JobResponse:
+    return _start_batch_weight_edit("sphere", request)
+
+
+@router.post("/edit/dpo", response_model=JobResponse)
+@operation_guard.protect()
+def dpo_edit(request: DpoEditRequest) -> JobResponse:
+    return _start_training_edit("dpo", request)
 
 
 @router.post("/edit/ft", response_model=JobResponse)
@@ -292,8 +331,8 @@ def import_mom2(
     files: list[UploadFile] = File(...),
 ) -> dict:
     try:
-        if method not in {"rome", "r_rome", "memit"}:
-            raise ValueError("Method must be rome, r_rome, or memit.")
+        if method not in {"rome", "r_rome", *BATCH_WEIGHT_METHODS}:
+            raise ValueError("Method must support second-moment statistics.")
         parsed_layers = json.loads(layers)
         if not isinstance(parsed_layers, list) or not all(isinstance(layer, int) for layer in parsed_layers):
             raise ValueError("Layers must be a JSON array of integers.")

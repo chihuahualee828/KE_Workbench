@@ -1,3 +1,4 @@
+import type { Mom2Method } from "./editingMethods";
 export type SupportedModel = {
   id: string;
   name: string;
@@ -22,6 +23,13 @@ export type SupportedModel = {
   supports_memit: boolean;
   supports_ft: boolean;
   supports_lora: boolean;
+  supports_emmet?: boolean;
+  supports_memit_fe?: boolean;
+  supports_pmet?: boolean;
+  supports_dpo?: boolean;
+  supports_eamet?: boolean;
+  supports_alphaedit?: boolean;
+  supports_sphere?: boolean;
   supports_kn: boolean;
   easyedit?: {
     rome_hparams?: string;
@@ -29,6 +37,13 @@ export type SupportedModel = {
     memit_hparams?: string;
     ft_hparams?: string;
     lora_hparams?: string;
+    emmet_hparams?: string;
+    memit_fe_hparams?: string;
+    pmet_hparams?: string;
+    dpo_hparams?: string;
+    eamet_hparams?: string;
+    alphaedit_hparams?: string;
+    sphere_hparams?: string;
     kn_hparams?: string;
     estimated_vram_gb?: Record<string, number>;
   };
@@ -39,7 +54,7 @@ export type Mom2Dtype = "float16" | "float32" | "float64";
 
 export type Mom2StatisticsRequest = {
   model_id: string;
-  method: "rome" | "r_rome" | "memit";
+  method: Mom2Method;
   layers?: number[] | null;
   stats_source?: "base" | "model" | null;
   mom2_dtype?: Mom2Dtype | null;
@@ -207,6 +222,13 @@ export type LocalModelImportPreview = {
   supports_memit: boolean;
   supports_ft: boolean;
   supports_lora: boolean;
+  supports_emmet?: boolean;
+  supports_memit_fe?: boolean;
+  supports_pmet?: boolean;
+  supports_dpo?: boolean;
+  supports_eamet?: boolean;
+  supports_alphaedit?: boolean;
+  supports_sphere?: boolean;
   supports_kn: boolean;
   trust_remote_code?: boolean;
   generation_use_cache?: boolean;
@@ -215,6 +237,13 @@ export type LocalModelImportPreview = {
   memit_hparams?: string | null;
   ft_hparams?: string | null;
   lora_hparams?: string | null;
+  emmet_hparams?: string | null;
+  memit_fe_hparams?: string | null;
+  pmet_hparams?: string | null;
+  dpo_hparams?: string | null;
+  eamet_hparams?: string | null;
+  alphaedit_hparams?: string | null;
+  sphere_hparams?: string | null;
   kn_hparams?: string | null;
 };
 

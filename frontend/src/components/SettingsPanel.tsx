@@ -3,6 +3,7 @@
 import { Database, Folder, KeyRound, Loader2, RefreshCw, RotateCcw, Save, Settings, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { editMethods, mom2Methods, type Mom2Method } from "@/lib/editingMethods";
 import { api } from "@/lib/api";
 import { getDefaultBackendUrl, type BackendConnection } from "@/lib/backendConnection";
 import { announceExperimentStarted } from "@/lib/experimentEvents";
@@ -315,7 +316,7 @@ export function SettingsPanel({
 }
 
 function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; runtime: ModelRuntimeStatus[] }) {
-  const [method, setMethod] = usePersistentState<"rome" | "r_rome" | "memit">("kew:settings:mom2:method", "memit");
+  const [method, setMethod] = usePersistentState<Mom2Method>("kew:settings:mom2:method", "memit");
   const [modelId, setModelId] = usePersistentState("kew:settings:mom2:modelId", "gpt2-xl");
   const [layers, setLayers] = useState("");
   const [dataset, setDataset] = useState("wikipedia");
@@ -329,7 +330,7 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
   const [cacheRevision, setCacheRevision] = useState(0);
   const statusRequest = useRef(0);
   const editableModels = models.filter((model) =>
-    method === "rome" ? model.supports_rome : method === "r_rome" ? model.supports_r_rome : model.supports_memit
+    model[`supports_${method}`]
   );
   const hubEditableModels = editableModels.filter((model) => model.source !== "local");
   const importedEditableModels = editableModels.filter((model) => model.source === "local");
@@ -504,11 +505,9 @@ function Mom2StatisticsPanel({ models, runtime }: { models: SupportedModel[]; ru
           <span className="label">Method</span>
           <select className="control" disabled={busy} value={method} onChange={(event) => {
             setStatus(null);
-            setMethod(event.target.value as "rome" | "r_rome" | "memit");
+            setMethod(event.target.value as Mom2Method);
           }}>
-            <option value="rome">ROME</option>
-            <option value="r_rome">r-ROME</option>
-            <option value="memit">MEMIT</option>
+            {mom2Methods.map((method) => <option key={method} value={method}>{editMethods[method]}</option>)}
           </select>
         </label>
         <label className="grid gap-1">

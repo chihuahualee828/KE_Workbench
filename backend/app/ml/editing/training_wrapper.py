@@ -1,4 +1,4 @@
-"""EasyEdit FT/LoRA batches stored using the workbench's reversible patch format."""
+"""EasyEdit FT/LoRA/DPO batches stored using the workbench's reversible patch format."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -26,8 +26,8 @@ def run_training_edit(
     hparams: dict | None = None,
     generate_evaluation: bool = True,
 ) -> dict:
-    if method not in {"ft", "lora"}:
-        raise ValueError("Training method must be ft or lora.")
+    if method not in METHOD_FIELDS:
+        raise ValueError("Training method must be ft, lora, or dpo.")
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("Batch size must be a positive integer.")
     overrides = validate_training_hparams(method, hparams)
@@ -35,6 +35,10 @@ def run_training_edit(
     if not edits or any(not str(edit.get(key) or "").strip() for edit in edits
                         for key in ("subject", "relation_prompt", "new_object")):
         raise ValueError("Provide edit facts with a subject, relation prompt, and new object.")
+    if method == "dpo":
+        from app.db.schemas import DpoEditSpec
+
+        edits = [DpoEditSpec.model_validate(edit).model_dump() for edit in edits]
     if getattr(model_runtime_service, "uses_hard_worker", False):
         return model_runtime_service.execute(f"{method}_edit", {
             "model_id": model_id, "edits": edits, "layers": layers,
@@ -94,11 +98,25 @@ def run_training_edit(
                 editor = BaseEditor.from_hparams(hparams)
                 hparams.model_name = model_name
                 editor.model_name = model_name
+                if method == "dpo":
+                    # EasyEdit DPO attaches a fresh PEFT wrapper on every call.
+                    # Merge each completed chunk before batch_edit passes its model
+                    # to the next chunk, avoiding nested adapters and lost updates.
+                    apply_algo = editor.apply_algo
+
+                    def apply_dpo_batch(batch_model, *args, **kwargs):
+                        with _training_state(batch_model, tokenizer, target_modules):
+                            edited, originals = apply_algo(batch_model, *args, **kwargs)
+                            check_edit_cancellation()
+                            return edited.merge_and_unload(safe_merge=True), originals
+
+                    editor.apply_algo = apply_dpo_batch
                 print(f"{method.upper()} batch size: {batch_size}; facts: {len(edits)}.")
                 print("Starting EasyEdit algorithm.")
                 metrics, edited_model, _ = editor.batch_edit(
                     prompts=[runtime.build_prompt(edit["subject"], edit["relation_prompt"]) for edit in edits],
                     target_new=[edit["new_object"] for edit in edits],
+                    **({"target_neg": [edit["target_neg"] for edit in edits]} if method == "dpo" else {}),
                     ground_truth=[edit.get("ground_truth") for edit in edits],
                     rephrase_prompts=_single_rephrase_per_edit(edits),
                     locality_inputs=locality_inputs, portability_inputs=portability_inputs,
@@ -126,7 +144,7 @@ def run_training_edit(
                     "used_loaded_runtime": True,
                     "training_hparams": effective_hparams,
                     "configured_layers": list(hparams.layers),
-                    **({"lora_type": "lora", "merged_lora": True} if method == "lora" else {}),
+                    **({"lora_type": "lora", "merged_lora": True} if method in {"lora", "dpo"} else {}),
                 }, patch_id=patch_id,
             )
             patch_service.activate_patch(patch_id, append=sequential_edit)

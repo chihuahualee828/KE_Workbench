@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.ml.editing.methods import EditMethod, Mom2Method
 from app.ml.editing.training_hparams import TrainingHyperparameters
 
 
@@ -66,7 +67,7 @@ class CausalTraceRequest(ApiSchema):
     seed: int = Field(default=1, ge=0, le=2_147_483_647)
 
 
-class RomeEditRequest(ApiSchema):
+class RankOneEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     subject: str
     relation_prompt: str
@@ -79,10 +80,6 @@ class RomeEditRequest(ApiSchema):
     portability_inputs: dict[str, dict[str, list[str]]] | None = None
     sequential_edit: bool = False
     mom2_adjustment: bool = False
-
-
-class RRomeEditRequest(RomeEditRequest):
-    """Request schema for EasyEdit's rebuilding-ROME implementation."""
 
 
 class KnEditRequest(ApiSchema):
@@ -104,7 +101,7 @@ class EditSpec(ApiSchema):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class RomeSequentialEditsRequest(ApiSchema):
+class RankOneSeriesRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     target_layer: int = Field(ge=0)
@@ -113,7 +110,7 @@ class RomeSequentialEditsRequest(ApiSchema):
     mom2_adjustment: bool = False
 
 
-class MemitEditRequest(ApiSchema):
+class BatchWeightEditRequest(ApiSchema):
     model_id: str = "gpt2-xl"
     edits: list[EditSpec] = Field(min_length=1)
     batch_size: int = Field(default=1, ge=1, strict=True)
@@ -137,9 +134,25 @@ class TrainingEditRequest(ApiSchema):
     sequential_edit: bool = False
 
 
+class DpoEditSpec(EditSpec):
+    target_neg: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_preference(self):
+        if not self.target_neg.strip() or not self.new_object.strip():
+            raise ValueError("DPO needs a desired answer and a rejected answer for every fact.")
+        if self.target_neg.strip() == self.new_object.strip():
+            raise ValueError("DPO desired and rejected answers must differ.")
+        return self
+
+
+class DpoEditRequest(TrainingEditRequest):
+    edits: list[DpoEditSpec] = Field(min_length=1)
+
+
 class Mom2StatisticsRequest(ApiSchema):
     model_id: str
-    method: Literal["rome", "r_rome", "memit"]
+    method: Mom2Method
     layers: list[int] | None = None
     stats_source: Literal["base", "model"] | None = None
     mom2_dtype: Literal["float16", "float32", "float64"] | None = None
@@ -147,7 +160,7 @@ class Mom2StatisticsRequest(ApiSchema):
 
 class Mom2StatisticsPrecisionRequest(ApiSchema):
     model_id: str
-    method: Literal["rome", "r_rome", "memit"]
+    method: Mom2Method
     mom2_dtype: Literal["float16", "float32", "float64"] | None = None
 
 
@@ -185,7 +198,7 @@ class ReliabilityEvaluationRequest(EvaluationProtocolsRequest):
     """Evaluate edit quality on the current active model without editing it."""
 
     model_id: str = "gpt2-xl"
-    method: Literal["rome", "r_rome", "memit", "kn", "ft", "lora"]
+    method: EditMethod
     edits: list[EditSpec] = Field(min_length=1)
     include_generations: bool = False
     evaluation_modes: list[EvaluationMetric] = Field(default_factory=list)
