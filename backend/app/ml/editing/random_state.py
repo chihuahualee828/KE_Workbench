@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import importlib
 import random
+import sys
 
 DEFAULT_EDIT_SEED = 42
 MAX_EDIT_SEED = 2_147_483_647
@@ -19,7 +20,8 @@ def edit_random_state(seed: int):
 
     The caller holds exclusive runtime access. Import EasyEdit before applying
     the chosen seed, since its first import seeds these same global generators.
-    This controls randomness, not numerical determinism or algorithm caches.
+    Generated contexts are resampled once per job and reused by its facts/batches.
+    This does not enforce numerical determinism or reset other algorithm caches.
     """
     validate_edit_seed(seed)
     import numpy as np
@@ -36,6 +38,11 @@ def edit_random_state(seed: int):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        # Imported algorithms may retain contexts sampled under an earlier seed.
+        # Clear only this cache; modules first imported later start with None.
+        for name, module in tuple(sys.modules.items()):
+            if name.startswith("easyeditor.models.") and hasattr(module, "CONTEXT_TEMPLATES_CACHE"):
+                module.CONTEXT_TEMPLATES_CACHE = None
         yield
     finally:
         random.setstate(python_state)
