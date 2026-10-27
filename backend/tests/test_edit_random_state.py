@@ -1,4 +1,6 @@
+import importlib
 import random
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,6 +9,7 @@ import torch
 
 from app.ml.editing import random_state
 from app.ml.editing.edit_cancellation import EditCanceled, _run_local_edit, current_edit
+from app.ml.editing.methods import COVARIANCE_MODULES, RANK_ONE_METHODS
 from app.services.patch_service import patch_service
 from app.storage.local_store import local_store
 
@@ -32,6 +35,8 @@ def isolated_import(monkeypatch):
 @pytest.mark.parametrize("outcome", [None, RuntimeError, EditCanceled])
 def test_seeded_job_restores_rngs_on_every_exit(isolated_import, monkeypatch, tmp_path, outcome):
     monkeypatch.setattr(local_store, "root", tmp_path)
+    cached = SimpleNamespace(CONTEXT_TEMPLATES_CACHE=["previous job"])
+    monkeypatch.setitem(sys.modules, "easyeditor.models.test.contexts", cached)
     python_state, numpy_state, cpu_state = random.getstate(), np.random.get_state(), torch.get_rng_state()
     expected = draws()
     random.setstate(python_state)
@@ -39,6 +44,8 @@ def test_seeded_job_restores_rngs_on_every_exit(isolated_import, monkeypatch, tm
     torch.set_rng_state(cpu_state)
 
     def run():
+        assert cached.CONTEXT_TEMPLATES_CACHE is None
+        cached.CONTEXT_TEMPLATES_CACHE = ["this job"]
         draws()
         assert current_edit.get().seed == 123
         if outcome:
@@ -58,6 +65,9 @@ def test_seeded_job_restores_rngs_on_every_exit(isolated_import, monkeypatch, tm
             assert patch_service.get_patch(result["patch"]["patch_id"])["seed"] == 123
     assert draws() == expected
     assert current_edit.get() is None
+    # A successful, failed, or canceled job must not supply the next job's contexts.
+    with random_state.edit_random_state(123):
+        assert cached.CONTEXT_TEMPLATES_CACHE is None
 
 
 def test_one_random_sequence_per_job_after_easyedit_import(isolated_import, monkeypatch, tmp_path):
@@ -103,3 +113,59 @@ def test_parent_forwards_seed_without_touching_its_rngs(monkeypatch, tmp_path):
     def delegate():
         return {"seed": current_edit.get().seed}
     assert edit_cancellation.run_cancellable_edit("job_parent", delegate, seed=17) == {"seed": 17}
+
+
+@pytest.mark.parametrize("method", (*RANK_ONE_METHODS, *COVARIANCE_MODULES))
+def test_easyedit_contexts_follow_job_seed_and_are_reused_within_job(monkeypatch, tmp_path, method):
+    from app.ml.editing import easyedit_runtime
+
+    try:
+        easyedit_runtime._load_easyedit("ROMEHyperParams")
+    except easyedit_runtime.EasyEditRuntimeError as exc:
+        pytest.skip(f"Requires installed EasyEdit: {exc}")
+    module_name = COVARIANCE_MODULES.get(method, f"easyeditor.models.{method}.{method}_main")
+    module = importlib.import_module(module_name)
+    monkeypatch.setattr(local_store, "root", tmp_path)
+    monkeypatch.setattr(module, "CONTEXT_TEMPLATES_CACHE", ["previous job"])
+    covariance = getattr(module, "COV_CACHE", None)
+    calls = []
+    model, tokenizer = object(), object()
+
+    def sample(current_model, current_tokenizer, prompts, **kwargs):
+        assert current_model is model and current_tokenizer is tokenizer
+        calls.append(torch.initial_seed())
+        return [str(draws()) for _ in prompts]
+
+    if method == "eamet":
+        monkeypatch.setattr(module, "generate_standard",
+                            lambda model, prompts, tokenizer, **kwargs: sample(model, tokenizer, prompts, **kwargs))
+    else:
+        monkeypatch.setattr(module, "generate_fast", sample)
+
+    def run():
+        assert module.CONTEXT_TEMPLATES_CACHE is None
+        args = (model, tokenizer, [[5, 5]]) if method in RANK_ONE_METHODS else (model, tokenizer)
+        # Exercise EasyEdit's actual cache getter for successive facts/batches.
+        contexts = module.get_context_templates(*args)
+        assert module.get_context_templates(*args) is contexts
+        assert getattr(module, "COV_CACHE", None) is covariance
+        return {"contexts": contexts}
+
+    first, different, repeated = [
+        _run_local_edit(f"job_context_{index}", run, {}, seed=seed)
+        for index, seed in enumerate((42, 0, 42))
+    ]
+    assert first == repeated
+    assert first != different
+    assert calls == [42, 0, 42]
+
+
+def test_context_reset_only_touches_easyedit_context_caches(isolated_import, monkeypatch):
+    unrelated = SimpleNamespace(CONTEXT_TEMPLATES_CACHE=["keep"])
+    without_contexts = SimpleNamespace(COV_CACHE={"keep": object()})
+    monkeypatch.setitem(sys.modules, "another_library.models.example", unrelated)
+    monkeypatch.setitem(sys.modules, "easyeditor.models.example", without_contexts)
+    with random_state.edit_random_state(42):
+        assert unrelated.CONTEXT_TEMPLATES_CACHE == ["keep"]
+        assert not hasattr(without_contexts, "CONTEXT_TEMPLATES_CACHE")
+        assert "keep" in without_contexts.COV_CACHE

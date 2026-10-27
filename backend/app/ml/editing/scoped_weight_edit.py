@@ -34,7 +34,7 @@ def _job_state(method, editor):
     import torch
 
     module = importlib.import_module(COVARIANCE_MODULES[method])
-    names = ("CONTEXT_TEMPLATES_CACHE", "COV_CACHE", "P", "P_loaded", "cache_c", "cache_c_new")
+    names = ("COV_CACHE", "P", "P_loaded", "cache_c", "cache_c_new")
     missing = object()
     previous = {name: getattr(module, name, missing) for name in names}
     hparams = editor.hparams
@@ -42,7 +42,6 @@ def _job_state(method, editor):
     flags = [(p, p.requires_grad) for p in editor.model.parameters()]
     training = [(m, m.training) for m in editor.model.modules()]
     try:
-        module.CONTEXT_TEMPLATES_CACHE = None
         module.COV_CACHE = {}
         module.P_loaded = False
         module.cache_c_new = False
