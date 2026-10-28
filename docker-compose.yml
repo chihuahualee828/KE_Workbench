@@ -1,39 +1,49 @@
 services:
   backend:
-    gpus:
-      - driver: nvidia
-        count: all
+    image: ${WORKBENCH_IMAGE_PREFIX:-ghcr.io/chihuahualee828/ke_workbench}-backend:${WORKBENCH_IMAGE_TAG:-latest}
+    # Uncomment on an NVIDIA PC configured for Docker GPU access.
+    # gpus: all
     build:
       context: ./backend
+      target: runtime
       args:
-        INSTALL_EASYEDIT: ${INSTALL_EASYEDIT:-false}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+        INSTALL_EASYEDIT: ${INSTALL_EASYEDIT:-true}
+      labels:
+        org.opencontainers.image.source: https://github.com/chihuahualee828/KE_Workbench
+    init: true
     environment:
-      APP_ENV: development
-      DATABASE_URL: sqlite:///./data/workbench.db
-      DATA_DIR: ./data
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: sqlite:////app/data/workbench.db
+      DATA_DIR: /app/data
       EASYEDIT_ROOT: /opt/EasyEdit
       EDITING_RUNTIME: easyedit
       HF_TOKEN: ${HF_TOKEN:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       HF_HUB_CACHE: /hf-cache
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./backend:/app
       - ./data:/app/data
       - ${HF_CACHE_HOST_DIR:-./data/huggingface/hub}:/hf-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   frontend:
+    image: ${WORKBENCH_IMAGE_PREFIX:-ghcr.io/chihuahualee828/ke_workbench}-frontend:${WORKBENCH_IMAGE_TAG:-latest}
     build:
       context: ./frontend
-    command: npm run dev
-    environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
+      target: production
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      labels:
+        org.opencontainers.image.source: https://github.com/chihuahualee828/KE_Workbench
+    init: true
     ports:
-      - "3000:3000"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - "127.0.0.1:3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy

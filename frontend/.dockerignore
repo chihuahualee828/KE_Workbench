@@ -1,4 +1,12 @@
 node_modules
 .next
 .git
+.env
+.env.*
+.DS_Store
+*.tsbuildinfo
 npm-debug.log*
+data
+logs
+coverage
+tests
