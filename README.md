@@ -130,16 +130,22 @@ Experiment and job records retain inputs, results, status, progress, and logs. T
 
 ### Docker Compose
 
-The supplied Compose configuration requests an NVIDIA GPU. Use a Docker installation configured for NVIDIA GPU access, and allow enough disk space and GPU memory for the selected model and editing method.
-
-From the repository root:
+Use the single `docker-compose.yml` in the repository root. With a Docker engine
+running (for example, Colima on a command-line-only Mac):
 
 ```bash
 cp .env.example .env
-INSTALL_EASYEDIT=true docker compose up --build
+docker compose up --build
 ```
 
-Set `HF_TOKEN` in `.env` if needed for the selected Hugging Face repository, or enter a token in Settings after startup.
+Local builds use the Docker engine's native architecture: Linux ARM64 on Apple
+Silicon and Linux AMD64 on an Intel/AMD PC. GPU access is disabled by default, so
+both machines can start with CPU execution. On an NVIDIA PC configured for Docker
+GPU access, uncomment `gpus: all` under `backend` in the same Compose file to enable
+CUDA. MPS requires running the backend natively on macOS.
+
+Set `HF_TOKEN` in `.env` if needed for the selected Hugging Face repository, or
+enter a token in Settings after startup.
 
 | Service | Address |
 | --- | --- |
@@ -147,11 +153,47 @@ Set `HF_TOKEN` in `.env` if needed for the selected Hugging Face repository, or 
 | Backend health | http://localhost:8000/api/health |
 | Interactive API documentation | http://localhost:8000/docs |
 
-Compose mounts the repository's `data/` directory into the backend at `/app/data`, keeping downloaded models, patches, and experiments outside the container image.
+Compose runs the packaged backend and standalone frontend from their Dockerfiles.
+Source files are not bind-mounted, so rebuild with `docker compose up --build`
+after code changes. For live reload, use the native development commands below.
+Models, database records, and patches persist under the host `./data` directory;
+the Hugging Face cache defaults to `./data/huggingface/hub`. These files are not
+included in application images.
+
+For source-based deployment, first test with `docker compose up --build` on the
+Mac. Then commit and push the source to GitHub. On the PC, clone or pull the
+repository and run `docker compose up --build` there. Each machine builds its own
+native image. This source-based workflow does not use GHCR.
+
+### Optional prebuilt images from GHCR
+
+The [Validate and publish Docker images](.github/workflows/validate-and-publish-images.yml)
+workflow still tests the application and publishes AMD64/ARM64 images on successful
+default-branch pushes or `v*` tags. Pull requests validate without publishing.
+GHCR is useful when the target machine should download images instead of building
+from source. In that case, the same Compose file supports:
+
+```bash
+docker compose pull
+docker compose up -d --no-build
+```
+
+Only `docker-compose.yml` and any runtime `.env` settings are needed on a machine
+using prebuilt images. Both services use the optional `WORKBENCH_IMAGE_PREFIX` and
+`WORKBENCH_IMAGE_TAG` settings; their defaults match this repository's GHCR images.
+The workflow authenticates with GitHub's automatic `GITHUB_TOKEN`. For private
+images, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` and supply a
+classic token with `read:packages`. Public images need no login.
+See [GitHub's registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+The backend image uses Python 3.10 and pins EasyEdit to the revision in its
+Dockerfile. The frontend uses Node 24 and Next.js standalone output.
+Set `NEXT_PUBLIC_API_BASE` before building to change the frontend's initial backend
+URL, or override the backend connection in Settings after startup.
 
 ### Local development
 
-Use Python 3.10+ and Node.js 20 (the frontend container uses Node 20). Install a PyTorch build appropriate for your hardware in the backend environment.
+Use Python 3.10 and Node.js 24 (matching the container images). Install a PyTorch build appropriate for your hardware in the backend environment.
 
 From the repository root, create the environment file and clone EasyEdit alongside this repository:
 
@@ -200,8 +242,8 @@ uv pip install --python .venv/bin/python 'scipy==1.14.1'
 
 ### Apple Silicon (MPS)
 
-Run the backend natively on macOS using an ARM64 Python 3.10 environment; the
-NVIDIA Docker configuration remains unchanged. The shared loader automatically
+Run the backend natively on macOS using an ARM64 Python 3.10 environment for MPS.
+The Docker configuration defaults to CPU execution. The shared loader automatically
 prefers CUDA, then Apple MPS, then CPU. MPS uses Transformers' automatic dtype
 selection from the model config/checkpoint, preserving FP16, BF16, and FP32 weights.
 Only FP64 parameters and buffers are converted to FP32 before transfer to MPS.

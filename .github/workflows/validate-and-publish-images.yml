@@ -1,0 +1,252 @@
+name: Validate and publish Docker images
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Superseded pull requests can stop; publishing runs finish their manifests.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: Prepare image names
+    runs-on: ubuntu-24.04
+    outputs:
+      image-prefix: ${{ steps.names.outputs.image-prefix }}
+      easyedit-revision: ${{ steps.names.outputs.easyedit-revision }}
+      publish: ${{ github.event_name != 'pull_request' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Normalize the registry path
+        id: names
+        shell: bash
+        run: |
+          echo "image-prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          revision=$(sed -n 's/^ARG EASYEDIT_REVISION=//p' backend/Dockerfile)
+          [[ "$revision" =~ ^[a-f0-9]{40}$ ]]
+          echo "easyedit-revision=$revision" >> "$GITHUB_OUTPUT"
+
+  backend-tests:
+    name: Validate backend
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATA_DIR: ${{ github.workspace }}/.ci/test-data
+      HF_HUB_CACHE: ${{ github.workspace }}/.ci/huggingface/hub
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      EASYEDIT_ROOT: ${{ github.workspace }}/.ci/easyedit
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Check out the same EasyEdit revision as the image
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: zjunlp/EasyEdit
+          ref: ${{ needs.prepare.outputs.easyedit-revision }}
+          path: .ci/easyedit
+          persist-credentials: false
+      - name: Install EasyEdit system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0t64
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r "$EASYEDIT_ROOT/requirements.txt" -e ".[dev,ml]"
+          python -m pip check
+      - name: Run backend tests without downloading models
+        run: python -m pytest -q
+
+  frontend-tests:
+    name: Validate frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+      - name: Run frontend tests
+        # Compile with TypeScript's CommonJS output so the existing tests can
+        # substitute module exports; Next's JSX-preserve config is for builds.
+        run: |
+          npx tsc --noEmit false --incremental false --module commonjs \
+            --moduleResolution node --jsx react-jsx --outDir "$RUNNER_TEMP/frontend-tests"
+          NODE_PATH="$PWD/node_modules" node --test "$RUNNER_TEMP/frontend-tests/tests/"*.test.js
+
+  build-images:
+    name: Build ${{ matrix.service }} (${{ matrix.arch }})
+    needs: [prepare, backend-tests, frontend-tests]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [backend, frontend]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Make room for the backend ML dependencies
+        if: matrix.service == 'backend'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GitHub Container Registry
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: metadata
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ needs.prepare.outputs.image-prefix }}-${{ matrix.service }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build the runtime image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./${{ matrix.service }}
+          target: ${{ matrix.service == 'frontend' && 'production' || 'runtime' }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          outputs: ${{ needs.prepare.outputs.publish == 'true' && format('type=image,name={0}-{1},push-by-digest=true,name-canonical=true,push=true', needs.prepare.outputs.image-prefix, matrix.service) || format('type=docker,name=kew-{0}:ci', matrix.service) }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }},mode=min,ignore-error=true
+      - name: Check the packaged service starts and responds
+        env:
+          IMAGE_REFERENCE: ${{ needs.prepare.outputs.publish == 'true' && format('{0}-{1}@{2}', needs.prepare.outputs.image-prefix, matrix.service, steps.build.outputs.digest) || format('kew-{0}:ci', matrix.service) }}
+          CONTAINER_PORT: ${{ matrix.service == 'backend' && '8000' || '3000' }}
+          HEALTH_PATH: ${{ matrix.service == 'backend' && '/api/health' || '/' }}
+        shell: bash
+        run: |
+          container=$(docker run --detach --publish "127.0.0.1::$CONTAINER_PORT" "$IMAGE_REFERENCE")
+          trap 'docker logs "$container"; docker rm --force "$container" >/dev/null' EXIT
+          address=$(docker port "$container" "$CONTAINER_PORT/tcp")
+          curl --fail --silent --show-error --output /dev/null \
+            --retry 15 --retry-delay 2 --retry-connrefused --retry-all-errors \
+            "http://$address$HEALTH_PATH"
+      - name: Save the published image digest
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - name: Upload the digest for the multi-platform manifest
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.service }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-manifests:
+    name: Publish ${{ matrix.service }} image tags
+    needs: [prepare, build-images]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    env:
+      IMAGE_NAME: ${{ needs.prepare.outputs.image-prefix }}-${{ matrix.service }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-${{ matrix.service }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Image tags
+        id: metadata
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Publish and inspect the multi-platform manifest
+        env:
+          METADATA_JSON: ${{ steps.metadata.outputs.json }}
+        shell: bash
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            tags+=(--tag "$tag")
+          done < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          sources=()
+          for digest_file in "$RUNNER_TEMP/digests/"*; do
+            sources+=("$IMAGE_NAME@sha256:$(basename "$digest_file")")
+          done
+          [[ ${#sources[@]} -eq 2 ]]
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          image_tag=$(jq -r '.tags[0]' <<< "$METADATA_JSON")
+          docker buildx imagetools inspect "$image_tag"
+          {
+            echo "### Published $IMAGE_NAME"
+            jq -r '.tags[] | "- `" + . + "`"' <<< "$METADATA_JSON"
+            echo
+            echo 'Platforms: `linux/amd64`, `linux/arm64`.'
+          } >> "$GITHUB_STEP_SUMMARY"
