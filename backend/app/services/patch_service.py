@@ -630,20 +630,23 @@ class PatchService:
             else:
                 self.sync_patch_stack_to_model(model, model_id, [])
 
-        temporary_patch = None
-        if patch_id and patch_id not in getattr(model, "_kew_active_patch_ids", ()):
-            temporary_patch = self.get_patch(patch_id)
-            if model_id and temporary_patch.get("base_model") != model_id:
-                raise ValueError(
-                    f"Patch {patch_id} was created for {temporary_patch.get('base_model')}, not {model_id}."
-                )
-            self._apply_patch_to_model(model, temporary_patch)
-
         try:
-            yield
+            temporary_patch = None
+            if patch_id and patch_id not in getattr(model, "_kew_active_patch_ids", ()):
+                temporary_patch = self.get_patch(patch_id)
+                if model_id and temporary_patch.get("base_model") != model_id:
+                    raise ValueError(
+                        f"Patch {patch_id} was created for {temporary_patch.get('base_model')}, not {model_id}."
+                    )
+            if temporary_patch is None:
+                yield
+            else:
+                # A preview is not part of the active stack. Restore the exact
+                # entry weights even when inference or patch application fails.
+                with self._preserve_model_weights(model, self.patch_weight_names(temporary_patch)):
+                    self._apply_patch_to_model(model, temporary_patch)
+                    yield
         finally:
-            if temporary_patch is not None:
-                self._revert_patch_from_model(model, temporary_patch)
             if model_id and not use_active_patches:
                 self.sync_active_patches_to_model(model, model_id)
 
@@ -654,20 +657,96 @@ class PatchService:
         desired = tuple(patch_ids)
         current = tuple(getattr(model, "_kew_active_patch_ids", ()))
         if current == desired:
+            if not current and getattr(model, "_kew_patch_originals", None):
+                model._kew_patch_originals = {}
             return
 
-        current_patches = [self.get_patch(patch_id) for patch_id in current]
-        for patch in reversed(current_patches):
-            self._revert_patch_from_model(model, patch)
-
+        desired_patches = []
+        desired_names = set()
         for patch_id in desired:
             patch = self.get_patch(patch_id)
             if patch.get("base_model") != model_id:
                 raise ValueError(
                     f"Patch {patch_id} was created for {patch.get('base_model')}, not {model_id}."
                 )
-            self._apply_patch_to_model(model, patch)
-        setattr(model, "_kew_active_patch_ids", desired)
+            names = self.patch_weight_names(patch)
+            desired_patches.append((patch, names))
+            desired_names.update(names)
+
+        originals = dict(getattr(model, "_kew_patch_originals", {}))
+        appending = desired[:len(current)] == current
+        patches_to_apply = desired_patches[len(current):] if appending else desired_patches
+        affected = set().union(*(names for _, names in patches_to_apply))
+        if not appending:
+            affected.update(originals)
+
+        # Originals live on the model-owning worker and keep their native dtype.
+        # The transient snapshot also makes a failed transition atomic, including
+        # when a retained cumulative patch has directly edited runtime weights.
+        with self._preserve_model_weights(model, affected, restore_on_success=False) as before:
+            for name, weight in before.items():
+                originals.setdefault(name, weight)
+            if not appending:
+                self._copy_weights(model, originals)
+            for patch, _ in patches_to_apply:
+                self._apply_patch_to_model(model, patch)
+            model._kew_active_patch_ids = desired
+            model._kew_patch_originals = {
+                name: weight for name, weight in originals.items() if name in desired_names
+            }
+
+    def retain_original_weights(self, model: Any, weights: dict[str, Any]) -> None:
+        """Retain immutable CPU snapshots before a series edits weights in place.
+
+        The caller already owns detached CPU copies. Reuse them; never replace
+        a clean original with the baseline of a later fact or dependent patch.
+        """
+        originals = dict(getattr(model, "_kew_patch_originals", {}))
+        for name, weight in weights.items():
+            originals.setdefault(name, weight)
+        model._kew_patch_originals = originals
+
+    def patch_weight_names(self, patch: dict[str, Any]) -> set[str]:
+        """Read target names without loading dense delta tensors into memory."""
+        if patch.get("sparse_delta_format") == "kn_v1":
+            return {spec["parameter"] for spec in patch.get("sparse_delta_specs", [])}
+        from safetensors import safe_open
+
+        names = set()
+        for path_value in patch.get("delta_paths", []):
+            path = self.resolve_delta_path(path_value)
+            if path.suffix == ".safetensors":
+                with safe_open(str(path), framework="pt", device="cpu") as tensors:
+                    names.update(tensors.keys())
+        return names
+
+    @contextmanager
+    def _preserve_model_weights(self, model: Any, names, *, restore_on_success: bool = True):
+        parameters = dict(model.named_parameters())
+        before = {
+            name: parameters[name].detach().to(device="cpu", copy=True)
+            for name in names if name in parameters
+        }
+        originals = getattr(model, "_kew_patch_originals", {})
+        active = tuple(getattr(model, "_kew_active_patch_ids", ()))
+        completed = False
+        try:
+            yield before
+            completed = True
+        finally:
+            if restore_on_success or not completed:
+                self._copy_weights(model, before)
+                model._kew_patch_originals = originals
+                model._kew_active_patch_ids = active
+
+    @staticmethod
+    def _copy_weights(model: Any, weights: dict[str, Any]) -> None:
+        import torch
+
+        parameters = dict(model.named_parameters())
+        with torch.no_grad():
+            for name, weight in weights.items():
+                parameters[name].copy_(weight)
 
     def _write_active_patches(self, active_by_model: dict[str, list[str]]) -> None:
         local_store.write_json(
@@ -708,19 +787,12 @@ class PatchService:
 
     def _apply_patch_to_model(self, model: Any, patch: dict[str, Any]) -> None:
         if patch.get("sparse_delta_format") == "kn_v1":
-            self._apply_kn_sparse_patch(model, patch, direction=1)
+            self._apply_kn_sparse_patch(model, patch)
             return
         for parameter, delta in self._patch_deltas(model, patch):
             parameter.data.add_(delta)
 
-    def _revert_patch_from_model(self, model: Any, patch: dict[str, Any]) -> None:
-        if patch.get("sparse_delta_format") == "kn_v1":
-            self._apply_kn_sparse_patch(model, patch, direction=-1)
-            return
-        for parameter, delta in self._patch_deltas(model, patch):
-            parameter.data.sub_(delta)
-
-    def _apply_kn_sparse_patch(self, model: Any, patch: dict[str, Any], direction: int) -> None:
+    def _apply_kn_sparse_patch(self, model: Any, patch: dict[str, Any]) -> None:
         """Apply KN's sparse MLP-output vectors without materializing full-layer deltas."""
         try:
             import torch
@@ -751,8 +823,6 @@ class PatchService:
                     continue
                 indices = indices.to(device=parameter.device, dtype=torch.long)
                 values = values.to(device=parameter.device, dtype=parameter.dtype)
-                if direction < 0:
-                    values = -values
                 if orientation == "row":
                     parameter.data.index_add_(0, indices, values)
                 else:

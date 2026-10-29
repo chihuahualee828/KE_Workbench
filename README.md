@@ -107,6 +107,8 @@ You can:
 
 Unloading a model or restarting the backend clears active workbench patch state; saved patch artifacts remain available for later loading. Edits baked into an exported model are part of that model's weights and are represented separately from removable workbench patches.
 
+Unloading patches restores exact copies of the affected tensors and replays the remaining patches in order, avoiding floating-point drift from subtracting deltas. The model worker retains one CPU copy of each affected tensor in its original dtype, shared across overlapping patches, and releases copies when no active patch needs them. Stack changes also use temporary rollback copies; persistent memory scales with affected tensors rather than the number of patches. Soft cancellation retains its existing behavior and keeps the originals needed to unload any retained patch.
+
 ### Evaluation and experiment tracking
 
 Evaluation resolves facts from the selected model's active patch stack and supports choosing multiple metrics in one run:

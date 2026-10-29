@@ -99,6 +99,11 @@ def test_memit_cancel_restores_exact_prejob_weights_and_patches(editing, continu
     assert [patch["patch_id"] for patch in patch_service.list_patches()] == ["patch_old"]
     for name, value in editing.model.state_dict().items():
         assert torch.equal(value, before[name])
+    patch_service.deactivate_runtime_patches_for_model("demo")
+    patch_service.sync_active_patches_to_model(editing.model, "demo")
+    for parameter in editing.model.parameters():
+        assert torch.equal(parameter, torch.ones_like(parameter))
+    assert editing.model._kew_patch_originals == {}
 
 
 @pytest.mark.parametrize("continuing", [False, True])
@@ -133,6 +138,60 @@ def test_cancel_before_first_fact_does_not_reset_existing_patches(editing):
     assert _run_local_edit("job_test", run_fact, {}) == {"_edit_canceled": True}
     assert editing.calls == 0
     assert patch_service.active_patches_for_model("demo") == ["patch_old"]
+
+
+@pytest.mark.parametrize("method", ["rome", "r_rome"])
+@pytest.mark.parametrize("continuing", [False, True])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_cumulative_series_unloads_exactly_after_completion_or_soft_cancel(editing, monkeypatch, method, continuing, cancel):
+    monkeypatch.setattr(runtime.model_registry, "get", lambda _: {
+        "hf_id": "demo", "supports_rome": True, "supports_r_rome": True})
+    with torch.no_grad():
+        for parameter in editing.model.parameters():
+            parameter.fill_(0.1)
+    clean = {name: value.clone() for name, value in editing.model.state_dict().items()}
+    add_old_patch(editing)
+    parent = {name: value.clone() for name, value in editing.model.state_dict().items()}
+    context = runtime.EasyEditSeriesContext(continue_from_active_patches=continuing)
+    completed = {}
+
+    def algorithm_callback():
+        if editing.calls >= 2:
+            # This target has no series delta until the second fact.
+            with torch.no_grad():
+                editing.model.layers[1].weight.add_(0.3)
+        if editing.calls == 3:
+            request_cancel("job_series")
+
+    editing.callback = algorithm_callback
+
+    def fact():
+        return runtime.run_easyedit(method, "demo", [
+            {"subject": "A", "relation_prompt": "{} is", "new_object": "B"}
+        ], [0, 1], patch_mode="series", series_context=context)
+
+    def operation():
+        first = fact()
+        second = fact()
+        assert first["patch_id"] == second["patch_id"]
+        completed.update(second)
+        completed["weights"] = {name: value.clone() for name, value in editing.model.state_dict().items()}
+        return fact() if cancel else second
+
+    result = _run_local_edit("job_series", operation, {})
+    assert (result == {"_edit_canceled": True}) is cancel
+    assert patch_service.get_patch(completed["patch_id"])["series_fact_count"] == 2
+    for name, value in editing.model.state_dict().items():
+        assert torch.equal(value, completed["weights"][name])
+    patch_service.discard_active_patch(completed["patch_id"])
+    patch_service.sync_active_patches_to_model(editing.model, "demo")
+    for name, value in editing.model.state_dict().items():
+        assert torch.equal(value, (parent if continuing else clean)[name])
+    patch_service.deactivate_runtime_patches_for_model("demo")
+    patch_service.sync_active_patches_to_model(editing.model, "demo")
+    for name, value in editing.model.state_dict().items():
+        assert torch.equal(value, clean[name])
+    assert editing.model._kew_patch_originals == {}
 
 
 def test_easyedit_exception_before_return_restores_weights_even_without_job(editing):

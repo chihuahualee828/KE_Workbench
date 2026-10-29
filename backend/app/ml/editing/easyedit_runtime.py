@@ -235,6 +235,10 @@ def run_easyedit(
                 )
             if patch_mode == "series" and series_context is not None and series_context.initial_baseline_weights is None:
                 series_context.initial_baseline_weights = baseline_weights
+            if patch_mode == "series":
+                # Later facts update the same active patch in place, including
+                # tensors whose first nonzero delta appears after the first fact.
+                patch_service.retain_original_weights(editor.model, baseline_weights)
 
             # EasyEdit restores singleton edits before returning when sequential_edit=False.
             # We keep the edited weights briefly, save our delta, then restore the baseline
