@@ -124,6 +124,21 @@ def test_cuda_easyedit_device_preserves_precision():
     assert hparams.mom2_dtype == "float64"
 
 
+@pytest.mark.parametrize("cuda_available", [False, True])
+@pytest.mark.parametrize("algorithm", [
+    "ROME", "R-ROME", "MEMIT", "KN", "FT", "LoRA", "DPO", "EMMET", "MEMIT-FE",
+    "PMET", "EAMET", "AlphaEdit", "SPHERE", None,
+])
+def test_cpu_easyedit_device_overrides_profile_for_every_method(monkeypatch, algorithm, cuda_available):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: cuda_available),
+    ))
+    hparams = SimpleNamespace(device=0, alg_name=algorithm, mom2_dtype="float64")
+    _override_easyedit_device(hparams, "cpu")
+    assert hparams.device == "cpu"
+    assert hparams.mom2_dtype == "float64"
+
+
 @pytest.mark.parametrize("precision,expected", [("float64", "float32"), ("double", "float32"), ("float32", "float32")])
 def test_mps_easyedit_device_converts_hparams(precision, expected):
     hparams = SimpleNamespace(device=0, mom2_dtype=precision)

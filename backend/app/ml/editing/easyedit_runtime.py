@@ -1381,7 +1381,7 @@ def _easyedit_runtime_access(model_id: str):
 def _override_easyedit_device(hparams: Any, loaded_device: str | None = None) -> None:
     if not hasattr(hparams, "device"):
         return
-    if loaded_device == "cpu" and getattr(hparams, "alg_name", None) in {"FT", "LoRA", "DPO", "EMMET", "MEMIT-FE", "PMET", "EAMET", "AlphaEdit", "SPHERE"}:
+    if loaded_device == "cpu":
         # Profiles often contain a machine-specific CUDA index.
         hparams.device = "cpu"
         return
