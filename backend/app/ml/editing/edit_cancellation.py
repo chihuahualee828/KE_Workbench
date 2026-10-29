@@ -95,6 +95,7 @@ class EditTransaction:
         self.model: Any = None
         self.model_id = ""
         self.weights: dict[str, Any] = {}
+        self.patch_originals: dict[str, Any] = {}
         self.patch_ids: list[str] = []
         self.created_patch_ids: set[str] = set()
         self.patch_backup: tuple[str, tempfile.TemporaryDirectory] | None = None
@@ -115,19 +116,13 @@ class EditTransaction:
         names = set(names)
         if self.model is None:
             self.model, self.model_id = model, model_id
+            # Retain references only: these immutable originals must survive a
+            # temporary stack reset so cancellation can restore the prior stack.
+            self.patch_originals = dict(getattr(model, "_kew_patch_originals", {}))
             self.patch_ids = list(patch_service.active_patches_for_model(model_id))
             for patch_id in self.patch_ids:
                 patch = patch_service.get_patch(patch_id)
-                if patch.get("sparse_delta_format") == "kn_v1":
-                    names.update(spec["parameter"] for spec in patch.get("sparse_delta_specs", []))
-                else:
-                    from safetensors import safe_open
-
-                    for path in patch.get("delta_paths", []):
-                        resolved = patch_service.resolve_delta_path(path)
-                        if resolved.suffix == ".safetensors":
-                            with safe_open(str(resolved), framework="pt", device="cpu") as tensors:
-                                names.update(tensors.keys())
+                names.update(patch_service.patch_weight_names(patch))
         from app.ml.editing.easyedit_runtime import _state_dict_for_weight_names
 
         state = _state_dict_for_weight_names(model, list(names))
@@ -142,6 +137,7 @@ class EditTransaction:
         state = _state_dict_for_weight_names(self.model, list(self.weights))
         self.weights = {name: state[name].detach().cpu().clone() for name in self.weights}
         self.patch_ids = list(patch_service.active_patches_for_model(self.model_id))
+        self.patch_originals = dict(getattr(self.model, "_kew_patch_originals", {}))
         self.created_patch_ids.clear()
         self.discard_backup()
         self.notify_patch_state_changed()
@@ -177,6 +173,7 @@ class EditTransaction:
         active[self.model_id] = list(self.patch_ids)
         patch_service.restore_active_patches(active)
         self.model._kew_active_patch_ids = tuple(self.patch_ids)
+        self.model._kew_patch_originals = dict(self.patch_originals)
         if self.patch_backup is not None:
             patch_id, backup = self.patch_backup
             shutil.copytree(backup.name, local_store.root / "patches" / patch_id, dirs_exist_ok=True)

@@ -56,7 +56,8 @@ def test_training_seed_reaches_algorithm_and_repeats_in_same_runtime(tiny_traini
     for index, seed in enumerate((123, 124, 123)):
         patch_service.deactivate_runtime_patches_for_model("tiny")
         patch_service.sync_active_patches_to_model(model, "tiny")
-        model.load_state_dict(clean)
+        for name, value in model.state_dict().items():
+            assert torch.equal(value, clean[name]), name
         result = _run_local_edit(
             f"job_seed_{index}", training.run_training_edit,
             {"method": method, "model_id": "tiny", "edits": [FACT] * 3,
@@ -68,6 +69,7 @@ def test_training_seed_reaches_algorithm_and_repeats_in_same_runtime(tiny_traini
     assert algorithm_seeds == [123, 123, 124, 124, 123, 123]
     assert deltas[0].keys() == deltas[2].keys()
     assert all(torch.equal(deltas[0][name], deltas[2][name]) for name in deltas[0])
+    assert losses[0] and losses[0] == losses[2]
     if method == "ft":
         assert losses[0] and losses[0] == losses[1] == losses[2]
         assert all(torch.equal(deltas[0][name], deltas[1][name]) for name in deltas[0])
@@ -191,17 +193,18 @@ def test_real_easyedit_batches_create_replayable_patches(tiny_training, method, 
     patch_service.deactivate_runtime_patches_for_model("tiny")
     patch_service.sync_active_patches_to_model(model, "tiny")
     for name, value in model.state_dict().items():
-        torch.testing.assert_close(value, before[name])
+        assert torch.equal(value, before[name]), name
     patch_service.activate_patch(result["patch_id"])
     patch_service.sync_active_patches_to_model(model, "tiny")
     for name, value in model.state_dict().items():
-        torch.testing.assert_close(value, edited[name])
+        assert torch.equal(value, edited[name]), name
 
 
 @pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
 @pytest.mark.parametrize("failure", ["cancel", "error"])
 def test_training_failure_restores_weights_and_removes_adapters(tiny_training, monkeypatch, method, failure):
     model = tiny_training.model
+    clean = {name: value.clone() for name, value in model.state_dict().items()}
     old = training.run_training_edit("ft", "tiny", [FACT], [0])
     before = {name: value.clone() for name, value in model.state_dict().items()}
     flags = [p.requires_grad for p in model.parameters()]
@@ -242,6 +245,11 @@ def test_training_failure_restores_weights_and_removes_adapters(tiny_training, m
     assert set(before) == set(model.state_dict())
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+    patch_service.deactivate_runtime_patches_for_model("tiny")
+    patch_service.sync_active_patches_to_model(model, "tiny")
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, clean[name]), name
+    assert model._kew_patch_originals == {}
 
 
 @pytest.mark.parametrize("method", ["ft", "lora", "dpo"])
