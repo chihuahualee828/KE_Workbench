@@ -132,8 +132,11 @@ Experiment and job records retain inputs, results, status, progress, and logs. T
 
 ### Docker Compose
 
-Use the single `docker-compose.yml` in the repository root. With a Docker engine
-running (for example, Colima on a command-line-only Mac):
+Use the single `docker-compose.yml` in the repository root. It enables NVIDIA GPU
+access by default. On a Mac or CPU-only machine, comment out `gpus: all` under
+`backend` before starting.
+
+With a Docker engine running (for example, Colima on a command-line-only Mac):
 
 ```bash
 cp .env.example .env
@@ -141,10 +144,26 @@ docker compose up --build
 ```
 
 Local builds use the Docker engine's native architecture: Linux ARM64 on Apple
-Silicon and Linux AMD64 on an Intel/AMD PC. GPU access is disabled by default, so
-both machines can start with CPU execution. On an NVIDIA PC configured for Docker
-GPU access, uncomment `gpus: all` under `backend` in the same Compose file to enable
-CUDA. MPS requires running the backend natively on macOS.
+Silicon and Linux AMD64 on an Intel/AMD PC. Configure GPU access in the same
+`docker-compose.yml` on each machine:
+
+- **Mac or CPU-only machine:** comment out `gpus: all`; the backend uses CPU.
+- **NVIDIA PC:** configure Docker for NVIDIA GPU access and keep `gpus: all`
+  enabled under `backend`. On Windows, use Docker Desktop's WSL 2 backend and a
+  compatible NVIDIA Windows driver. The backend automatically selects CUDA when
+  it is available.
+
+The AMD64 backend image supports both CPU and CUDA; this setting changes container
+access to the GPU, not the image. Docker requires the requested GPU at startup and
+cannot make that request optional. Pulling an image or starting it directly from
+Docker Desktop does not apply this Compose configuration. MPS requires running
+the backend natively on macOS.
+
+After changing GPU access, recreate the backend using the existing image:
+
+```bash
+docker compose up -d --no-build --force-recreate backend
+```
 
 Set `HF_TOKEN` in `.env` if needed for the selected Hugging Face repository, or
 enter a token in Settings after startup.
@@ -170,19 +189,29 @@ native image. This source-based workflow does not use GHCR.
 ### Optional prebuilt images from GHCR
 
 The [Validate and publish Docker images](.github/workflows/validate-and-publish-images.yml)
-workflow still tests the application and publishes AMD64/ARM64 images on successful
-default-branch pushes or `v*` tags. Pull requests validate without publishing.
+workflow tests the application and publishes the backend for Linux AMD64 and the
+frontend for Linux AMD64/ARM64 on successful default-branch pushes or `v*` tags.
+Pull requests validate without publishing.
 GHCR is useful when the target machine should download images instead of building
-from source. In that case, the same Compose file supports:
+from source. On an AMD64 PC, the same Compose file supports:
 
 ```bash
 docker compose pull
 docker compose up -d --no-build
 ```
 
+On an Apple Silicon Mac, run the backend natively for MPS and use only the prebuilt
+frontend. No ARM64 backend image is published:
+
+```bash
+docker compose pull frontend
+docker compose up -d --no-build --no-deps frontend
+```
+
 Only `docker-compose.yml` and any runtime `.env` settings are needed on a machine
-using prebuilt images. Both services use the optional `WORKBENCH_IMAGE_PREFIX` and
-`WORKBENCH_IMAGE_TAG` settings; their defaults match this repository's GHCR images.
+using the prebuilt stack on AMD64. Both services use the optional
+`WORKBENCH_IMAGE_PREFIX` and `WORKBENCH_IMAGE_TAG` settings; their defaults match
+this repository's GHCR images.
 The workflow authenticates with GitHub's automatic `GITHUB_TOKEN`. For private
 images, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` and supply a
 classic token with `read:packages`. Public images need no login.
@@ -245,7 +274,7 @@ uv pip install --python .venv/bin/python 'scipy==1.14.1'
 ### Apple Silicon (MPS)
 
 Run the backend natively on macOS using an ARM64 Python 3.10 environment for MPS.
-The Docker configuration defaults to CPU execution. The shared loader automatically
+For Docker on a Mac, comment out `gpus: all` to use CPU. The shared loader automatically
 prefers CUDA, then Apple MPS, then CPU. MPS uses Transformers' automatic dtype
 selection from the model config/checkpoint, preserving FP16, BF16, and FP32 weights.
 Only FP64 parameters and buffers are converted to FP32 before transfer to MPS.

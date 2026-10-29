@@ -1,8 +1,9 @@
 services:
   backend:
     image: ${WORKBENCH_IMAGE_PREFIX:-ghcr.io/chihuahualee828/ke_workbench}-backend:${WORKBENCH_IMAGE_TAG:-latest}
-    # Uncomment on an NVIDIA PC configured for Docker GPU access.
-    # gpus: all
+    # NVIDIA PC: use gpus: all to expose the GPU; the backend then selects CUDA.
+    # Mac (MPS host) / CPU-only host: comment out gpus: all to run Docker on CPU.
+    gpus: all
     build:
       context: ./backend
       target: runtime

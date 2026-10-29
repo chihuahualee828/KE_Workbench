@@ -117,13 +117,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [backend, frontend]
-        arch: [amd64, arm64]
         include:
-          - arch: amd64
+          - service: backend
+            arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
-          - arch: arm64
+          - service: frontend
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - service: frontend
+            arch: arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
     steps:
@@ -184,7 +188,7 @@ jobs:
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
-      - name: Upload the digest for the multi-platform manifest
+      - name: Upload the verified image digest
         if: needs.prepare.outputs.publish == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -203,7 +207,13 @@ jobs:
       packages: write
     strategy:
       matrix:
-        service: [backend, frontend]
+        include:
+          - service: backend
+            digest-count: 1
+            platforms: linux/amd64
+          - service: frontend
+            digest-count: 2
+            platforms: linux/amd64, linux/arm64
     env:
       IMAGE_NAME: ${{ needs.prepare.outputs.image-prefix }}-${{ matrix.service }}
     steps:
@@ -227,9 +237,11 @@ jobs:
             type=sha,format=long
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
-      - name: Publish and inspect the multi-platform manifest
+      - name: Publish and inspect image tags
         env:
           METADATA_JSON: ${{ steps.metadata.outputs.json }}
+          EXPECTED_DIGESTS: ${{ matrix.digest-count }}
+          PLATFORMS: ${{ matrix.platforms }}
         shell: bash
         run: |
           tags=()
@@ -237,10 +249,14 @@ jobs:
             tags+=(--tag "$tag")
           done < <(jq -r '.tags[]' <<< "$METADATA_JSON")
           sources=()
+          shopt -s nullglob
           for digest_file in "$RUNNER_TEMP/digests/"*; do
             sources+=("$IMAGE_NAME@sha256:$(basename "$digest_file")")
           done
-          [[ ${#sources[@]} -eq 2 ]]
+          if [[ ${#sources[@]} -ne "$EXPECTED_DIGESTS" ]]; then
+            echo "Expected $EXPECTED_DIGESTS image digest(s), found ${#sources[@]}." >&2
+            exit 1
+          fi
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
           image_tag=$(jq -r '.tags[0]' <<< "$METADATA_JSON")
           docker buildx imagetools inspect "$image_tag"
@@ -248,5 +264,5 @@ jobs:
             echo "### Published $IMAGE_NAME"
             jq -r '.tags[] | "- `" + . + "`"' <<< "$METADATA_JSON"
             echo
-            echo 'Platforms: `linux/amd64`, `linux/arm64`.'
+            printf 'Platforms: `%s`.\n' "$PLATFORMS"
           } >> "$GITHUB_STEP_SUMMARY"
