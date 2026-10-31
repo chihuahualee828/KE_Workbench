@@ -285,7 +285,7 @@ function KnForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} scrollToLogs={busy} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
@@ -725,7 +725,7 @@ function RomeForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} scrollToLogs={busy} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -1339,7 +1339,7 @@ function BatchWeightForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} scrollToLogs={busy} onPatchesChanged={onPatchesChanged} />
       {missingMom2Layers ? <MissingMom2StatisticsDialog layers={missingMom2Layers} onClose={() => setMissingMom2Layers(null)} /> : null}
       {mom2CacheOpen ? <SecondMomentCacheDialog modelId={modelId} method={method} onClose={() => setMom2CacheOpen(false)} /> : null}
     </div>
@@ -1625,7 +1625,7 @@ function TrainingForm({
         <ExportActiveModelControl modelId={modelId} modelLoaded={modelLoaded} disabled={busy} />
         {error ? <div className="rounded-md border border-rust/40 bg-rust/10 p-3 text-sm text-rust">{error}</div> : null}
       </section>
-      <ResultPanel result={result} setResult={setResult} job={job} onPatchesChanged={onPatchesChanged} />
+      <ResultPanel result={result} setResult={setResult} job={job} scrollToLogs={busy} onPatchesChanged={onPatchesChanged} />
     </div>
   );
 }
@@ -2220,13 +2220,16 @@ function ResultPanel({
   result,
   setResult,
   job,
+  scrollToLogs,
   onPatchesChanged
 }: {
   result: Record<string, unknown> | null;
   setResult: (value: Record<string, unknown> | null) => void;
   job: EditJob | null;
+  scrollToLogs: boolean;
   onPatchesChanged?: () => void | Promise<void>;
 }) {
+  const logsSectionRef = useRef<HTMLDivElement | null>(null);
   const logsRef = useRef<HTMLPreElement | null>(null);
   const evaluationJobId = typeof result?.post_edit_evaluation_job_id === "string" ? result.post_edit_evaluation_job_id : null;
   const [evaluationJob, setEvaluationJob] = useState<EditJob | null>(null);
@@ -2322,6 +2325,21 @@ function ResultPanel({
   const [canceling, setCanceling] = useState(false);
 
   useEffect(() => {
+    if (!scrollToLogs) return;
+    // Wait for the previous results to clear before choosing the scroll position.
+    const frame = requestAnimationFrame(() => {
+      const section = logsSectionRef.current;
+      if (!section) return;
+      section.focus({ preventScroll: true });
+      section.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+        block: "start"
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollToLogs]);
+
+  useEffect(() => {
     if (!logsRef.current) return;
     logsRef.current.scrollTop = logsRef.current.scrollHeight;
   }, [job?.logs]);
@@ -2363,7 +2381,7 @@ function ResultPanel({
 
   return (
     <section className="panel">
-      <div className="mb-4">
+      <div ref={logsSectionRef} role="region" aria-label="Edit Logs" tabIndex={-1} className="mb-4 scroll-mt-36 outline-none lg:scroll-mt-20">
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="label">Edit Logs</span>
           <div className="flex items-center gap-2">
