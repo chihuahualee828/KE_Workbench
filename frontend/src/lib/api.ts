@@ -1,5 +1,7 @@
 import type { EditJobOptions, EditMethod, BatchWeightMethod, TrainingMethod, Mom2Method } from "./editingMethods";
 import type { LoraModuleCatalog } from "./loraModules";
+import type { PatchDeletionPreview, PatchBatchDeletion, PatchLibraryPage, PatchLibraryQuery } from "./types";
+import { patchLibraryParams } from "./patchLibraryQuery";
 import type { TrainingHyperparameters } from "./trainingHyperparameters";
 import type { ActiveEvaluationFacts, EvaluationFact, EvaluationMetric, EvaluationProtocols, EvaluationResultOverview, EvaluationResultPage, AppSettings, EditJob, Experiment, ExperimentDetails, HfTokenStatus, LogitLensLayer, ModelCacheLocation, ModelCacheStatus, ModelDownloadJob, ModelRuntimeJob, ModelRuntimeStatus, Mom2Cache, Mom2Dtype, Mom2StatisticsRequest, Mom2StatisticsStatus, Patch, PatchEditPage, ReliabilityTestResultPage, SupportedModel, TraceCell } from "./types";
 import { backendAuthorizationHeaders, backendUrl } from "./backendConnection";
@@ -27,7 +29,7 @@ let readEpoch = 0;
 export function apiReadVersion() { return readEpoch; }
 export function invalidateApiReads() { readEpoch += 1; reads.clear(); }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const mutation = init?.method && init.method !== "GET";
+  const mutation = init?.method && init.method !== "GET" && path !== "/api/patches/deletion-preview";
   const cacheable = !mutation && !init?.signal && /^(\/api\/models(?:$|\/(?:cache$|runtime$|cache\/jobs$))|\/api\/(?:experiments|patches)\/page|\/api\/patches\/active)/.test(path);
   if (mutation) invalidateApiReads();
   if (!cacheable) {
@@ -369,7 +371,10 @@ export const api = {
       body: JSON.stringify(body)
     }),
   experimentPage: (offset = 0, status?: string) => request<{ items: Experiment[]; total: number; status_counts: Record<string, number> }>(`/api/experiments/page?offset=${offset}&limit=50${status ? `&status=${encodeURIComponent(status)}` : ""}`),
-  patchPage: (offset = 0) => request<{ items: Patch[]; total: number }>(`/api/patches/page?offset=${offset}&limit=50`),
+  patchPage: (offset = 0, query: PatchLibraryQuery = {}, signal?: AbortSignal) =>
+    request<PatchLibraryPage>(`/api/patches/page?${patchLibraryParams(query, offset)}`, { signal }),
+  patchSelection: (query: PatchLibraryQuery = {}, signal?: AbortSignal) =>
+    request<{ patch_ids: string[]; blocked_patch_count: number }>(`/api/patches/selection?${patchLibraryParams(query)}`, { signal }),
   activePatches: () => request<{ patches: Patch[] }>("/api/patches/active"),
   experiments: () => request<Experiment[]>("/api/experiments"),
   experimentStatus: (experimentId: string) => request<ExperimentDetails>(`/api/experiments/${experimentId}?include_result=false`),
@@ -382,7 +387,7 @@ export const api = {
     request<{ deleted_experiment_count: number }>("/api/experiments", {
       method: "DELETE"
     }),
-  patches: () => request<{ patches: Patch[] }>("/api/patches"),
+  patches: (signal?: AbortSignal) => request<{ patches: Patch[] }>("/api/patches", { signal }),
   patchEdits: (patchId: string, offset: number, limit: number) =>
     request<PatchEditPage>(`/api/patches/${encodeURIComponent(patchId)}/edits?offset=${offset}&limit=${limit}`),
   loadPatch: (patchId: string) =>
@@ -396,6 +401,14 @@ export const api = {
   deletePatch: (patchId: string) =>
     request<{ patch_id: string; deleted_patch_ids: string[]; deleted_patch_count: number }>(`/api/patches/${patchId}`, {
       method: "DELETE"
+    }),
+  previewPatchDeletion: (patchIds: string[], signal?: AbortSignal) =>
+    request<PatchDeletionPreview>("/api/patches/deletion-preview", {
+      method: "POST", body: JSON.stringify({ patch_ids: patchIds }), signal
+    }),
+  deletePatchBatch: (patchIds: string[], previewToken: string) =>
+    request<PatchBatchDeletion>("/api/patches/bulk-delete", {
+      method: "POST", body: JSON.stringify({ patch_ids: patchIds, preview_token: previewToken })
     }),
   revertToPatch: (patchId: string) =>
     request<{ model_id: string; active_patches: string[] }>(`/api/patches/${patchId}/revert-to`, {

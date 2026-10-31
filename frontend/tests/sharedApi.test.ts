@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { api, invalidateApiReads } from "../src/lib/api";
+import { api, apiReadVersion, invalidateApiReads } from "../src/lib/api";
 import { saveBackendConnection } from "../src/lib/backendConnection";
+
+test("patch search and selection encode the same filters without mutating read state", async () => {
+  const original = globalThis.fetch;
+  const urls: URL[] = [];
+  globalThis.fetch = async (input) => { urls.push(new URL(String(input))); return new Response(JSON.stringify({ items: [], total: 0, patch_ids: [], blocked_patch_count: 0 })); };
+  try {
+    const query = { query: "  city & 100%_  ", model_id: "org/model", method: "rome", sort: "oldest" as const };
+    const before = apiReadVersion();
+    await api.patchPage(50, query);
+    await api.patchSelection(query);
+    assert.equal(apiReadVersion(), before);
+    for (const url of urls) {
+      assert.equal(url.searchParams.get("query"), "city & 100%_");
+      assert.equal(url.searchParams.get("model_id"), "org/model");
+      assert.equal(url.searchParams.get("method"), "rome");
+    }
+    assert.equal(urls[0].searchParams.get("offset"), "50");
+    assert.equal(urls[0].searchParams.get("sort"), "oldest");
+    assert.equal(urls[1].searchParams.has("offset"), false);
+  } finally { globalThis.fetch = original; invalidateApiReads(); }
+});
 
 test("additional edit methods send complete batches and DPO rejected answers", async () => {
   const original = globalThis.fetch;
@@ -55,6 +76,24 @@ test("a failed shared request can be retried", async () => {
     await assert.rejects(api.models());
     assert.deepEqual(await api.models(), []);
     assert.equal(calls, 2);
+  } finally { globalThis.fetch = original; invalidateApiReads(); }
+});
+
+test("deletion previews are read-only and committing sends the reviewed token", async () => {
+  const original = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify({ preview_token: "reviewed", deleted_patch_ids: ["patch_a", "patch_b"] }));
+  };
+  try {
+    const version = apiReadVersion();
+    const plan = await api.previewPatchDeletion(["patch_a"]);
+    assert.equal(apiReadVersion(), version);
+    await api.deletePatchBatch(["patch_a"], plan.preview_token);
+    assert.ok(apiReadVersion() > version);
+    assert.ok(calls[0].url.endsWith("/api/patches/deletion-preview"));
+    assert.deepEqual(calls[1].body, { patch_ids: ["patch_a"], preview_token: "reviewed" });
   } finally { globalThis.fetch = original; invalidateApiReads(); }
 });
 

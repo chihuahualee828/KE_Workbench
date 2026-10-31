@@ -1,6 +1,6 @@
 import type { Experiment, Patch } from "./types";
 
-export function patchDeletionBlockReason(patchId: string, patches: Patch[]): string {
+export function protectedPatchIds(patches: Patch[]): Set<string> {
   const byId = new Map(patches.map((patch) => [patch.patch_id, patch]));
   const protectedIds = new Set<string>();
   const pending = patches.filter((patch) => patch.active).map((patch) => patch.patch_id);
@@ -10,7 +10,11 @@ export function patchDeletionBlockReason(patchId: string, patches: Patch[]): str
     protectedIds.add(id);
     pending.push(...(byId.get(id)?.parent_patch_ids ?? []));
   }
-  return protectedIds.has(patchId) ? "This patch or a dependent patch is active. Discard it before deleting." : "";
+  return protectedIds;
+}
+
+export function patchDeletionBlockReason(patchId: string, patches: Patch[]): string {
+  return protectedPatchIds(patches).has(patchId) ? "This patch or a dependent patch is active. Discard it before deleting." : "";
 }
 
 export function patchMutationBlockReason(experiments: Experiment[]): string {
