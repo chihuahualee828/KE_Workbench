@@ -100,6 +100,10 @@ def _open_catalog():
                 target TEXT, search TEXT, locality INTEGER, portability INTEGER,
                 PRIMARY KEY(patch, position)
             );
+            CREATE TABLE IF NOT EXISTS patch_fact_search (
+                patch TEXT, position INTEGER, text TEXT,
+                PRIMARY KEY(patch, position)
+            );
         """)
         yield db
         db.commit()
@@ -110,7 +114,9 @@ def _open_catalog():
 def sync_record(db: sqlite3.Connection, path: str, kind: str) -> None:
     source = local_store.root / path
     stat = source.stat()
-    signature = f"{stat.st_mtime_ns}:{stat.st_size}:{stat.st_ino}"
+    # Reindex existing JSON artifacts once when the searchable fact format changes.
+    version = "facts-v1:" if kind == "patch" else ""
+    signature = f"{version}{stat.st_mtime_ns}:{stat.st_size}:{stat.st_ino}"
     current = db.execute("SELECT signature FROM records WHERE path=?", (path,)).fetchone()
     if current and current[0] == signature:
         return
@@ -119,6 +125,7 @@ def sync_record(db: sqlite3.Connection, path: str, kind: str) -> None:
         identity = data["patch_id"]
         summary = patch_summary(data)
         db.execute("DELETE FROM edits WHERE patch=?", (identity,))
+        db.execute("DELETE FROM patch_fact_search WHERE patch=?", (identity,))
         for index, edit in enumerate(data.get("edits") or []):
             fact = evaluation_fact(identity, index, edit) if isinstance(edit, dict) else None
             db.execute("INSERT INTO edits VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (
@@ -127,6 +134,10 @@ def sync_record(db: sqlite3.Connection, path: str, kind: str) -> None:
                 "\n".join(fact[k] for k in ("subject", "ground_truth", "new_object")).lower() if fact else "",
                 int(bool(fact and fact["locality_prompt"])), int(bool(fact and fact["portability_prompt"])),
             ))
+            text = "\n".join(_fact_text(edit))
+            if fact:
+                text += "\n" + fact["prompt"]
+            db.execute("INSERT INTO patch_fact_search VALUES (?, ?, ?)", (identity, index, text.casefold()))
     else:
         from app.services.experiment_service import _experiment_list_summary, _job_summary
         identity = data["id"]
@@ -158,20 +169,50 @@ def sync_collection(db: sqlite3.Connection, collection: str) -> None:
             db.execute("DELETE FROM records WHERE path=?", (path,))
             if kind == "patch":
                 db.execute("DELETE FROM edits WHERE patch=?", (identity,))
+                db.execute("DELETE FROM patch_fact_search WHERE patch=?", (identity,))
+
+
+def _fact_text(value: Any):
+    """Index fact values (including imported optional fields), never JSON keys."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _fact_text(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _fact_text(child)
+
+
+def _history_filter(kind: str, model_id: str | None, status: str | None,
+                    query: str, method: str | None) -> tuple[str, list[str]]:
+    where, args = "kind=?", [kind]
+    for column, value in (("model", model_id), ("status", status)):
+        if value is not None:
+            where += f" AND {column}=?"
+            args.append(value)
+    if kind == "patch":
+        if method:
+            where += " AND lower(json_extract(summary, '$.method'))=?"
+            args.append(method.lower())
+        if query.strip():
+            where += " AND EXISTS (SELECT 1 FROM patch_fact_search f WHERE f.patch=records.id AND instr(f.text, ?)>0)"
+            args.append(query.strip().casefold())
+    return where, args
 
 
 def history_page(kind: str, offset: int = 0, limit: int | None = 50,
-                 model_id: str | None = None, status: str | None = None) -> dict[str, Any]:
+                 model_id: str | None = None, status: str | None = None,
+                 *, query: str = "", method: str | None = None, sort: str = "newest") -> dict[str, Any]:
+    if sort not in {"oldest", "newest"}:
+        raise ValueError("Unknown patch sort order")
     with catalog() as db:
         sync_collection(db, kind)
-        where, args = "kind=?", [kind]
-        for column, value in (("model", model_id), ("status", status)):
-            if value is not None:
-                where += f" AND {column}=?"
-                args.append(value)
+        where, args = _history_filter(kind, model_id, status, query, method)
         total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", args).fetchone()[0]
         counts = dict(db.execute(f"SELECT status, COUNT(*) FROM records WHERE {where} GROUP BY status", args))
-        rows = db.execute(f"SELECT summary, id FROM records WHERE {where} ORDER BY created DESC, id DESC LIMIT ? OFFSET ?",
+        direction = "ASC" if sort == "oldest" else "DESC"
+        rows = db.execute(f"SELECT summary, id FROM records WHERE {where} ORDER BY created {direction}, id {direction} LIMIT ? OFFSET ?",
                           [*args, limit if limit is not None else -1, offset]).fetchall()
         items = []
         for raw, identity in rows:
@@ -181,7 +222,35 @@ def history_page(kind: str, offset: int = 0, limit: int | None = 50,
                 if job:
                     item["job"] = json.loads(job[0])
             items.append(item)
-        return {"items": items, "total": total, "offset": offset, "limit": limit, "status_counts": counts}
+        page = {"items": items, "total": total, "offset": offset, "limit": limit, "status_counts": counts}
+        if kind == "patch":
+            child_counts = dict(db.execute("""
+                SELECT json_extract(summary, '$.parent_patch_ids[#-1]'), count(*) FROM records
+                WHERE kind='patch' AND json_extract(summary, '$.sequential_edit')=1
+                GROUP BY 1
+            """))
+            for item in items:
+                item["lineage_child_count"] = child_counts.get(item["patch_id"], 0)
+            # Global facets remain available even when the current query has no matches.
+            page["methods"] = [row[0] for row in db.execute(
+                "SELECT DISTINCT lower(json_extract(summary, '$.method')) FROM records WHERE kind='patch' ORDER BY 1"
+            ) if row[0]]
+            page["model_ids"] = [row[0] for row in db.execute(
+                "SELECT DISTINCT model FROM records WHERE kind='patch' ORDER BY model"
+            ) if row[0]]
+        return page
+
+
+def patch_selection_metadata(query: str = "", method: str | None = None, model_id: str | None = None):
+    """Return matching IDs and the whole lineage, without deserializing edit facts."""
+    with catalog() as db:
+        sync_collection(db, "patch")
+        where, args = _history_filter("patch", model_id, None, query, method)
+        ids = [row[0] for row in db.execute(f"SELECT id FROM records WHERE {where} ORDER BY created DESC, id DESC", args)]
+        parents = {row[0]: json.loads(row[1] or "[]") for row in db.execute(
+            "SELECT id, json_extract(summary, '$.parent_patch_ids') FROM records WHERE kind='patch'"
+        )}
+        return ids, parents
 
 
 def patch_edits_page(patch_id: str, offset: int, limit: int) -> dict:

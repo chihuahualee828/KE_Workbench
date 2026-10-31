@@ -42,12 +42,18 @@ summary { cursor: pointer; }
   .tool-button { background-color: rgb(var(--accent)); }
   .tool-button:hover:not(:disabled) { background-color: rgb(var(--accent-hover)); }
   .tool-button:disabled { background-color: #e3e7ef; }
+  .tool-button.tool-button-danger:not(:disabled) { @apply bg-rust; }
+  .tool-button.tool-button-danger:hover:not(:disabled) { @apply bg-rust/90; }
   .ghost-button {
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-medium text-ink/75 shadow-sm transition hover:border-cyan/30 hover:bg-cyan/5 hover:text-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-ink/35 disabled:shadow-none;
   }
   .section { @apply px-4 pb-6 sm:px-6 xl:px-9; }
   .panel { @apply min-w-0 rounded-xl border border-line bg-white p-5 shadow-[0_2px_8px_-4px_rgba(25,35,60,0.12)]; }
   .label { @apply text-[11px] font-semibold uppercase tracking-[0.07em] text-ink/55; }
+  .patch-selection-checkbox {
+    @apply m-0 h-[18px] w-[18px] cursor-pointer appearance-none rounded-[5px] border border-ink/20 bg-white transition-colors hover:border-cyan/60 checked:border-cyan checked:bg-cyan disabled:cursor-not-allowed disabled:border-line disabled:bg-panel;
+  }
+  .patch-selection-checkbox:checked:disabled { @apply border-cyan/25 bg-cyan/10; }
   @media (max-height: 500px) {
     .patch-details-dialog[role="dialog"] { padding: 0.75rem; }
     .patch-details-dialog > dl {

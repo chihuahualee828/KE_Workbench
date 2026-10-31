@@ -149,6 +149,7 @@ export type PatchEditPage = {
 };
 
 export type Patch = {
+  lineage_child_count?: number;
   seed?: number;
   patch_id: string;
   base_model: string;
@@ -169,6 +170,41 @@ export type Patch = {
   active_index?: number | null;
   lineage_only?: boolean;
   baked_into_model?: boolean;
+};
+
+export type PatchLibraryQuery = {
+  query?: string;
+  method?: string;
+  model_id?: string;
+  sort?: "newest" | "oldest";
+};
+
+export type PatchLibraryPage = {
+  items: Patch[];
+  total: number;
+  methods?: string[];
+  model_ids?: string[];
+};
+
+export type PatchDeletionPreview = {
+  selected_patch_ids: string[];
+  deleted_patch_ids: string[];
+  dependent_patch_ids: string[];
+  blocked_patch_ids: string[];
+  preview_token: string;
+  patches: Array<{
+    patch_id: string;
+    base_model: string;
+    active: boolean;
+    baked_into_model: boolean;
+    included_by: string[];
+  }>;
+};
+
+export type PatchBatchDeletion = {
+  deleted_patch_ids: string[];
+  deleted_patch_count: number;
+  cleanup_pending: boolean;
 };
 
 export type ModelCacheStatus = {
