@@ -7,6 +7,7 @@ import sys
 import threading
 from functools import partial
 from pathlib import Path
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -605,9 +606,24 @@ def list_patches() -> PatchListResponse:
 
 
 @router.get("/patches/page")
-def list_patch_page(offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=200),
-                    model_id: str | None = None) -> dict:
-    return patch_service.list_patch_page(offset, limit, model_id)
+def list_patch_page(
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    model_id: str | None = None,
+    query: Annotated[str, Query(max_length=500)] = "",
+    method: str | None = None,
+    sort: Literal["newest", "oldest"] = "newest",
+) -> dict:
+    return patch_service.list_patch_page(offset, limit, model_id, query=query, method=method, sort=sort)
+
+
+@router.get("/patches/selection")
+def selectable_patch_ids(
+    query: Annotated[str, Query(max_length=500)] = "",
+    method: str | None = None,
+    model_id: str | None = None,
+) -> dict:
+    return patch_service.selectable_patch_ids(query, method, model_id)
 
 
 @router.get("/patches/active")

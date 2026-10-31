@@ -113,11 +113,12 @@ class PatchService:
     def list_patch_summaries(self) -> list[dict[str, Any]]:
         return self.list_patch_page(limit=None)["items"]
 
-    def list_patch_page(self, offset: int = 0, limit: int | None = 50, model_id: str | None = None) -> dict:
+    def list_patch_page(self, offset: int = 0, limit: int | None = 50, model_id: str | None = None,
+                        *, query: str = "", method: str | None = None, sort: str = "newest") -> dict:
         from app.storage.catalog import history_page
         for path in (local_store.root / "patches").glob("patch_*.json"):
             self._migrate_flat_metadata(path.stem)
-        page = history_page("patch", offset, limit, model_id)
+        page = history_page("patch", offset, limit, model_id, query=query, method=method, sort=sort)
         active = self.active_patches_by_model()
         for patch in page["items"]:
             stack = active.get(patch.get("base_model"), [])
@@ -125,6 +126,26 @@ class PatchService:
             patch["active_index"] = stack.index(patch["patch_id"]) if patch["active"] else None
             patch["tensor_size_bytes"] = self.tensor_size_bytes(patch)
         return page
+
+    def selectable_patch_ids(self, query: str = "", method: str | None = None, model_id: str | None = None) -> dict:
+        from app.storage.catalog import patch_selection_metadata
+
+        with self._lock:
+            for path in (local_store.root / "patches").glob("patch_*.json"):
+                self._migrate_flat_metadata(path.stem)
+            ids, parents = patch_selection_metadata(query, method, model_id)
+            pending = [identity for stack in self.active_patches_by_model().values() for identity in stack]
+            protected = set()
+            while pending:
+                identity = pending.pop()
+                if identity in protected:
+                    continue
+                protected.add(identity)
+                values = parents.get(identity)
+                if isinstance(values, list):
+                    pending.extend(str(value) for value in values)
+            return {"patch_ids": [identity for identity in ids if identity not in protected],
+                    "blocked_patch_count": sum(identity in protected for identity in ids)}
 
     def tensor_size_bytes(self, patch: dict[str, Any]) -> int | None:
         """Measure saved tensors without opening them or decoding edit facts."""
