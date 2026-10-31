@@ -8,7 +8,7 @@ import torch
 from app.ml.editing import easyedit_runtime as runtime
 from app.ml.editing.edit_cancellation import (
     EditCanceled, EditTransaction, _run_local_edit, current_edit,
-    memit_cancellation_hook, request_cancel,
+    edit_cancellation_hook, request_cancel,
 )
 from app.services.experiment_service import ExperimentService
 from app.services.patch_service import patch_service
@@ -390,7 +390,7 @@ def test_memit_hook_cancels_inside_edit_and_model_remains_usable(editing, contin
 
 
 @pytest.mark.parametrize("method", ["rome", "r_rome"])
-def test_other_edit_methods_do_not_get_memit_forward_hooks(editing, monkeypatch, method):
+def test_rank_one_edits_cancel_before_the_next_optimization_forward(editing, monkeypatch, method):
     monkeypatch.setattr(runtime.model_registry, "get", lambda _: {
         "hf_id": "demo", "supports_rome": True, "supports_r_rome": True})
     editing.model.forward = lambda inputs: editing.model.layers[0](inputs)
@@ -398,15 +398,63 @@ def test_other_edit_methods_do_not_get_memit_forward_hooks(editing, monkeypatch,
 
     def optimize():
         request_cancel("job_test")
-        assert not editing.model._forward_pre_hooks
+        assert editing.model._forward_pre_hooks
         for step in range(3):
             editing.model(torch.ones(1, 2))
             finished_steps.append(step)
 
     editing.callback = optimize
     assert _run_local_edit("job_test", lambda: run_fact(method), {}) == {"_edit_canceled": True}
-    assert finished_steps == [0, 1, 2]  # Existing post-EasyEdit boundary is unchanged.
+    assert finished_steps == []
     assert editing.batch_calls == []
+    assert not editing.model._forward_pre_hooks
+
+
+@pytest.mark.parametrize("method", ["rome", "r_rome"])
+@pytest.mark.parametrize("phase", ["forward", "backward"])
+def test_rank_one_cancels_inside_a_fact_and_restores_the_loaded_model(editing, monkeypatch, method, phase):
+    monkeypatch.setattr(runtime.model_registry, "get", lambda _: {
+        "hf_id": "demo", "supports_rome": True, "supports_r_rome": True})
+    add_old_patch(editing)
+    before = {name: value.clone() for name, value in editing.model.state_dict().items()}
+    gradients = [parameter.requires_grad for parameter in editing.model.parameters()]
+    completed = []
+
+    def cancel_gradient(gradient):
+        request_cancel("job_test")
+        return gradient
+
+    def request_during_forward(_module, _args, output):
+        if phase == "forward":
+            request_cancel("job_test")
+        else:
+            output.register_hook(cancel_gradient)
+
+    existing_hook = editing.model.layers[0].register_forward_hook(request_during_forward)
+    original_hooks = dict(editing.model.layers[0]._forward_hooks)
+    editing.model.forward = lambda inputs: editing.model.layers[1](editing.model.layers[0](inputs))
+
+    def optimize():
+        editing.model.requires_grad_(False)
+        loss = editing.model(torch.ones(1, 2, requires_grad=True)).sum()
+        completed.append("forward")
+        loss.backward()
+        completed.append("backward")
+
+    editing.callback = optimize
+    try:
+        assert _run_local_edit("job_test", lambda: run_fact(method), {}) == {"_edit_canceled": True}
+        assert completed == ([] if phase == "forward" else ["forward"])
+        assert patch_service.active_patches_for_model("demo") == ["patch_old"]
+        assert [patch["patch_id"] for patch in patch_service.list_patches()] == ["patch_old"]
+        for name, value in editing.model.state_dict().items():
+            assert torch.equal(value, before[name])
+        assert editing.model.layers[0]._forward_hooks == original_hooks
+        assert not any(module._forward_pre_hooks for module in editing.model.modules())
+        assert [parameter.requires_grad for parameter in editing.model.parameters()] == gradients
+    finally:
+        existing_hook.remove()
+    assert torch.isfinite(editing.model(torch.ones(1, 2))).all()
 
 
 @pytest.mark.parametrize("continuing", [False, True])
@@ -482,9 +530,30 @@ def test_memit_hook_restores_flags_and_hooks_on_success_or_error(editing, failur
     assert [module.training for module in model.modules()] == training
 
 
-def test_memit_hook_does_nothing_without_a_cancellable_job(editing):
-    with memit_cancellation_hook(editing.model, enabled=True):
+@pytest.mark.parametrize("granular", [False, True])
+def test_edit_hook_does_nothing_without_a_cancellable_job(editing, granular):
+    with edit_cancellation_hook(editing.model, enabled=True, granular=granular):
         assert not editing.model._forward_pre_hooks
+
+
+def test_granular_hooks_preserve_inplace_outputs_and_remove_gradient_hooks(editing):
+    model = editing.model
+    model.forward = lambda inputs: {"activations": (inputs * 2, [inputs * 3])}
+    inputs = torch.ones(1, 2, requires_grad=True)
+    token = current_edit.set(EditTransaction("job_test"))
+    try:
+        with edit_cancellation_hook(model, enabled=True, granular=True):
+            outputs = model(inputs)["activations"]
+            tensors = [outputs[0], outputs[1][0]]
+            hook_maps = [tensor._backward_hooks for tensor in tensors]
+            assert all(hook_maps)
+            outputs[0].add_(1)
+            sum(tensor.sum() for tensor in tensors).backward()
+            assert torch.equal(inputs.grad, torch.full_like(inputs, 5))
+        assert all(not hooks for hooks in hook_maps)
+        assert not any(module._forward_pre_hooks or module._forward_hooks for module in model.modules())
+    finally:
+        current_edit.reset(token)
 
 
 def test_cancellation_unwinds_unmodified_easyedit_trace_hooks(editing):
@@ -502,7 +571,7 @@ def test_cancellation_unwinds_unmodified_easyedit_trace_hooks(editing):
     original_hooks = dict(model.layers[0]._forward_hooks)
     try:
         with pytest.raises(EditCanceled):
-            with memit_cancellation_hook(model, enabled=True):
+            with edit_cancellation_hook(model, enabled=True):
                 # Real EasyEdit context removes its own instrumentation when the
                 # model's pre-hook raises. Existing user hooks must survive.
                 with trace_dict(model, ["layers.0"]):
