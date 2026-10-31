@@ -53,14 +53,13 @@ def check_edit_cancellation() -> None:
 
 
 @contextmanager
-def memit_cancellation_hook(model: Any, *, enabled: bool):
-    """Interrupt MEMIT at forward boundaries without modifying EasyEdit.
+def edit_cancellation_hook(model: Any, *, enabled: bool, granular: bool = False):
+    """Interrupt EasyEdit without modifying its source or unloading the model.
 
-    Use a model-local hook, not a global hook or a patched EasyEdit function.
-    The exception unwinds EasyEdit's TraceDict contexts before our transaction
-    restores weights. Backward passes and matrix solves already in progress
-    still finish before the next check. No hook is installed for other methods
-    or for calls that do not belong to a cancellable edit job.
+    Batch methods check before each model forward. Rank-one edits also check
+    leaf-module forwards and activation gradients, so cancellation can unwind
+    a single fact's optimization. A running native operation still has to
+    return before its next boundary. All instrumentation is local to this job.
     """
     transaction = current_edit.get()
     if not enabled or transaction is None:
@@ -68,7 +67,7 @@ def memit_cancellation_hook(model: Any, *, enabled: bool):
         return
 
     transaction.check()
-    # MEMIT freezes model parameters to optimize its separate delta tensor.
+    # These algorithms freeze model parameters to optimize a separate delta.
     # Preserve mixed flags rather than unconditionally unfreezing the model.
     gradient_flags = [(parameter, parameter.requires_grad) for parameter in model.parameters()]
     training_flags = [(module, module.training) for module in model.modules()]
@@ -76,11 +75,46 @@ def memit_cancellation_hook(model: Any, *, enabled: bool):
     def before_forward(_module, _args):
         transaction.check()
 
-    handle = model.register_forward_pre_hook(before_forward, prepend=True)
+    handles = []
+    gradient_handles = []
+
+    def before_backward(gradient):
+        transaction.check()
+        return gradient
+
+    def watch_gradients(value):
+        import torch
+
+        if isinstance(value, torch.Tensor):
+            if value.requires_grad:
+                gradient_handles.append(value.register_hook(before_backward))
+        elif isinstance(value, dict):
+            for item in value.values():
+                watch_gradients(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                watch_gradients(item)
+
+    def after_forward(_module, _args, output):
+        transaction.check()
+        # Tensor hooks do not introduce views that conflict with EasyEdit's
+        # in-place activation rewrites, unlike module backward hooks.
+        watch_gradients(output)
+
+    modules = [model]
+    if granular:
+        modules.extend(module for module, _ in training_flags if module is not model and not any(module.children()))
     try:
+        for module in modules:
+            handles.append(module.register_forward_pre_hook(before_forward, prepend=True))
+            if granular:
+                handles.append(module.register_forward_hook(after_forward))
         yield
     finally:
-        handle.remove()
+        for handle in handles:
+            handle.remove()
+        for handle in gradient_handles:
+            handle.remove()
         for parameter, requires_grad in gradient_flags:
             parameter.requires_grad_(requires_grad)
         for module, training in training_flags:

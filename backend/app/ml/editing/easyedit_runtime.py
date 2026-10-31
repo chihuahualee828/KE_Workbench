@@ -20,11 +20,11 @@ import yaml
 
 from app.config import settings
 from app.ml.editing.batch_progress import track_batch_progress
-from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, memit_cancellation_hook
+from app.ml.editing.edit_cancellation import check_edit_cancellation, current_edit, edit_cancellation_hook
 from app.ml.editing.evaluation_protocols import ProtocolEvaluator, normalize_protocols
 from app.ml.editing.evaluation_reuse import flatten_metrics, generated_text, matching_post
 from app.ml.editing.fluency_resources import FluencyResourceError, ensure_fluency_tokenizer_data
-from app.ml.editing.methods import METHODS, BATCH_WEIGHT_METHODS, COVARIANCE_MODULES, SCOPED_WEIGHT_METHODS
+from app.ml.editing.methods import METHODS, BATCH_WEIGHT_METHODS, COVARIANCE_MODULES, RANK_ONE_METHODS, SCOPED_WEIGHT_METHODS
 from app.ml.editing.mps_compat import configure_mps_hparams, editing_precision, mps_fp32
 from app.services.model_registry import model_registry
 from app.services.model_runtime_service import model_runtime_service
@@ -263,7 +263,10 @@ def run_easyedit(
             # actual update algorithm without modifying EasyEdit itself.
             print("Starting EasyEdit algorithm.")
             check_edit_cancellation()
-            with memit_cancellation_hook(editor.model, enabled=method_key in BATCH_WEIGHT_METHODS), \
+            with edit_cancellation_hook(
+                editor.model, enabled=method_key in (*RANK_ONE_METHODS, *BATCH_WEIGHT_METHODS),
+                granular=method_key in RANK_ONE_METHODS,
+            ), \
                     track_batch_progress(editor, len(edits), batch_size, enabled=method_key in BATCH_WEIGHT_METHODS):
                 if method_key in SCOPED_WEIGHT_METHODS:
                     from app.ml.editing.scoped_weight_edit import run_scoped_batches
