@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import Field
 
 from app.config import settings
 from app.ml.editing.edit_cancellation import run_cancellable_edit
@@ -51,6 +52,14 @@ _EDIT_METHODS = {"ROME": "rome", "R-ROME": "r_rome", "ROME sequential series": "
 
 class PatchExportRequest(ApiSchema):
     output_path: str
+
+
+class PatchDeletionPreviewRequest(ApiSchema):
+    patch_ids: list[str] = Field(min_length=1, max_length=10000)
+
+
+class PatchBatchDeleteRequest(PatchDeletionPreviewRequest):
+    preview_token: str = Field(min_length=64, max_length=64)
 
 
 class EditDefaultLayersRequest(ApiSchema):
@@ -677,6 +686,28 @@ def discard_patch(patch_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Patch not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/patches/deletion-preview")
+def preview_patch_deletion(request: PatchDeletionPreviewRequest) -> dict:
+    with operation_guard.patch_deletion():
+        try:
+            return patch_service.preview_patch_deletion(request.patch_ids)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "A selected patch no longer exists. Update the selection.") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/patches/bulk-delete")
+def delete_patch_batch(request: PatchBatchDeleteRequest) -> dict:
+    with operation_guard.patch_deletion():
+        try:
+            return patch_service.delete_patch_batch(request.patch_ids, request.preview_token)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, "Could not remove the selected patch files. Refresh history before retrying.") from exc
 
 
 @router.delete("/patches/{patch_id}")

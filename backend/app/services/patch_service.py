@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -330,6 +331,107 @@ class PatchService:
             patches_root.mkdir(parents=True, exist_ok=True)
         return {"deleted_patch_count": patch_count}
 
+    def preview_patch_deletion(self, patch_ids: list[str]) -> dict[str, Any]:
+        """Describe the complete deletion without changing the active model state."""
+        with self._lock:
+            return self._plan_patch_deletion(patch_ids)
+
+    def _plan_patch_deletion(self, patch_ids: list[str]) -> dict[str, Any]:
+        selected = sorted(set(patch_ids))
+        if not selected:
+            raise ValueError("Select at least one patch.")
+        records = self._patch_records()
+        for patch_id in selected:
+            if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id or patch_id not in records:
+                raise FileNotFoundError(patch_id)
+        included_by = self._deletion_origins(selected, records)
+        active_ids = {patch_id for stack in self.active_patches_by_model().values() for patch_id in stack}
+        entries = []
+        versions = []
+        for patch_id in sorted(included_by):
+            if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id:
+                raise ValueError("A dependent patch has an invalid ID.")
+            patch = records[patch_id]
+            entries.append({
+                "patch_id": patch_id,
+                "base_model": patch["base_model"],
+                "active": patch_id in active_ids,
+                "baked_into_model": _is_baked_lineage(patch),
+                "included_by": sorted(seed for seed in included_by[patch_id] if seed != patch_id),
+            })
+            stat = (local_store.root / self._metadata_relative_path(patch_id)).stat()
+            versions.append((patch_id, stat.st_mtime_ns, stat.st_size, stat.st_ino))
+        plan = {
+            "selected_patch_ids": selected,
+            "deleted_patch_ids": sorted(included_by),
+            "dependent_patch_ids": sorted(set(included_by) - set(selected)),
+            "blocked_patch_ids": sorted(set(included_by) & active_ids),
+            "patches": entries,
+        }
+        plan["preview_token"] = hashlib.sha256(
+            json.dumps([plan, versions], sort_keys=True).encode()
+        ).hexdigest()
+        return plan
+
+    @staticmethod
+    def _deletion_origins(selected: list[str], records: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        children: dict[str, set[str]] = {}
+        for patch_id, patch in records.items():
+            parents = patch.get("parent_patch_ids")
+            for parent in parents if isinstance(parents, list) else []:
+                children.setdefault(str(parent), set()).add(patch_id)
+        included_by: dict[str, list[str]] = {}
+        for seed in selected:
+            pending, visited = [seed], set()
+            while pending:
+                patch_id = pending.pop()
+                if patch_id in visited:
+                    continue
+                visited.add(patch_id)
+                included_by.setdefault(patch_id, []).append(seed)
+                pending.extend(children.get(patch_id, ()))
+        return included_by
+
+    def delete_patch_batch(self, patch_ids: list[str], preview_token: str) -> dict[str, Any]:
+        """Commit exactly the reviewed, inactive closure as one library operation."""
+        with self._lock:
+            try:
+                plan = self._plan_patch_deletion(patch_ids)
+            except FileNotFoundError as exc:
+                raise ValueError("Patch history changed. Review the selection again before deleting.") from exc
+            if plan["blocked_patch_ids"]:
+                raise ValueError("This selection includes active patches. Discard them before deleting.")
+            if plan["preview_token"] != preview_token:
+                raise ValueError("Patch history changed. Review the selection again before deleting.")
+            # Move the whole batch out of the library before destroying any file.
+            # A staging failure can restore all earlier moves, including parents.
+            staging = local_store.root / "patch_deletions" / uuid4().hex
+            staging.mkdir(parents=True)
+            moved: list[tuple[Path, Path]] = []
+            try:
+                for patch_id in plan["deleted_patch_ids"]:
+                    source = local_store.root / "patches" / patch_id
+                    target = staging / patch_id
+                    source.replace(target)
+                    moved.append((source, target))
+            except Exception:
+                for source, target in reversed(moved):
+                    target.replace(source)
+                staging.rmdir()
+                raise
+            # The library deletion is committed. Failed physical cleanup must not
+            # resurrect part of a dependency chain or report an ambiguous failure.
+            cleanup_pending = False
+            try:
+                shutil.rmtree(staging)
+            except OSError:
+                cleanup_pending = True
+            return {
+                "deleted_patch_ids": plan["deleted_patch_ids"],
+                "deleted_patch_count": len(plan["deleted_patch_ids"]),
+                "cleanup_pending": cleanup_pending,
+            }
+
     def prepare_patch_artifact_deletion(self, patch_id: str, *, require_inactive: bool = False) -> dict[str, Any]:
         """Deactivate a patch and all descendants before their files are removed."""
         if not patch_id.startswith("patch_") or Path(patch_id).name != patch_id:
@@ -409,18 +511,7 @@ class PatchService:
 
     def _dependent_patch_ids(self, patch_id: str, patches: dict[str, dict[str, Any]]) -> set[str]:
         """Return a patch and every transitive child in the saved lineage graph."""
-        deleted_patch_ids = {patch_id}
-        while True:
-            descendants = {
-                candidate_id
-                for candidate_id, patch in patches.items()
-                if candidate_id not in deleted_patch_ids
-                and isinstance(patch.get("parent_patch_ids"), list)
-                and any(str(parent_id) in deleted_patch_ids for parent_id in patch["parent_patch_ids"])
-            }
-            if not descendants:
-                return deleted_patch_ids
-            deleted_patch_ids.update(descendants)
+        return set(self._deletion_origins([patch_id], patches))
 
     def import_model_lineage(self, model: dict[str, Any]) -> dict[str, Any]:
         local_path = Path(model.get("local_path") or model.get("hf_id") or "")
